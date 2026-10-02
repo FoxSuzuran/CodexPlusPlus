@@ -12,7 +12,7 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn package_bytes(platform: &str, css: &[u8], image_hash: Option<String>) -> Vec<u8> {
-    package_bytes_with_prefix(platform, css, image_hash, "")
+    package_bytes_with_prefix(platform, css, image_hash, "", "0.0.0")
 }
 
 fn package_bytes_with_prefix(
@@ -20,6 +20,7 @@ fn package_bytes_with_prefix(
     css: &[u8],
     image_hash: Option<String>,
     prefix: &str,
+    min_client_version: &str,
 ) -> Vec<u8> {
     let theme = serde_json::to_vec(&json!({
         "schemaVersion": 1,
@@ -41,7 +42,7 @@ fn package_bytes_with_prefix(
         "themeId": "community.theme",
         "version": "1.2.3",
         "skinApiVersion": 1,
-        "minClientVersion": "0.0.0",
+        "minClientVersion": min_client_version,
         "platforms": [platform],
         "capabilities": ["background", "tokens", "safe-css"],
         "publisher": { "id": "tester", "displayName": "Tester" },
@@ -91,13 +92,30 @@ fn validates_real_dream_skin_package_shape() {
 fn validates_package_inside_one_top_level_directory() {
     let css = br#"[data-ds-part="root"] { color: var(--ds-theme-color-text); }"#;
     let package = validate_and_read_package(
-        &package_bytes_with_prefix("macos", css, None, "studio-theme/"),
+        &package_bytes_with_prefix("macos", css, None, "studio-theme/", "0.0.0"),
         "macos",
     )
     .unwrap();
 
     assert_eq!(package.manifest.theme_id, "community.theme");
     assert_eq!(package.image_name, "background.png");
+}
+
+#[test]
+fn supports_dream_skin_1_5_18_without_accepting_future_clients() {
+    let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
+    for version in ["0.0.0", "1.5.12", "1.5.18"] {
+        let bytes = package_bytes_with_prefix("windows", css, None, "", version);
+        validate_and_read_package(&bytes, "windows").unwrap();
+    }
+    for version in ["1.5.19", "1.6.0", "2.0.0"] {
+        let bytes = package_bytes_with_prefix("windows", css, None, "", version);
+        let error = validate_and_read_package(&bytes, "windows")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(version), "{error}");
+        assert!(error.contains("当前兼容至 1.5.18"), "{error}");
+    }
 }
 
 #[test]
@@ -128,6 +146,43 @@ fn compiles_safe_css_into_controlled_cascade() {
     assert!(compiled.contains("background-color: #ffffff !important;"));
     assert!(compiled.contains("border-radius: 12px !important;"));
     assert!(compiled.contains("background-image: none !important;"));
+}
+
+#[test]
+fn bridges_only_composer_borders_declared_in_a_base_rule() {
+    let compiled = compile_safe_css(
+        r#"
+        [data-ds-part="composer"]:hover { border-color: #44aa88; border-top-width: 2px; }
+        [data-ds-part="composer"] {
+            border-color: #ffffff; border-width: 1px; border-style: solid; border-radius: 20px;
+        }
+        [data-ds-part="composer"]:focus-visible { border-width: 2px; border-style: dashed; }
+        [data-ds-part="sidebar"] { border-left-color: #ffffff; }
+        "#,
+    )
+    .unwrap();
+
+    for declaration in [
+        "border-color: #ffffff",
+        "border-color: #44aa88",
+        "border-width: 1px",
+        "border-width: 2px",
+        "border-style: solid",
+        "border-style: dashed",
+    ] {
+        assert!(
+            compiled.contains(&format!("--ds-community-composer-{declaration} !important;")),
+            "{compiled}"
+        );
+    }
+    for property in ["border-top-width", "border-radius", "border-left-color"] {
+        assert!(!compiled.contains(&format!("--ds-community-composer-{property}:")));
+    }
+
+    let state_only =
+        compile_safe_css(r#"[data-ds-part="composer"]:hover { border-color: #ffffff; }"#)
+            .unwrap();
+    assert!(!state_only.contains("--ds-community-composer-"));
 }
 
 #[test]
@@ -175,7 +230,8 @@ fn validates_external_dreamskin_fixture_when_provided() {
         return;
     };
     let bytes = std::fs::read(path).unwrap();
-    let package = validate_and_read_package(&bytes, "macos").unwrap();
+    let platform = if cfg!(windows) { "windows" } else { "macos" };
+    let package = validate_and_read_package(&bytes, platform).unwrap();
     assert!(
         package
             .manifest
@@ -183,4 +239,14 @@ fn validates_external_dreamskin_fixture_when_provided() {
             .iter()
             .any(|item| item == "safe-css")
     );
+
+    let temp = tempfile::tempdir().unwrap();
+    save_validated_dream_skin_package(temp.path(), &package).unwrap();
+    let stored = load_stored_dream_skin_theme(temp.path(), &package.manifest.theme_id).unwrap();
+    prepare_dream_skin_activation(temp.path(), &stored).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("dream-skin/theme/current.css")).unwrap(),
+        package.css
+    );
+    compile_safe_css(&package.css).unwrap();
 }

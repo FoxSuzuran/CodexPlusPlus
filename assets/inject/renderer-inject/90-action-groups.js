@@ -538,12 +538,14 @@
   // 变量名只按 `--thread-*-max-width` 这个形状匹配，同样不绑具体用途词。
   // accept 为 null 时默认排除页脚内部节点（内容容器的用法）；作曲器查找会传自己的判定。
   function conversationViewFindByThreadWidthVariable(root, accept = null) {
-    if (!root?.querySelectorAll) return null;
+    // CSS 变量会继承，兜底只检查会话内部，不能收窄整个应用外层。
+    if (!root?.querySelectorAll || root === document) return null;
     const candidates = Array.from(root.querySelectorAll("div"));
     return candidates.find((el) => {
       if (accept ? !accept(el) : conversationViewIsInsideFooter(el)) return false;
       try {
         const style = getComputedStyle(el);
+        if (!style.maxWidth || style.maxWidth === "none") return false;
         for (const name of conversationViewThreadWidthCustomProperties(style)) {
           if (String(style.getPropertyValue(name) || "").trim()) return true;
         }
@@ -989,4 +991,3 @@
   }
 
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
-

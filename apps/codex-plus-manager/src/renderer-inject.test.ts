@@ -1728,13 +1728,20 @@ return {
     documentValue,
     (node: FakeEl) => {
       // 同时充当 padding 来源与 CSSStyleDeclaration：兜底的变量反查会读索引属性。
+      const vars: Record<string, string> = {};
+      const ancestors: FakeEl[] = [];
+      for (let current: FakeEl | null = node; current; current = current.parentElement) {
+        ancestors.unshift(current);
+      }
+      ancestors.forEach((ancestor) => Object.assign(vars, ancestor.vars));
       const style: Record<string, unknown> = {
         paddingLeft: node.padding.left,
         paddingRight: node.padding.right,
-        length: Object.keys(node.vars).length,
-        getPropertyValue: (name: string) => node.vars[name] ?? "",
+        maxWidth: node.style.maxWidth || "none",
+        length: Object.keys(vars).length,
+        getPropertyValue: (name: string) => vars[name] ?? "",
       };
-      Object.keys(node.vars).forEach((name, index) => { style[index] = name; });
+      Object.keys(vars).forEach((name, index) => { style[index] = name; });
       return style;
     },
     () => undefined,
@@ -1836,11 +1843,16 @@ describe("renderer injection conversation view alignment", () => {
 
   it("两处类名都不对时按 CSS 变量反查宿主节点", async () => {
     const runtime = conversationViewRuntime(await readFile(rendererPath, "utf8"));
-    const scroller = runtime.append(runtime.root, runtime.el("div", "thread-scroll-container"));
+    const shell = runtime.append(runtime.root, runtime.el("div", "app-shell"));
+    shell.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    assert.equal(runtime.api.findContent(), null, "空白页不能把应用外层当作内容容器");
+    assert.equal(runtime.api.findComposer(), null, "空白页不能把应用外层当作作曲器");
+    const scroller = runtime.append(shell, runtime.el("div", "thread-scroll-container"));
     const host = runtime.append(scroller, runtime.el("div", "h-full flex"));
     // 既没有新版类名工具类，也没有 data-* 锚点，只剩 Codex 注入的 CSS 变量。
     const bare = runtime.append(host, runtime.el("div", "some-renamed-class"));
-    bare.vars["--thread-body-max-width"] = "calc(900px + 0px)";
+    assert.equal(runtime.api.findContent(), null, "继承宽度变量不等于节点受宽度限制");
+    bare.style.maxWidth = "900px";
     const found = runtime.api.findContent();
     assert.ok(found, "兜底候选应能反查到宿主节点");
     assert.equal(found, bare);

@@ -529,7 +529,7 @@ fn find_binding(text: &str) -> Option<Binding> {
     // 真实绑定形如 `new eh(r,this.clientApi,()=>je(this.runtime),this.turnEndedTracker,sv)`：
     // `new `、`r`、`this.clientApi`、`this.runtime`、`this.turnEndedTracker` 都是稳定形状，
     // 只有四个压缩标识符会随发版变化，所以逐个按结构吃下、再原样回填。
-    let live = text.find("this.turnEndedTracker")?;
+    let live = text.find("(r,this.clientApi,()=>")?;
     let start = text[..live].rfind("new ")?;
     let mut cursor = start;
     expect(text, &mut cursor, "new ")?;
@@ -1734,7 +1734,7 @@ mod tests {
                 "结构匹配应接受已知各代锚点：{source}"
             );
         }
-        let source = format!("prefix;{NEW_ANCHOR};suffix");
+        let source = format!("prefix;this.turnEndedTracker=i;{NEW_ANCHOR};suffix");
         let output =
             String::from_utf8(transform_binding(source.as_bytes(), path, &contract).unwrap())
                 .unwrap();
@@ -1745,7 +1745,7 @@ mod tests {
             ),
             "{output}"
         );
-        assert!(output.starts_with("prefix;new uh("));
+        assert!(output.starts_with("prefix;this.turnEndedTracker=i;new uh("));
         assert!(output.contains(";suffix\n"));
         assert!(output.ends_with(HELPER));
         // 自检口径：构造器与 policy 回调计数不变，元数据回调因多了一次实参而 +1。

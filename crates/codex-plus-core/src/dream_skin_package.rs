@@ -15,6 +15,8 @@ const CSS_LIMIT: usize = 262_144;
 const IMAGE_LIMIT: usize = 10 * 1024 * 1024;
 const LICENSE_LIMIT: usize = 65_536;
 const SIGNATURE_LIMIT: usize = 4096;
+// Dream Skin 客户端兼容级别；packageVersion / skinApiVersion 仍为 1。
+const SUPPORTED_DREAM_SKIN_VERSION: &str = "1.5.18";
 
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",
@@ -206,6 +208,14 @@ pub fn validate_safe_css(css: &str) -> anyhow::Result<()> {
 /// after validation so community rules cannot smuggle arbitrary declarations in.
 pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
     let rules = parse_safe_css(css)?;
+    // 仅桥接基础规则声明过的边框属性，避免状态规则改变原生输入框的默认边框。
+    let composer_base_border_properties = rules
+        .iter()
+        .filter(|rule| rule.part == "composer" && rule.selector.ends_with(']'))
+        .flat_map(|rule| &rule.declarations)
+        .filter(|(property, _)| property.starts_with("border-") && !property.ends_with("-radius"))
+        .map(|(property, _)| *property)
+        .collect::<HashSet<_>>();
     let mut compiled = String::from("@layer dreamskin-community {\n");
     for rule in rules {
         compiled.push_str("  ");
@@ -219,6 +229,11 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
             compiled.push_str(" !important;\n");
             if *property == "background-color" && matches!(rule.part, "sidebar" | "main" | "home") {
                 compiled.push_str("    background-image: none !important;\n");
+            }
+            if rule.part == "composer" && composer_base_border_properties.contains(property) {
+                compiled.push_str(&format!(
+                    "    --ds-community-composer-{property}: {value} !important;\n"
+                ));
             }
         }
         compiled.push_str("  }\n");
@@ -917,9 +932,9 @@ fn validate_manifest(manifest: &DreamSkinPackageManifest, platform: &str) -> any
     if !valid_semver(&manifest.version) || !valid_semver(&manifest.min_client_version) {
         bail!("manifest 版本号无效");
     }
-    if compare_semver(&manifest.min_client_version, "1.5.12").is_gt() {
+    if compare_semver(&manifest.min_client_version, SUPPORTED_DREAM_SKIN_VERSION).is_gt() {
         bail!(
-            "主题包需要更新版本的 Dream Skin 协议：{}",
+            "主题包需要 Dream Skin 客户端版本 {}，Codex++ 当前兼容至 {SUPPORTED_DREAM_SKIN_VERSION}",
             manifest.min_client_version
         );
     }

@@ -11360,14 +11360,15 @@
 
   function conversationViewResetOwnOffset(el) {
     if (!el) return;
-    const originalTransform = el.dataset.codexPlusConversationViewOriginalTransform || "";
     const originalLeft = el.dataset.codexPlusConversationViewOriginalLeft || "";
     if (el.style.left !== originalLeft) el.style.left = originalLeft;
-    if (el.style.transform !== originalTransform) el.style.transform = originalTransform;
-    const transform = String(el.style.transform || "").trim();
-    if (/^(translateX\([^)]*\)\s*)+$/i.test(transform)) {
-      el.style.transform = "";
-    }
+    conversationViewResetOwnTransform(el);
+  }
+
+  function conversationViewResetOwnTransform(el) {
+    const original = el.dataset.codexPlusConversationViewOriginalTransform || "";
+    const transform = /^(translateX\([^)]*\)\s*)+$/i.test(original.trim()) ? "" : original;
+    if (el.style.transform !== transform) el.style.transform = transform;
   }
 
   // #2085：设置值是**上限**，不是必须写死的宽度。容器比上限窄时按容器可用宽度
@@ -11448,26 +11449,31 @@
       return;
     }
     conversationViewState.targetsReported = false;
-    // 三阶段批量对齐，全程不出现读-写交替（否则退回 commit 82fb0924 修掉的强制重排）：
+    // 三阶段批量对齐：
     //   ① 读：一次性量完全部目标的宿主可用宽度，算出各自的有效上限；
-    //   ② 写：按算好的宽度统一写 style（宽度 + 复位自身偏移）；
+    //   ② 写：按算好的宽度统一写 style，保留已经正确的 left 偏移；
     //   ③ 读 + 写 left：统一读几何，决定是否需要再写 left。
     // #2085 的自适应计算落在 ①，写动作仍集中在 ②，与原有两阶段结构一致。
     const availableWidths = targets.map((el) => conversationViewAvailableWidth(el));
     const effectiveWidths = availableWidths.map((width) => conversationViewEffectiveWidth(width));
     targets.forEach((el, index) => {
       conversationViewApplyNativeWidth(el, effectiveWidths[index]);
-      conversationViewResetOwnOffset(el);
+      conversationViewResetOwnTransform(el);
     });
     const htmlCenter = conversationViewHtmlCenter();
     targets.forEach((el) => {
       const nativeRect = el.getBoundingClientRect();
       const bounds = conversationViewSessionRectFor(el);
-      if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) return;
+      if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) {
+        conversationViewResetOwnOffset(el);
+        return;
+      }
       const targetLeft = htmlCenter - nativeRect.width / 2;
       const delta = targetLeft - nativeRect.left;
       if (Math.abs(delta) > 0.5) {
-        const nextLeft = `${delta.toFixed(2)}px`;
+        // rect 已包含当前 left；累计差值，避免每帧复位再写回造成样式抖动。
+        const currentLeft = Number.parseFloat(getComputedStyle(el).left) || 0;
+        const nextLeft = `${(currentLeft + delta).toFixed(2)}px`;
         if (el.style.left !== nextLeft) el.style.left = nextLeft;
       }
     });
@@ -12120,12 +12126,21 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.type !== "attributes") return true;
+        const target = record.target;
+        if (target.closest?.("[data-codex-plus-ext]")) return false;
+        return record.oldValue !== target.getAttribute(record.attributeName);
+      });
+      if (relevant) scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
         subtree: true,
         attributes: true,
+        attributeOldValue: true,
         attributeFilter: ["class", "hidden", "data-state", "aria-hidden"],
       });
       conversationViewState.moObserved = true;
@@ -13589,7 +13604,6 @@
     runScanStep(scanLightweight);
     requestAnimationFrame(() => runScanStep(scanDeferred));
   }
-
   /**
    * 这个节点是不是 Codex++ 自己（或拓展）的 UI。
    *

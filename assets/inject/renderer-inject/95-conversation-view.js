@@ -1,12 +1,21 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.type !== "attributes") return true;
+        const target = record.target;
+        if (target.closest?.("[data-codex-plus-ext]")) return false;
+        return record.oldValue !== target.getAttribute(record.attributeName);
+      });
+      if (relevant) scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
         subtree: true,
         attributes: true,
+        attributeOldValue: true,
         attributeFilter: ["class", "hidden", "data-state", "aria-hidden"],
       });
       conversationViewState.moObserved = true;
@@ -1470,4 +1479,3 @@
     runScanStep(scanLightweight);
     requestAnimationFrame(() => runScanStep(scanDeferred));
   }
-

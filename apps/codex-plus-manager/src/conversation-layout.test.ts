@@ -131,3 +131,25 @@ test("extension attribute mutations are ignored, native and mixed records still 
   f.api.cleanup();
   assert.equal(f.stats.disconnects, 2);
 });
+
+test("detached conversation targets resolve from the rebuilt DOM", () => {
+  const stale = { isConnected: false, parentElement: null };
+  const host = { parentElement: null };
+  const replacement = { isConnected: true, parentElement: host };
+  const composer = { isConnected: true, parentElement: host };
+  const observed: unknown[] = [];
+  const state = { contentEl: stale, composerEl: composer };
+  const context = vm.createContext({
+    conversationViewState: state,
+    conversationViewFindContentEl: () => replacement,
+    conversationViewFindComposerEl: () => { throw new Error("Connected composer should be retained"); },
+    conversationViewObserveIfNeeded: (node: unknown) => { if (node) observed.push(node); },
+    document: { documentElement: {}, body: {} },
+  });
+  vm.runInContext(`${block("  function conversationViewResolveTargets(", "  function conversationViewAlignNow(")}
+    conversationViewResolveTargets();`, context);
+  assert.equal(state.contentEl, replacement);
+  assert.equal(state.composerEl, composer);
+  assert.ok(observed.includes(replacement));
+  assert.ok(observed.includes(host));
+});

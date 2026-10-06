@@ -107,11 +107,8 @@
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
   const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
   const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
-  // 这里只放确认支持 priority service tier 的官方模型——这个集合同时用于生成
-  // 「Fast 仅支持 …」的提示文案，塞进没验证过的模型等于对用户做出错误承诺。
-  // 第三方模型（deepseek 等）走下面 codexServiceTierFastSupportedForModel 里的
-  // 模型元数据判定：上游自己声明了 priority 才认。
-  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
+  // Only the original offline compatibility fallback remains above.
+  // Current and future models follow their capability metadata.
 
   function uniqueCodexAppAssetUrls(urls) {
     return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
@@ -125,9 +122,43 @@
     ]);
   }
 
+  // Follow native JS dependencies: chunk names change between releases.
+  async function* codexAppAssetSources() {
+    const page = new URL(location.href);
+    const queue = [...codexAppAssetCandidateUrls()];
+    const seen = new Set();
+    while (queue.length) {
+      const candidate = queue.shift();
+      let url;
+      try { url = new URL(candidate, page); } catch { continue; }
+      if (url.protocol !== page.protocol || url.host !== page.host
+          || !url.pathname.includes("/assets/") || !url.pathname.endsWith(".js")) continue;
+      url.hash = "";
+      if (seen.has(url.href)) continue;
+      seen.add(url.href);
+      let text;
+      try {
+        const response = await fetch(url.href);
+        if (!response.ok) continue;
+        text = await response.text();
+      } catch { continue; }
+      // Vite also records lazy imports in quoted dependency arrays.
+      for (const match of text.matchAll(/["']((?:\.{0,2}\/|assets\/)[^"'\n]+\.js(?:\?[^"'\n]*)?)["']/g)) {
+        try { queue.push(new URL(match[1], match[1].startsWith("assets/") ? page : url).href); } catch {}
+      }
+      yield { url: url.href, text };
+    }
+  }
+
   function codexAppAssetUrl(namePart) {
     if (!namePart) return "";
     return codexAppAssetCandidateUrls().find((url) => url.includes(namePart)) || "";
+  }
+
+  async function codexNativeRequestClientModule() {
+    await installCodexAppServerClientCapture();
+    const url = window.__codexPlusAppServerClientCapture?.url;
+    return url ? await import(url) : null;
   }
 
   async function codexAppAssetUrlFromScriptText(namePart) {
@@ -219,7 +250,7 @@
     const urls = codexAppAssetCandidateUrls();
     const preferred = urls.filter((url) => {
       const name = (url.split("/").pop() || "").toLowerCase();
-      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager/.test(name);
+      return /use-host-config|app-server-manager-signals|app-initial|app-shared|app-main|page-|chatg|signals|server-manager/.test(name);
     });
     // Prefer known request-client modules, then the larger application bundles.
     preferred.sort((left, right) => {
@@ -227,7 +258,8 @@
         const name = (url.split("/").pop() || "").toLowerCase();
         if (name.includes("use-host-config")) return 0;
         if (name.includes("app-server-manager-signals")) return 1;
-        if (name.includes("app-initial") && name.includes("app-main")) return 3;
+        if (name.includes("app-shared")) return 2;
+        if (name.includes("app-initial")) return 3;
         if (name.includes("app-main")) return 4;
         return 5;
       };
@@ -320,18 +352,8 @@
       const source = functionSource(candidate);
       return source.includes("set-setting") && source.includes("params") && source.includes("key");
     });
-    let getSetting = null;
-    let setSetting = null;
-    if (assetPrefix.startsWith("setting-storage-")) {
-      getSetting = typeof module?.n === "function" ? module.n : getSettingByCapability();
-      setSetting = typeof module?.s === "function" ? module.s : setSettingByCapability();
-    } else if (assetPrefix.startsWith("app-initial-")) {
-      getSetting = typeof module?.jut === "function" ? module.jut : getSettingByCapability();
-      setSetting = typeof module?.Put === "function" ? module.Put : setSettingByCapability();
-    } else {
-      getSetting = getSettingByCapability();
-      setSetting = setSettingByCapability();
-    }
+    const getSetting = getSettingByCapability();
+    const setSetting = setSettingByCapability();
     return typeof getSetting === "function" && typeof setSetting === "function"
       ? { n: getSetting, s: setSetting, assetPrefix }
       : null;
@@ -348,6 +370,13 @@
       } catch (error) {
         errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
       }
+    }
+    try {
+      const module = await codexNativeRequestClientModule();
+      const settingStorage = codexSettingStorageFromModule(module, "capability");
+      if (settingStorage) return settingStorage;
+    } catch (error) {
+      errors.push(`capability: ${error?.message || String(error)}`);
     }
     throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
@@ -385,7 +414,8 @@
   }
 
   function codexServiceTierFastModelListLabel() {
-    return Array.from(codexServiceTierSupportedFastModels).join(" / ");
+    const models = typeof codexPlusModelNames === "function" ? codexPlusModelNames() : [];
+    return models.filter(codexServiceTierFastSupportedForModel).join(" / ") || "模型元数据声明支持 Fast 的模型";
   }
 
   function normalizeCodexServiceTierModelName(model) {
@@ -418,15 +448,18 @@
   function codexServiceTierFastSupportedForModel(modelName) {
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    if (codexServiceTierSupportedFastModels.has(normalized)) return true;
-    // 不按名字猜：模型叫 deepseek 不代表它的中转站支持 priority tier。
-    // 只认上游模型元数据里明确声明的 priority。
+    // Explicit capabilities override the legacy offline fallback, including
+    // an explicit removal of Fast. New models need no whitelist edit.
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-      if (metadata && Array.isArray(metadata.serviceTiers) && metadata.serviceTiers.some((t) => String(t.id || t).toLowerCase() === "priority")) return true;
+      const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
+      const speeds = metadata?.additionalSpeedTiers ?? metadata?.additional_speed_tiers;
+      if (Array.isArray(tiers) || Array.isArray(speeds)) {
+        return (Array.isArray(tiers) && tiers.some((tier) => isFastServiceTierValue(tier?.id || tier)))
+          || (Array.isArray(speeds) && speeds.some((tier) => isFastServiceTierValue(tier?.id || tier)));
+      }
     } catch {}
-    // removed blanket apikey fallback to keep test contract (FAST only for known models)
-    return false;
+    return codexServiceTierSupportedFastModels.has(normalized);
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
@@ -449,7 +482,7 @@
     const normalizedModel = normalizeCodexServiceTierModelName(modelName);
     return {
       modelName: modelName || "",
-      supported: !!normalizedModel && codexServiceTierSupportedFastModels.has(normalizedModel),
+      supported: !!normalizedModel && codexServiceTierFastSupportedForModel(modelName),
     };
   }
 
@@ -487,4 +520,3 @@
   function codexServiceTierEffectiveMode(value) {
     return isFastServiceTierValue(value) ? "fast" : "standard";
   }
-

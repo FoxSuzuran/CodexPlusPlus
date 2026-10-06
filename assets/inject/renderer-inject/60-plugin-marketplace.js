@@ -1591,13 +1591,12 @@
   let chatsSortLastFetchAt = 0;
 
   function codexStateApiFromModule(module, assetPrefix = "") {
-    if (assetPrefix.startsWith("vscode-api-")) {
-      return typeof module?.n === "function" ? module.n : null;
-    }
-    if (assetPrefix.startsWith("app-initial-")) {
-      return typeof module?.qut === "function" ? module.qut : null;
-    }
-    return null;
+    return Object.values(module || {}).find((candidate) => {
+      if (typeof candidate !== "function") return false;
+      try {
+        return /vscode:\/\/codex\/(?:\$\{|["'`]\s*\+)/.test(String(candidate));
+      } catch { return false; }
+    }) || null;
   }
 
   async function codexStateApi() {
@@ -1613,6 +1612,13 @@
           errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
         }
       }
+      try {
+        const module = await codexNativeRequestClientModule();
+        const call = codexStateApiFromModule(module, "capability");
+        if (call) return call;
+      } catch (error) {
+        errors.push(`capability: ${error?.message || String(error)}`);
+      }
       throw new Error(`Codex 状态 API 不可用 (${errors.join("; ")})`);
     })();
     return await codexStateApiPromise;
@@ -1627,4 +1633,3 @@
     const result = await codexStateCall("get-global-state", { params: { key } });
     return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
   }
-

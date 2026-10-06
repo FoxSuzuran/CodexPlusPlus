@@ -169,16 +169,8 @@
 
   function modelReasoningEfforts(modelName) {
     const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
-    if (Array.isArray(supported) && supported.length > 0) {
-      const efforts = supported.map((entry) => ({ ...entry }));
-      const hasMax = efforts.some((e) => e.reasoningEffort === "max");
-      const hasUltra = efforts.some((e) => e.reasoningEffort === "ultra");
-      if (!hasMax) efforts.push({ reasoningEffort: "max", description: "Maximum reasoning depth for the hardest problems" });
-      if (!hasUltra) {
-        const shouldAddUltra = /sol|terra|gpt-5\.6|gpt-5\.5|gpt-5\.4|deepseek/i.test(String(modelName || ""));
-        if (shouldAddUltra || efforts.length >= 4) efforts.push({ reasoningEffort: "ultra", description: "Maximum reasoning with automatic task delegation" });
-      }
-      return efforts;
+    if (Array.isArray(supported)) {
+      return supported.map((entry) => ({ ...entry }));
     }
     return ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
   }
@@ -193,10 +185,16 @@
         changed = true;
       }
     }
-    if (Array.isArray(metadata.supportedReasoningEfforts) && metadata.supportedReasoningEfforts.length > 0) {
+    if (Array.isArray(metadata.supportedReasoningEfforts)) {
       const nextEfforts = modelReasoningEfforts(modelName);
       if (JSON.stringify(descriptor.supportedReasoningEfforts || []) !== JSON.stringify(nextEfforts)) {
         descriptor.supportedReasoningEfforts = nextEfforts;
+        changed = true;
+      }
+    }
+    for (const key of ["additionalSpeedTiers", "serviceTiers"]) {
+      if (Array.isArray(metadata[key]) && JSON.stringify(descriptor[key]) !== JSON.stringify(metadata[key])) {
+        descriptor[key] = metadata[key].map((entry) => typeof entry === "object" ? { ...entry } : entry);
         changed = true;
       }
     }
@@ -205,7 +203,7 @@
 
   function codexPlusModelDescriptor(modelName) {
     const metadata = codexPlusModelMetadata(modelName);
-    return {
+    const descriptor = {
       model: modelName,
       id: modelName,
       slug: modelName,
@@ -217,6 +215,8 @@
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
+    applyCodexPlusModelMetadata(descriptor, modelName);
+    return descriptor;
   }
 
   function modelArrayLooksPatchable(value, allowEmpty = false) {
@@ -629,54 +629,58 @@
   // 保证页面重载后自动重新捕获，且每次页面生命周期内只暂停一次。
     function locateCodexAppServerClientBreakpoint(text) {
     if (typeof text !== "string" || !text) return null;
-    const markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
-    if (markerIdx < 0) return null;
-    const anchorIdx = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIdx);
-    if (anchorIdx < 0 || markerIdx - anchorIdx > 220) return null;
-    const braceIdx = text.indexOf("{", anchorIdx);
-    if (braceIdx < 0) return null;
-    let lineNumber = 0;
-    let lastNewline = -1;
-    for (let i = 0; i < braceIdx; i++) {
-      if (text.charCodeAt(i) === 10) {
-        lineNumber += 1;
-        lastNewline = i;
+    let markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
+    while (markerIdx >= 0) {
+      const anchorIdx = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIdx);
+      if (anchorIdx >= 0 && markerIdx - anchorIdx <= 220) {
+        const braceIdx = text.indexOf("{", anchorIdx);
+        if (braceIdx >= 0 && braceIdx < markerIdx) {
+          let lineNumber = 0;
+          let lastNewline = -1;
+          for (let i = 0; i < braceIdx; i++) {
+            if (text.charCodeAt(i) === 10) {
+              lineNumber += 1;
+              lastNewline = i;
+            }
+          }
+          return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
+        }
       }
+      markerIdx = text.indexOf(codexAppServerClientCaptureMarker, markerIdx + 1);
     }
-    return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
+    return null;
   }
 
     let codexAppServerClientCaptureStarted = false;
+    let codexAppServerClientCapturePromise = null;
   async function installCodexAppServerClientCapture() {
-    if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
+    if (window.__codexPlusAppServerClientCapture?.version === codexAppServerModelRequestPatchVersion) return;
+    if (codexAppServerClientCaptureStarted) return await codexAppServerClientCapturePromise;
     codexAppServerClientCaptureStarted = true;
-    try {
+    codexAppServerClientCapturePromise = (async () => { try {
       if (typeof fetch !== "function") return;
-      const url = codexAppAssetUrl("app-initial-") || await codexAppAssetUrlFromScriptText("app-initial-");
-      if (!url) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "asset_url_missing" });
+      for await (const { url, text } of codexAppAssetSources()) {
+        const location = locateCodexAppServerClientBreakpoint(text);
+        if (!location) continue;
+        const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        window.__codexPlusAppServerClientCapture = {
+          url, urlRegex, ...location, version: codexAppServerModelRequestPatchVersion,
+        };
+        sendCodexPlusDiagnostic("app_server_client_capture_located", {
+          lineNumber: location.lineNumber,
+          columnNumber: location.columnNumber,
+        });
         return;
       }
-      const response = await fetch(url);
-      const text = response.ok ? await response.text() : "";
-      const location = locateCodexAppServerClientBreakpoint(text);
-      if (!location) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
-        return;
-      }
-      const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      window.__codexPlusAppServerClientCapture = { urlRegex, ...location };
-      sendCodexPlusDiagnostic("app_server_client_capture_located", {
-        lineNumber: location.lineNumber,
-        columnNumber: location.columnNumber,
-      });
+      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
       sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
         errorName: error?.name || "",
         errorMessage: error?.message || String(error),
       });
-    }
+    } })();
+    return await codexAppServerClientCapturePromise;
   }
 
     function installCodexAppServerClientPrototypePatch() {
@@ -930,4 +934,3 @@
     const timestamp = Number.parseInt(id.slice(0, 12), 16);
     return Number.isFinite(timestamp) ? timestamp : 0;
   }
-

@@ -91,7 +91,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         profile.name.trim()
     };
     let model_count = models.len();
-    let model_metadata = model_ui_metadata_map(&models);
+    let model_metadata = model_ui_metadata_map(&models, &profile.model_metadata);
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
         "path": home.join("config.toml").to_string_lossy(),
@@ -145,10 +145,25 @@ fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
     )
 }
 
-fn model_ui_metadata_map(models: &[String]) -> Value {
+fn model_ui_metadata_map(models: &[String], explicit_metadata: &str) -> Value {
+    let overrides = crate::relay_config::parse_model_metadata_map(explicit_metadata)
+        .unwrap_or_default();
     let mut metadata = Map::new();
     for model in models {
-        if let Some(value) = crate::model_suffix::model_ui_metadata(model) {
+        let slug = crate::model_suffix::parse_model_suffix(model).0;
+        let mut entry = crate::model_suffix::builtin_model_metadata(model)
+            .map(|metadata| metadata.entry)
+            .unwrap_or_else(|| json!({}));
+        let explicit = overrides.get(&slug.to_ascii_lowercase());
+        if let (Some(target), Some(fields)) =
+            (entry.as_object_mut(), explicit.and_then(Value::as_object))
+        {
+            target.extend(fields.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
+        if !entry.as_object().is_some_and(|entry| !entry.is_empty()) {
+            continue;
+        }
+        if let Some(value) = crate::model_suffix::model_ui_metadata_from_entry(&slug, &entry) {
             metadata.insert(model.clone(), value);
         }
     }
@@ -243,7 +258,7 @@ pub async fn read_codex_model_catalog_from_home(
         "not_configured"
     };
     let responses_api = preferred_responses_api_status(&source_statuses);
-    let model_metadata = model_ui_metadata_map(&models);
+    let model_metadata = model_ui_metadata_map(&models, "");
 
     json!({
         "status": status,
@@ -1017,6 +1032,31 @@ fn unquote_toml_string(value: &str) -> String {
 #[cfg(test)]
 mod model_fetch_tests {
     use super::*;
+
+    #[test]
+    fn explicit_model_capabilities_override_auto_metadata_in_ui() {
+        let metadata = model_ui_metadata_map(
+            &["future-model".to_string()],
+            r#"{"FUTURE-MODEL[512K]":{
+                "default_reasoning_level":"high",
+                "supported_reasoning_levels":[{"effort":"high"}],
+                "additional_speed_tiers":["fast"],
+                "service_tiers":[{"id":"priority"}]
+            }}"#,
+        );
+        assert_eq!(metadata["future-model"]["defaultReasoningEffort"], "high");
+        assert_eq!(
+            metadata["future-model"]["additionalSpeedTiers"],
+            json!(["fast"])
+        );
+        assert_eq!(
+            metadata["future-model"]["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn business_error_message_detects_zhipu_style_envelope() {

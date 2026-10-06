@@ -897,13 +897,6 @@
   }
 
   function codexServiceTierDispatcherFromModule(module) {
-    const directSingleton = module?.idt;
-    if (directSingleton
-        && typeof directSingleton === "object"
-        && typeof directSingleton.dispatchMessage === "function"
-        && typeof directSingleton.subscribe === "function") {
-      return directSingleton;
-    }
     const values = module && typeof module === "object" ? Object.values(module) : [];
     const singleton = values.find((candidate) => candidate
       && typeof candidate === "object"
@@ -957,6 +950,15 @@
         } catch (error) {
           errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
         }
+      }
+      try {
+        const module = await codexNativeRequestClientModule();
+        const dispatcher = codexServiceTierDispatcherFromModule(module);
+        if (dispatcher && codexServiceTierDispatcherPatchable(dispatcher)) {
+          return { dispatcher, assetPrefix: "capability" };
+        }
+      } catch (error) {
+        errors.push(`capability: ${error?.message || String(error)}`);
       }
       throw new Error(`Codex dispatcher unavailable (${errors.join("; ")})`);
     };
@@ -1081,4 +1083,3 @@
       return false;
     }
   }
-

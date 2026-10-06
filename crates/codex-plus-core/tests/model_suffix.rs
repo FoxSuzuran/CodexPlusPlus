@@ -163,6 +163,9 @@ fn build_catalog_json_uses_fallback_for_no_suffix_entries() {
 
 #[test]
 fn build_catalog_json_uses_runtime_compatible_gpt56_metadata() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
     let entries = collect_catalog_entries(
         "gpt-5.6-sol\ngpt-5.6-terra\ngpt-5.6-luna",
         &HashMap::new(),
@@ -236,6 +239,9 @@ fn build_catalog_json_preserves_template_responses_lite_behavior() {
 
 #[test]
 fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
     assert!(requires_bundled_metadata_catalog("gpt-6-astra"));
@@ -287,6 +293,9 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
 
 #[test]
 fn model_ui_metadata_exposes_fast_service_tier_capability() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
     let metadata = model_ui_metadata("gpt-5.6-sol").expect("Sol metadata should exist");
 
     assert_eq!(
@@ -298,6 +307,9 @@ fn model_ui_metadata_exposes_fast_service_tier_capability() {
 
 #[test]
 fn gpt61_sol_metadata_exposes_max_ultra_fast_and_272k_default() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
     use codex_plus_core::model_suffix::requires_bundled_metadata_catalog;
 
     assert!(requires_bundled_metadata_catalog("gpt-6.1-sol"));
@@ -601,9 +613,9 @@ fn compat_overlay_composes_with_runtime_cache_base() {
     let catalog: serde_json::Value =
         serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
     let model = &catalog["models"][0];
-    // 精调覆盖：窗口与 Fast 档保持产品级取值
-    assert_eq!(model["context_window"], 272_000);
-    assert_eq!(model["max_context_window"], 872_000);
+    // 显式运行时能力优先；未声明的 Fast 能力仍由兼容层回退。
+    assert_eq!(model["context_window"], 400_000);
+    assert_eq!(model["max_context_window"], 400_000);
     assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
     // 官方流入：精调未定义的截断策略取缓存最新值
     assert_eq!(model["truncation_policy"]["limit"], 999);
@@ -629,6 +641,38 @@ fn builtin_model_metadata_matches_with_source() {
     // 未命中 → None（生成时回退 gpt-5.5 模板）
     assert!(builtin_model_metadata("unknown-model-xyz").is_none());
     assert!(builtin_model_metadata("").is_none());
+}
+
+#[test]
+fn runtime_capabilities_replace_stale_compatibility_defaults() {
+    let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let cache = serde_json::json!({
+        "models": [{
+            "slug": "gpt-6.1-sol",
+            "context_window": 512_000,
+            "max_context_window": 900_000,
+            "default_reasoning_level": "high",
+            "supported_reasoning_levels": [{"effort": "high", "description": "runtime"}],
+            "additional_speed_tiers": [],
+            "service_tiers": []
+        }]
+    });
+    std::fs::write(temp.path().join("models_cache.json"), cache.to_string()).unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+    let ui = model_ui_metadata("gpt-6.1-sol").unwrap();
+    assert_eq!(ui["defaultReasoningEffort"], "high");
+    assert_eq!(ui["supportedReasoningEfforts"].as_array().unwrap().len(), 1);
+    assert_eq!(ui["additionalSpeedTiers"], serde_json::json!([]));
+    let entries = collect_catalog_entries("gpt-6.1-sol", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["context_window"], 512_000);
+    assert_eq!(catalog["models"][0]["max_context_window"], 900_000);
+    let explicit: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, Some(200_000))).unwrap();
+    assert_eq!(explicit["models"][0]["context_window"], 200_000);
+    assert_eq!(explicit["models"][0]["max_context_window"], 200_000);
 }
 
 #[test]
@@ -772,6 +816,8 @@ fn gpt6_sol_luna_metadata_matches_official_efforts_fast_and_default_window() {
     // catalog 生成链会读 CODEX_HOME/models_cache.json，与其他临时改写
     // CODEX_HOME 的测试互斥。
     let _lock = RUNTIME_CACHE_ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
 
     let entries = collect_catalog_entries(
         "gpt-6-sol\ngpt-6-luna",

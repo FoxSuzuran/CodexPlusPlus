@@ -323,12 +323,15 @@ pub fn requires_bundled_metadata_catalog(slug: &str) -> bool {
 
 pub fn model_ui_metadata(slug: &str) -> Option<Value> {
     let resolved = resolve_builtin_metadata(slug)?;
-    let metadata = resolved.entry;
-    let normalized_slug = resolved.slug;
+    model_ui_metadata_from_entry(&resolved.slug, &resolved.entry)
+}
+
+pub(crate) fn model_ui_metadata_from_entry(slug: &str, metadata: &Value) -> Option<Value> {
     let levels = metadata
-        .get("supported_reasoning_levels")?
-        .as_array()?
-        .iter()
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|level| {
             let effort = level.get("effort")?.as_str()?.trim();
             if effort.is_empty() {
@@ -347,7 +350,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
         "displayName": metadata
             .get("display_name")
             .and_then(Value::as_str)
-            .unwrap_or(normalized_slug.as_str()),
+            .unwrap_or(slug),
         "description": metadata
             .get("description")
             .and_then(Value::as_str)
@@ -409,12 +412,30 @@ fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
         // Compatibility metadata is an overlay. Keep the same runtime/bundled
         // base that the catalog builder uses, then apply its product/vendor
         // fields on top. This keeps UI lookup and generated catalogs identical.
-        let mut base = runtime_models_cache_entry(&slug)
+        let runtime = runtime_models_cache_entry(&slug);
+        let mut base = runtime
+            .clone()
             .or_else(|| bundled_template_entry(&slug))
             .unwrap_or_else(|| first_bundled_template_entry().unwrap_or_else(|| json!({})));
         if let (Some(target), Some(source)) = (base.as_object_mut(), metadata.entry.as_object()) {
             for (key, value) in source {
                 target.insert(key.clone(), value.clone());
+            }
+            // The official app refreshes these capabilities independently of
+            // Codex++. Compatibility assets only fill missing declarations.
+            if let Some(runtime) = runtime.as_ref().and_then(Value::as_object) {
+                for key in [
+                    "context_window",
+                    "max_context_window",
+                    "default_reasoning_level",
+                    "supported_reasoning_levels",
+                    "additional_speed_tiers",
+                    "service_tiers",
+                ] {
+                    if let Some(value) = runtime.get(key) {
+                        target.insert(key.to_string(), value.clone());
+                    }
+                }
             }
         }
         metadata.entry = base;

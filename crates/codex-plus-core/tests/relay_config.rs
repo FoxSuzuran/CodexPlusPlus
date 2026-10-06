@@ -4940,16 +4940,20 @@ base_url = "https://relay.example/v1"
     )
     .unwrap();
     for model in catalog["models"].as_array().unwrap() {
-        let mut expected_efforts = vec!["none", "low", "medium", "high", "xhigh", "max"];
-        if model["slug"] == "gpt-6-sol" {
-            expected_efforts.push("ultra");
-        }
-        assert_eq!(model["context_window"], 272_000);
-        assert_eq!(model["max_context_window"], 872_000);
+        // This integration path uses the live official cache. Verify that
+        // applying the profile preserves its declarations rather than
+        // asserting stale bundled capabilities for every user's account.
+        let capabilities = codex_plus_core::model_suffix::builtin_model_metadata(
+            model["slug"].as_str().unwrap(),
+        )
+        .unwrap()
+        .entry;
+        assert_eq!(model["context_window"], capabilities["context_window"]);
+        assert_eq!(model["max_context_window"], capabilities["max_context_window"]);
         assert_eq!(model["use_responses_lite"], false);
         assert_eq!(model["multi_agent_version"], "v2");
-        assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
-        assert_eq!(model["service_tiers"][0]["id"], "priority");
+        assert_eq!(model["additional_speed_tiers"], capabilities["additional_speed_tiers"]);
+        assert_eq!(model["service_tiers"], capabilities["service_tiers"]);
         assert_eq!(
             model["supported_reasoning_levels"]
                 .as_array()
@@ -4957,7 +4961,12 @@ base_url = "https://relay.example/v1"
                 .iter()
                 .map(|level| level["effort"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            expected_efforts
+            capabilities["supported_reasoning_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|level| level["effort"].as_str().unwrap())
+                .collect::<Vec<_>>()
         );
     }
     assert_eq!(catalog["models"][0]["slug"], "gpt-6-sol");

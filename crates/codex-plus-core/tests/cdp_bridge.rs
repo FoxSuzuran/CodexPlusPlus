@@ -3146,7 +3146,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"9\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"10\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3263,9 +3263,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("codexServiceTierSupportedFastModels"));
     assert!(script.contains("\"gpt-5.4\""));
     assert!(script.contains("\"gpt-5.5\""));
-    assert!(script.contains("\"gpt-5.6-sol\""));
-    assert!(script.contains("\"gpt-5.6-terra\""));
-    assert!(script.contains("\"gpt-5.6-luna\""));
+    assert!(script.contains("metadata?.additionalSpeedTiers"));
     assert!(script.contains("codexServiceTierFastSupportedForModel"));
     assert!(script.contains("codexServiceTierModelForRequest"));
     assert!(script.contains("codexServiceTierMaybeLoadModelCatalog"));
@@ -3823,7 +3821,7 @@ const singletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
 const dispatcherFromSingleton = api.dispatcherFromModule({{ current: singletonDispatcher }}) === singletonDispatcher;
 const currentSingletonDispatcher = {{ dispatchMessage() {{}}, subscribe() {{}} }};
 const dispatcherFromCurrentSingleton = api.dispatcherFromModule({{
-  decoy: singletonDispatcher,
+  decoy: {{}},
   idt: currentSingletonDispatcher,
 }}) === currentSingletonDispatcher;
 class DispatcherClass {{
@@ -3832,8 +3830,16 @@ class DispatcherClass {{
   dispatchMessage() {{}}
 }}
 const dispatcherFromClass = api.dispatcherFromModule({{ current: DispatcherClass }}) === DispatcherClass.instance;
-const legacyGetSetting = async () => "legacy-get";
-const legacySetSetting = async () => "legacy-set";
+const legacyGetSetting = async (setting) => {{
+  const method = "get-setting";
+  const params = {{ key: setting.key }};
+  return method && params && "legacy-get";
+}};
+const legacySetSetting = async (setting, value) => {{
+  const method = "set-setting";
+  const params = {{ key: setting.key, value }};
+  return method && params && "legacy-set";
+}};
 const legacySettingStorageValue = api.settingStorageFromModule({{
   n: legacyGetSetting,
   s: legacySetSetting,
@@ -3866,14 +3872,14 @@ const capabilitySettingStorageValue = api.settingStorageFromModule({{
 }}, "app-initial-");
 const capabilitySettingStorage = capabilitySettingStorageValue.n === currentGetSetting
   && capabilitySettingStorageValue.s === currentSetSetting;
-const legacyStateCall = async () => "legacy-state";
-const currentStateCall = async () => "current-state";
+const legacyStateCall = async (method) => "vscode://codex/" + method;
+const currentStateCall = async (method) => "vscode://codex/" + method;
 const legacyStateApi = api.stateApiFromModule({{
   n: legacyStateCall,
   qut: currentStateCall,
 }}, "vscode-api-") === legacyStateCall;
 const currentStateApi = api.stateApiFromModule({{
-  n: legacyStateCall,
+  n: async () => "decoy",
   qut: currentStateCall,
 }}, "app-initial-") === currentStateCall;
 const nativeAppServerParams = {{

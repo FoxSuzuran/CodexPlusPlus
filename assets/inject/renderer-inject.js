@@ -495,7 +495,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "3";
+  const codexServiceTierBadgeVersion = "4";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -545,8 +545,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "10";
+  const codexServiceTierRequestOverrideVersion = "11";
+  const codexAppServerModelRequestPatchVersion = "11";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
@@ -1848,6 +1848,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        gap: 4px;
         flex: 0 0 auto;
         height: 24px;
         min-width: 54px;
@@ -1870,6 +1871,18 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
+      .${codexServiceTierBadgeClass} .codex-fast-icon { opacity: .45; filter: grayscale(1); }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] .codex-fast-icon { opacity: 1; filter: none; }
+      .codex-fast-slash-menu { position: fixed; z-index: 2147483000; width: 340px; padding: 4px;
+        border: 1px solid var(--codex-plus-border); border-radius: 10px;
+        background: var(--codex-plus-bg-elevated); color: var(--codex-plus-text);
+        box-shadow: 0 4px 16px #0003; font-family: inherit; font-size: 13px; line-height: 1.4; }
+      .codex-fast-slash-menu button { display: flex; justify-content: space-between; align-items: center;
+        width: 100%; padding: 6px 8px; gap: 12px; border: 0; border-radius: 6px; color: inherit;
+        background: transparent; cursor: pointer; text-align: left; font: inherit; }
+      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu button:focus-visible { background: #10a37f26; }
+      .codex-fast-slash-menu button:disabled { opacity: .6; cursor: not-allowed; }
+      [data-codex-fast-slash-status] { font-size: 11px; opacity: .75; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -3099,7 +3112,6 @@
     if (!width) return;
     setCodexPlusSetting("conversationViewMaxWidth", width);
   }
-
   function renderCodexPlusMenu() {
     const settings = codexPlusSettings();
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
@@ -3571,6 +3583,11 @@
     const key = typeof validThreadScrollSessionKey === "function"
       ? validThreadScrollSessionKey(threadId)
       : String(threadId || "");
+    if (typeof codexServiceTierComposerModelName === "function"
+        && (!key || key === currentSessionRef()?.session_id)) {
+      const selected = codexServiceTierComposerModelName();
+      if (selected) return selected;
+    }
     if (key) {
       const cached = codexServiceTierThreadModels.get(key);
       if (cached) return cached;
@@ -3594,7 +3611,8 @@
   }
 
   function codexServiceTierModelForRequest(params, modelHint = "") {
-    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
+    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint)
+      || codexServiceTierUiModelName(params?.threadId || params?.conversationId || currentSessionRef()?.session_id || "");
   }
 
   function codexServiceTierFastSupportedForModel(modelName) {
@@ -3774,7 +3792,11 @@
         entries,
         ...(draft ? { draft } : {}),
       }));
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      showToast("服务模式保存失败，请检查本地存储后重试", null);
+      return false;
+    }
   }
 
   function normalizeThreadServiceTierDraft(value) {
@@ -3816,7 +3838,7 @@
     } else {
       state.draft = { mode: normalizedMode, at: Date.now() };
     }
-    writeThreadServiceTierState(state);
+    return writeThreadServiceTierState(state);
   }
 
   function bindDraftServiceTierToThread(threadId) {
@@ -3831,8 +3853,7 @@
     }
     if (!state.entries[key]) state.entries[key] = { mode: draft.mode, at: Date.now() };
     state.draft = null;
-    writeThreadServiceTierState(state);
-    return true;
+    return writeThreadServiceTierState(state);
   }
 
   function setCodexServiceTierControlMode(mode) {
@@ -3860,7 +3881,7 @@
     } else {
       state.defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
     }
-    writeThreadServiceTierState(state);
+    if (!writeThreadServiceTierState(state)) return false;
     refreshCodexServiceTierControls();
     const labels = {
       inherit: "继承 Codex 默认设置",
@@ -3884,13 +3905,6 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (activeThreadId) {
-      bindDraftServiceTierToThread(activeThreadId);
-      // 界面判 Fast 用「当前线程的模型」，不再回落全局 catalog：线程中途换模型后
-      // 全局值可能是旧的，会让 UI 落后一拍（issue #1463）。
-      const activeModel = codexServiceTierUiModelName(activeThreadId);
-      if (activeModel) codexServiceTierRememberThreadModel(activeThreadId, activeModel);
-    }
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
@@ -3919,35 +3933,61 @@
   function codexServiceTierBadgeState() {
     if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
-    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "读取中", disabled: true, title: "服务模式：正在读取" };
+    if (codexServiceTierState.status === "failed") return { tier: "failed", label: "读取失败", title: "服务模式：读取失败，点击重试" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
-    const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
+    const inheritedDefault = codexServiceTierState.effectiveServiceTier == null
+      && (codexServiceTierState.controlMode === "inherit"
+        || (codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit"
+          && codexServiceTierState.defaultMode === "inherit"));
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
       ? `当前 thread：${codexServiceTierState.threadMode}`
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：仅支持 ${codexServiceTierFastModelListLabel()}；对支持模型使用 service_tier=\"priority\"，官方说明其延迟更低且更一致，但会按更高价格计费；rate limit 与 Standard 共享，流量快速上涨时可能回落到 Standard。`,
+      `下一轮：${scope}`,
+      "点击仅切换当前会话；新会话继续继承现有默认设置。",
+      "Fast 使用模型元数据声明的加速能力，实际支持与计费以服务方为准。",
+      codexServiceTierRequestStatusMessage(),
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return { tier: "unsupported", label: "不支持 Fast", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；下一轮按 Standard 发送，点击关闭 Fast。` };
     }
-    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
+    if (effectiveMode === "fast") return { tier: "fast", label: "Fast", title };
     if (inheritedDefault) return { tier: "default", label: "默认", title };
-    return { tier: "standard", label: "standard", title };
+    return { tier: "standard", label: "Standard", title };
+  }
+
+  function setCodexServiceTierAttribute(node, name, value) {
+    const text = String(value);
+    if (node.getAttribute(name) !== text) node.setAttribute(name, text);
+  }
+
+  function setCodexServiceTierProperty(node, name, value) {
+    if (node[name] !== value) node[name] = value;
   }
 
   function refreshCodexServiceTierBadges() {
     const state = codexServiceTierBadgeState();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((node) => {
-      node.dataset.tier = state.tier;
-      node.dataset.disabled = String(!!state.disabled);
-      node.textContent = state.label;
-      node.title = state.title;
-      node.setAttribute("aria-label", state.title);
+      setCodexServiceTierAttribute(node, "data-tier", state.tier);
+      setCodexServiceTierAttribute(node, "data-disabled", !!state.disabled);
+      setCodexServiceTierAttribute(node, "aria-disabled", !!state.disabled);
+      setCodexServiceTierAttribute(node, "aria-pressed", state.tier === "fast");
+      setCodexServiceTierAttribute(node, "title", state.title);
+      setCodexServiceTierAttribute(node, "aria-label", `下一轮 ${state.label}，点击切换当前会话。${state.title}`);
+      let label = node.querySelector("[data-codex-fast-label]");
+      if (!label) {
+        node.textContent = "";
+        const icon = document.createElement("span");
+        icon.textContent = "⚡";
+        icon.setAttribute("aria-hidden", "true");
+        icon.className = "codex-fast-icon";
+        label = document.createElement("span");
+        label.dataset.codexFastLabel = "true";
+        node.append(icon, label);
+      }
+      if (label.textContent !== state.label) label.textContent = state.label;
     });
   }
 
@@ -3964,46 +4004,48 @@
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
-      node.hidden = !featureEnabled;
+      setCodexServiceTierProperty(node, "hidden", !featureEnabled);
     });
     document.querySelectorAll("[data-codex-service-tier-status]").forEach((node) => {
-      node.dataset.status = fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed"));
-      node.textContent = featureEnabled
+      setCodexServiceTierAttribute(node, "data-status", fastUnsupportedActive ? "unsupported" : (featureEnabled && backendConnected ? (codexServiceTierState.status || "loading") : (backendChecking ? "loading" : "failed")));
+      const text = featureEnabled
         ? (backendConnected ? (codexServiceTierState.message || "未读取") : (backendChecking ? "正在检查后端…" : "未连接"))
         : "未启用";
+      setCodexServiceTierProperty(node, "textContent", text);
     });
     document.querySelectorAll("[data-codex-service-tier-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "inherit");
+      setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "inherit");
     });
     document.querySelectorAll("[data-codex-service-tier-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-standard");
+      setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "global-standard");
     });
     document.querySelectorAll("[data-codex-service-tier-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "global-fast");
-      button.title = fastTitle;
+      setCodexServiceTierProperty(button, "disabled", fastDisabled);
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "global-fast");
+      setCodexServiceTierAttribute(button, "title", fastTitle);
     });
     document.querySelectorAll("[data-codex-service-tier-custom]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom");
+      setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "custom");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
+      setCodexServiceTierAttribute(button, "title", `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`);
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
-      button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
+      setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected || codexServiceTierState.status === "loading");
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "standard");
     });
     document.querySelectorAll("[data-codex-service-tier-thread-fast]").forEach((button) => {
-      button.disabled = fastDisabled;
-      button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
-      button.title = fastTitle;
+      setCodexServiceTierProperty(button, "disabled", fastDisabled);
+      setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
+      setCodexServiceTierAttribute(button, "title", fastTitle);
     });
     refreshCodexServiceTierBadges();
+    refreshCodexFastSlashMenu();
   }
 
   async function getConfigTomlServiceTier() {
@@ -4038,12 +4080,21 @@
     return { serviceTier: appSetting, configServiceTier: configTier, serviceTierSource };
   }
 
+  let codexServiceTierLoadPromise = null;
   async function loadCodexServiceTierState() {
+    if (codexServiceTierLoadPromise) return codexServiceTierLoadPromise;
     if (!codexPlusSettings().serviceTierControls) {
       codexServiceTierState = { ...codexServiceTierState, status: "idle", message: "未启用" };
       refreshCodexServiceTierControls();
       return;
     }
+    codexServiceTierLoadPromise = readCodexServiceTierState().finally(() => {
+      codexServiceTierLoadPromise = null;
+    });
+    return codexServiceTierLoadPromise;
+  }
+
+  async function readCodexServiceTierState() {
     codexServiceTierState = { ...codexServiceTierState, status: "loading", message: "正在读取…" };
     refreshCodexServiceTierControls();
     try {
@@ -4075,7 +4126,7 @@
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
-      return;
+      return false;
     }
     const normalizedMode = normalizeCodexThreadServiceTierMode(mode);
     if (normalizedMode === "fast") {
@@ -4084,21 +4135,26 @@
         codexServiceTierMaybeLoadModelCatalog(true);
         showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
         refreshCodexServiceTierControls();
-        return;
+        return false;
       }
     }
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    setCodexThreadServiceTierOverride(threadId, normalizedMode);
+    if (!setCodexThreadServiceTierOverride(threadId, normalizedMode)) return false;
     refreshCodexServiceTierControls();
     const target = threadId ? "当前 thread" : "新 thread 草稿";
     showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
+    return true;
   }
 
   function toggleCodexServiceTierFromBadge() {
+    if (codexServiceTierState.status === "failed") {
+      void loadCodexServiceTierState();
+      return false;
+    }
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
-      return;
+      return false;
     }
     syncCodexServiceTierEffectiveState();
     const nextMode = codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast";
@@ -4108,10 +4164,10 @@
         codexServiceTierMaybeLoadModelCatalog(true);
         showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
         refreshCodexServiceTierControls();
-        return;
+        return false;
       }
     }
-    setCodexThreadServiceTierMode(nextMode);
+    return setCodexThreadServiceTierMode(nextMode);
   }
 
   function codexServiceTierRequestMethods() {
@@ -4149,7 +4205,7 @@
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
     if (controlMode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
+      const inheritedServiceTier = codexServiceTierRequestedValue(params);
       const override = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
       return override.fastBlocked ? override : null;
     }
@@ -4166,7 +4222,7 @@
     const override = threadId ? codexThreadServiceTierOverride(threadId) : codexThreadServiceTierDraft();
     const mode = codexServiceTierEffectiveThreadMode(override?.mode, defaultMode);
     if (mode === "inherit") {
-      const inheritedServiceTier = params.serviceTier ?? params.service_tier ?? codexServiceTierInheritedValue();
+      const inheritedServiceTier = codexServiceTierRequestedValue(params);
       const inheritedOverride = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
       return inheritedOverride.fastBlocked ? { ...inheritedOverride, threadId, mode } : null;
     }
@@ -4179,7 +4235,14 @@
 
   function applyCodexServiceTierRequestOnly(method, params, threadIdHint = "") {
     const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
-    if (!override) return params;
+    if (!override) {
+      if (codexPlusSettings().serviceTierControls && codexServiceTierRequestMethods().has(method)
+          && Object.prototype.hasOwnProperty.call(params || {}, "serviceTier") && params.serviceTier !== undefined
+          && Object.prototype.hasOwnProperty.call(params, "service_tier") && params.service_tier !== params.serviceTier) {
+        return { ...params, service_tier: params.serviceTier };
+      }
+      return params;
+    }
     const nextParams = { ...(params || {}), serviceTier: override.serviceTier };
     if (Object.prototype.hasOwnProperty.call(nextParams, "service_tier") || override.fastBlocked) {
       nextParams.service_tier = override.serviceTier;
@@ -4199,6 +4262,312 @@
   function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
     const providerParams = applyCodexRemoteSessionProviderOverride(method, params);
     return applyCodexServiceTierRequestOnly(method, providerParams, threadIdHint);
+  }
+
+  // null 是显式 Standard；只有属性缺席时才能继承。camelCase 为 app-server 契约。
+  function codexServiceTierRequestedValue(params) {
+    if (Object.prototype.hasOwnProperty.call(params || {}, "serviceTier") && params.serviceTier !== undefined) return params.serviceTier;
+    if (Object.prototype.hasOwnProperty.call(params || {}, "service_tier") && params.service_tier !== undefined) return params.service_tier;
+    return codexServiceTierInheritedValue();
+  }
+
+  const codexServiceTierRequests = window.__codexPlusServiceTierRequests
+    || (window.__codexPlusServiceTierRequests = new Map());
+
+  function beginCodexServiceTierRequest(method, params) {
+    if (!codexPlusSettings().serviceTierControls || method !== "turn/start") return null;
+    const threadId = codexServiceTierThreadIdForRequest(method, params);
+    if (!threadId) return null;
+    const observation = {
+      threadId,
+      requestedTier: codexServiceTierRequestedValue(params) ?? null,
+      actualTier: null,
+      failed: false,
+    };
+    codexServiceTierRequests.delete(threadId);
+    codexServiceTierRequests.set(threadId, observation);
+    while (codexServiceTierRequests.size > 64) codexServiceTierRequests.delete(codexServiceTierRequests.keys().next().value);
+    refreshCodexServiceTierRequestStatus();
+    return observation;
+  }
+
+  function observeCodexServiceTierRequestResult(method, params, result, failed = false, request = null) {
+    if (!codexPlusSettings().serviceTierControls || !codexServiceTierRequestMethods().has(method)) return;
+    const createdId = method === "thread/start"
+      ? validThreadScrollSessionKey(result?.thread?.id || result?.result?.thread?.id || codexRemoteSessionStartedThreadId(result)) : "";
+    const threadId = createdId || request?.threadId || codexServiceTierThreadIdForRequest(method, params);
+    if (!failed && createdId) bindDraftServiceTierToThread(createdId);
+    if (!threadId || method !== "turn/start") return;
+    if (request && codexServiceTierRequests.get(threadId) !== request) return;
+    // 只接受响应中的协议字段。thread/turn 的配置快照和驼峰字段可能只是请求回显。
+    const actual = result?.response?.service_tier ?? result?.service_tier;
+    const actualTier = typeof actual === "string" && /^[a-z0-9_-]{1,64}$/i.test(actual)
+      ? actual.toLowerCase() : null;
+    const observation = request || beginCodexServiceTierRequest(method, params);
+    if (!observation) return;
+    observation.actualTier = actualTier;
+    observation.failed = failed;
+    refreshCodexServiceTierRequestStatus();
+  }
+
+  function refreshCodexServiceTierRequestStatus() {
+    // 状态展示失败单独报告，不能改变原生请求结果或替换原始请求错误。
+    try {
+      refreshCodexServiceTierControls();
+    } catch (error) {
+      sendCodexPlusDiagnostic("service_tier_status_refresh_failed", { errorName: error?.name || "" });
+    }
+  }
+
+  function codexServiceTierRequestStatusMessage() {
+    const observation = codexServiceTierRequests.get(validThreadScrollSessionKey(currentSessionRef()?.session_id));
+    if (!observation) return "本轮：尚无可关联的请求结果。";
+    if (observation.failed) return "本轮：请求失败，服务方未确认。";
+    if (observation.actualTier != null) {
+      const label = isFastServiceTierValue(observation.actualTier) ? "Fast"
+        : observation.actualTier === "default" ? "Standard" : observation.actualTier;
+      return `本轮服务方确认：${label}；请求参数：${observation.requestedTier || "Standard"}。`;
+    }
+    return isFastServiceTierValue(observation.requestedTier)
+      ? "本轮：已请求 Fast，服务方未确认。"
+      : "本轮：请求使用 Standard，服务方未确认。";
+  }
+
+  function parseCodexFastCommand(text) {
+    const match = /^\/fast(?:[ \t]+(on|off|status))?$/i.exec(String(text || "").trim());
+    return match ? (match[1]?.toLowerCase() || "toggle") : null;
+  }
+
+  function executeCodexFastCommand(action) {
+    syncCodexServiceTierEffectiveState();
+    if (action === "status") {
+      showToast(codexServiceTierBadgeState().title, null);
+      return true;
+    }
+    if (action === "toggle") return toggleCodexServiceTierFromBadge();
+    if (action === "on" || action === "off") return setCodexThreadServiceTierMode(action === "on" ? "fast" : "standard");
+    return false;
+  }
+
+  function codexFastComposerEditors() {
+    return Array.from(document.querySelectorAll(
+      "[data-codex-composer][contenteditable='true'], [data-composer-markdown][contenteditable='true'], .ProseMirror[contenteditable='true'], textarea"
+    )).filter((editor) => editor.isConnected && editor.getClientRects().length
+      && !editor.closest("[data-codex-plus-ext], .codex-plus-modal-overlay, [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")
+      && !!codexFastComposerRoot(editor));
+  }
+
+  function codexFastComposerRoot(editor) {
+    const semantic = editor?.closest("[data-ds-part='composer'], [data-composer-body]");
+    if (semantic) return semantic;
+    let parent = editor?.parentElement;
+    for (let depth = 0; parent && depth < 6; depth++, parent = parent.parentElement) {
+      if (parent.matches("main, body, html, [data-message-author-role], [data-testid='conversation-turn']")) break;
+      if (parent.querySelector(".composer-footer")) return parent;
+    }
+    return null;
+  }
+
+  function codexFastComposerEditor() {
+    return codexFastComposerEditors().find((editor) => editor === document.activeElement)
+      || (document.activeElement?.closest?.("[data-codex-fast-slash-menu]")
+        ? codexFastComposerEditors().find((editor) => editor.dataset.codexFastEditor === "active") : null) || null;
+  }
+
+  function codexFastComposerText(editor) {
+    if (editor?.querySelector?.("pre, blockquote, img, video, audio, [contenteditable='false']")) return "";
+    return String(editor?.value ?? editor?.innerText ?? editor?.textContent ?? "").trim();
+  }
+
+  function codexServiceTierComposerModelName() {
+    const editor = codexFastComposerEditor() || codexFastComposerEditors()[0];
+    const root = codexFastComposerRoot(editor);
+    if (!root) return "";
+    const compact = (text) => String(text || "").toLowerCase().replace(/^gpt[-\s]*/, "").replace(/[^a-z0-9]/g, "");
+    const models = typeof codexPlusModelNames === "function" ? codexPlusModelNames() : [];
+    const candidates = new Set();
+    for (const button of root.querySelectorAll("button")) {
+      if (!button.getClientRects().length || button.closest("[data-codex-plus-ext]")) continue;
+      const declared = button.getAttribute("data-model") || button.getAttribute("data-model-id");
+      if (declared && models.includes(declared)) return declared;
+      const text = compact(button.innerText || button.textContent);
+      const matches = models.filter((name) => {
+        const displayName = codexPlusModelMetadata(name)?.displayName;
+        return [name, displayName].filter(Boolean).some((value) => {
+          const token = compact(value);
+          return token.length >= 4 && text.includes(token);
+        });
+      }).sort((a, b) => compact(b).length - compact(a).length);
+      if (matches[0]) candidates.add(matches[0]);
+    }
+    return candidates.size === 1 ? [...candidates][0] : "";
+  }
+
+  let codexFastSlashFrame = 0;
+  let codexFastSlashComposing = false;
+  let codexFastSlashDismissed = "";
+
+  function scheduleCodexFastSlashMenu() {
+    if (codexFastSlashFrame) return;
+    codexFastSlashFrame = requestAnimationFrame(() => {
+      codexFastSlashFrame = 0;
+      refreshCodexFastSlashMenu();
+    });
+  }
+
+  function refreshCodexFastSlashMenu() {
+    const editor = codexFastComposerEditor();
+    const text = codexFastComposerText(editor);
+    const relevant = text === "/" || /^\/f(?:a(?:s(?:t(?:[ \t]+(?:on|off|status)?)?)?)?)?$/i.test(text);
+    let panel = document.querySelector("[data-codex-fast-slash-menu]");
+    if (!codexPlusSettings().serviceTierControls || !editor || !relevant || codexFastSlashComposing
+        || codexFastSlashDismissed === text) {
+      panel?.remove();
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.className = "codex-fast-slash-menu";
+      panel.dataset.codexFastSlashMenu = "true";
+      panel.dataset.codexPlusExt = "codex-fast-controls";
+      panel.setAttribute("role", "group");
+      panel.setAttribute("aria-label", "Codex++ 命令");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.codexFastSlashAction = "true";
+      const label = document.createElement("span");
+      label.textContent = "⚡ 快速（Codex++）";
+      const status = document.createElement("span");
+      status.dataset.codexFastSlashStatus = "true";
+      button.append(label, status);
+      panel.appendChild(button);
+      document.body.appendChild(panel);
+    }
+    const state = codexServiceTierBadgeState();
+    const button = panel.querySelector("button");
+    setCodexServiceTierAttribute(button, "title", state.title);
+    // 状态查询、关闭不依赖模型能力；开启时由共享处理函数做最终检查。
+    if (button.disabled !== !!state.disabled) button.disabled = !!state.disabled;
+    const status = panel.querySelector("[data-codex-fast-slash-status]");
+    const action = parseCodexFastCommand(text) || "toggle";
+    const hint = action === "status" ? "查询当前状态"
+      : action === "on" ? "开启当前会话" : action === "off" ? "关闭当前会话"
+      : `${state.label} · 仅当前会话`;
+    if (status.textContent !== hint) status.textContent = hint;
+    const rect = editor.getBoundingClientRect();
+    // 独立补充行不改 React 管理的原生命令节点；有可识别原生列表时贴在列表旁。
+    const list = Array.from(document.querySelectorAll("[role='listbox']"))
+      .find((node) => node.getClientRects().length && node.querySelector("[data-key='model'], [data-key='plan'], [data-key='fast']"));
+    const bounds = list?.getBoundingClientRect() || rect;
+    const left = Math.max(8, Math.min(bounds.left, window.innerWidth - Math.min(340, window.innerWidth - 16) - 8));
+    const top = Math.max(8, bounds.top - 46);
+    for (const [property, value] of Object.entries({ left: `${left}px`, top: `${top}px`, maxWidth: `${window.innerWidth - 16}px` })) {
+      if (panel.style[property] !== value) panel.style[property] = value;
+    }
+  }
+
+  function consumeCodexFastComposerCommand(editor, action) {
+    if (!editor || (parseCodexFastCommand(codexFastComposerText(editor)) == null
+        && !["/", "/f", "/fa", "/fas"].includes(codexFastComposerText(editor).toLowerCase()))) return false;
+    // 不直接写 innerHTML/textContent：沿原生输入链路修改，保留 ProseMirror 状态与撤销。
+    editor.focus();
+    if (editor instanceof HTMLTextAreaElement) {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(editor, "");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      const selection = window.getSelection();
+      if (!selection) return false;
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (!document.execCommand("delete", false)) {
+        showToast("无法清除 Fast 命令，请使用工具栏按钮切换", null);
+        return false;
+      }
+    }
+    if (codexFastComposerText(editor)) return false;
+    document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+    return executeCodexFastCommand(action);
+  }
+
+  function installCodexFastCommandControls() {
+    window.__codexPlusFastControlsCleanup?.();
+    const handlers = {
+      input(event) {
+        if (!codexFastComposerEditors().includes(event.target)) return;
+        if (event.isComposing === false) codexFastSlashComposing = false;
+        codexFastComposerEditors().forEach((editor) => {
+          if (editor !== event.target) editor.removeAttribute("data-codex-fast-editor");
+        });
+        setCodexServiceTierAttribute(event.target, "data-codex-fast-editor", "active");
+        codexFastSlashDismissed = "";
+        scheduleCodexFastSlashMenu();
+      },
+      keydown(event) {
+        if (event.isComposing || event.keyCode === 229 || codexFastSlashComposing) return;
+        if (!codexFastComposerEditors().includes(event.target)) return;
+        if (event.key === "Escape") {
+          codexFastSlashDismissed = codexFastComposerText(event.target);
+          document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+          return;
+        }
+        if (!codexPlusSettings().serviceTierControls || !["Enter", "Tab"].includes(event.key)
+            || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+        const action = parseCodexFastCommand(codexFastComposerText(event.target));
+        if (!action) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        consumeCodexFastComposerCommand(event.target, action);
+      },
+      pointerdown(event) {
+        if (event.target?.closest?.("[data-codex-fast-slash-menu]")) event.preventDefault();
+      },
+      click(event) {
+        const button = event.target?.closest?.("[data-codex-fast-slash-action]");
+        if (button) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          if (button.disabled) return;
+          const editor = codexFastComposerEditor();
+          consumeCodexFastComposerCommand(editor, parseCodexFastCommand(codexFastComposerText(editor)) || "toggle");
+          return;
+        }
+        if (!codexPlusSettings().serviceTierControls || codexFastSlashComposing) return;
+        const send = event.target?.closest?.("button");
+        if (!send || !/^(发送|发送消息|Send|Send message|Submit)$/i.test(send.getAttribute("aria-label") || "")) return;
+        const editor = codexFastComposerEditors().find((node) => {
+          const root = codexFastComposerRoot(node);
+          return root?.contains(send);
+        });
+        const action = parseCodexFastCommand(codexFastComposerText(editor));
+        if (!action) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        consumeCodexFastComposerCommand(editor, action);
+      },
+      compositionstart(event) {
+        if (!codexFastComposerEditors().includes(event.target)) return;
+        codexFastSlashComposing = true;
+        document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+      },
+      compositionend(event) {
+        if (!codexFastComposerEditors().includes(event.target)) return;
+        codexFastSlashComposing = false;
+        scheduleCodexFastSlashMenu();
+      },
+      focusout() { scheduleCodexFastSlashMenu(); },
+    };
+    Object.entries(handlers).forEach(([type, handler]) => document.addEventListener(type, handler, true));
+    window.addEventListener("resize", scheduleCodexFastSlashMenu);
+    window.__codexPlusFastControlsCleanup = () => {
+      Object.entries(handlers).forEach(([type, handler]) => document.removeEventListener(type, handler, true));
+      window.removeEventListener("resize", scheduleCodexFastSlashMenu);
+      cancelAnimationFrame(codexFastSlashFrame);
+      codexFastSlashFrame = 0;
+      document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+      document.querySelectorAll("[data-codex-fast-editor]").forEach((editor) => editor.removeAttribute("data-codex-fast-editor"));
+    };
   }
 
   function codexRemoteSessionActiveProfile() {
@@ -4782,6 +5151,7 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded && codexPlusSettings().serviceTierControls) void loadCodexServiceTierState();
     return loaded;
   }
 
@@ -4803,11 +5173,16 @@
     syncBackendSettingsInFlight = true;
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
+      const previousFast = !!codexPlusSettings().serviceTierControls;
+      const previousProfile = codexPlusBackendSettings.activeRelayId;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
+        }
+        if (codexPlusSettings().serviceTierControls && (!previousFast || previousProfile !== codexPlusBackendSettings.activeRelayId)) {
+          void loadCodexServiceTierState();
         }
       }
     } finally {
@@ -8945,7 +9320,15 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest(method, nextParams, options);
+      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      let result;
+      try {
+        result = await originalSendRequest(method, nextParams, options);
+      } catch (error) {
+        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        throw error;
+      }
+      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -8955,9 +9338,9 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
-    if (typeof client.prewarmThreadStart === "function"
-        && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = client.prewarmThreadStart.bind(client);
+    if (typeof client.prewarmThreadStart === "function") {
+      const originalPrewarmThreadStart = client.__codexPlusServiceTierOriginalPrewarmThreadStart
+        || client.prewarmThreadStart.bind(client);
       client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
         const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
@@ -9107,7 +9490,15 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest.call(client, method, nextParams, options);
+      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      let result;
+      try {
+        result = await originalSendRequest.call(client, method, nextParams, options);
+      } catch (error) {
+        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        throw error;
+      }
+      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -9117,9 +9508,9 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
-    if (typeof proto.prewarmThreadStart === "function"
-        && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = proto.prewarmThreadStart;
+    if (typeof proto.prewarmThreadStart === "function") {
+      const originalPrewarmThreadStart = proto.__codexPlusServiceTierOriginalPrewarmThreadStart
+        || proto.prewarmThreadStart;
       proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
         const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
@@ -11433,11 +11824,13 @@
   }
 
   function codexServiceTierVisibleComposerFooters(root = document) {
+    const selector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
     const footers = [
-      ...(root?.matches?.(".composer-footer") ? [root] : []),
-      ...Array.from(root?.querySelectorAll?.(".composer-footer") || []),
+      ...(root?.matches?.(selector) ? [root] : []),
+      ...Array.from(root?.querySelectorAll?.(selector) || []),
     ];
     return footers
+      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
       .filter(codexServiceTierBadgeVisibleElement)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
@@ -11464,7 +11857,8 @@
   function codexServiceTierComposerCandidates() {
     const candidates = new Set();
     const threadComposer = conversationViewFindComposerEl();
-    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
+    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)
+        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) candidates.add(threadComposer);
     codexServiceTierVisibleComposerFooters().forEach((footer) => {
       candidates.add(footer);
       let node = footer.parentElement;
@@ -11500,7 +11894,7 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.(".composer-footer")) return composer;
+    if (composer?.matches?.("[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer")) return composer;
     return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
   }
 
@@ -11520,8 +11914,17 @@
   function codexServiceTierBadgePlacement(composer) {
     const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
     if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
+    const footer = composer ? codexServiceTierComposerFooter(composer) : null;
+    // 新版工具栏包含输入框；挂在模型/权限按钮同级，不能塞进输入框或原生按钮。
+    const control = Array.from(footer?.querySelectorAll?.("button") || [])
+      .find((button) => codexServiceTierBadgeVisibleElement(button)
+        && !button.closest("[data-codex-plus-ext]")
+        && (/更改权限|permissions|选择强度|model/i.test(`${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent}`)));
+    if (control?.parentElement && !control.parentElement.closest("button, [contenteditable='true']")) {
+      return { parent: control.parentElement, before: control };
+    }
     const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
-    if (group) return { parent: group, before: group.firstChild };
+    if (group) return { parent: group, before: Array.from(group.childNodes).find((node) => !node.matches?.("[data-codex-service-tier-badge]")) || null };
     return null;
   }
 
@@ -11533,14 +11936,14 @@
     badge.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (codexServiceTierState.status === "loading") return;
+      if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
     badge.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       event.stopPropagation();
-      if (codexServiceTierState.status === "loading") return;
+      if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
   }
@@ -11567,13 +11970,16 @@
       badge.className = codexServiceTierBadgeClass;
       badge.dataset.codexServiceTierBadge = "true";
       badge.dataset.codexServiceTierBadgeVersion = codexServiceTierBadgeVersion;
+      badge.dataset.codexPlusExt = "codex-fast-controls";
     }
     wireCodexServiceTierBadge(badge);
-    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    const before = placement.before !== badge && placement.before?.parentElement === placement.parent ? placement.before : null;
     if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
       placement.parent.insertBefore(badge, before);
     }
+    syncCodexServiceTierEffectiveState();
     refreshCodexServiceTierBadges();
+    refreshCodexFastSlashMenu();
   }
 
   function removeCodexServiceTierBadges() {
@@ -13906,6 +14312,8 @@
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
+      "[data-ds-part='composer-toolbar']",
+      "[data-composer-footer-responsive]",
       selectors.appHeader,
       selectors.archiveNav,
       selectors.pluginNavButton,
@@ -13943,6 +14351,8 @@
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
+      // 新版工具栏同时包住编辑器。输入由命令监听处理，不为每次按键重扫全部布局。
+      if ((target?.nodeType === 1 ? target : target?.parentElement)?.closest?.("[contenteditable='true'], textarea")) return false;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
       const changedElements = changedNodes.filter((node) => node.nodeType === 1);
       // 我们自己插入的节点挂在 Codex 的容器里，而容器本身是 scan-relevant，
@@ -14044,6 +14454,7 @@
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   window.codexPlus = buildCodexPlusExtensionApi();
+  installCodexFastCommandControls();
 })();
 
 // === 粘贴修复 (CodexPlusPlus 页面增强) ===

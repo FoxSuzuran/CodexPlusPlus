@@ -212,22 +212,30 @@ describe("captured request clients continue forwarding requests", () => {
       const codexPlusSettings = () => ({serviceTierControls:true});
       const appServerModelRequestMethod = (method) => method;
       const applyCodexRemoteSessionProviderOverride = (method, params) => params;
+      const codexServiceTierRequestMethods = () => new Set(["thread/start", "thread/resume", "turn/start"]);
+      const observations = [];
+      const beginCodexServiceTierRequest = () => ({});
+      const observeCodexServiceTierRequestResult = (method, params, result, failed = false) =>
+        observations.push({method, params, result, failed});
       const refreshCodexThreadModelBeforeTurn = async () => null;
       const codexThreadModelRequestState = (method, params) => ({
         requestMethod: method, threadId: params.threadId, model: params.model
       });
-      const codexServiceTierOverrideForRequest = (method, params) => method === "turn/start"
+      const codexServiceTierOverrideForRequest = (method, params) => ["turn/start", "thread/start"].includes(method)
         ? {serviceTier:"priority",mode:"global-fast",threadId:params.threadId,modelName:params.model}
         : null;
       const sendCodexPlusDiagnostic = () => {};
       ${requestTier}
       ${instance}
       ${prototype}
-      return {window,instance:patchAppServerModelRequestClient,prototype:installCodexAppServerClientPrototypePatch};
+      return {window,observations,instance:patchAppServerModelRequestClient,prototype:installCodexAppServerClientPrototypePatch};
     `)();
     class Client {
       async sendRequest(method: string, params: Record<string, unknown>, options: unknown) {
         return { method, params, options };
+      }
+      async prewarmThreadStart(params: Record<string, unknown>, options: unknown) {
+        return { params, options };
       }
     }
     const instanceClient = new Client();
@@ -255,6 +263,29 @@ describe("captured request clients continue forwarding requests", () => {
       const params = { includeHidden: true };
       const result = await client.sendRequest("model/list", params, options);
       assert.equal(result.params, params, "unrelated RPCs must pass through unchanged");
+      const warm = await client.prewarmThreadStart({ threadId: "warm" }, options);
+      assert.equal(warm.params.serviceTier, "priority");
+      assert.equal(warm.options, options);
     }
+    const originalWarm = (instanceClient as unknown as Record<string, unknown>).__codexPlusServiceTierOriginalPrewarmThreadStart;
+    Object.assign(instanceClient, {
+      __codexPlusModelRequestPatch: "previous",
+      prewarmThreadStart: async () => ({ params: { serviceTier: "obsolete" } }),
+    });
+    api.instance(instanceClient);
+    assert.equal((instanceClient as unknown as Record<string, unknown>).__codexPlusServiceTierOriginalPrewarmThreadStart, originalWarm);
+    assert.equal((await instanceClient.prewarmThreadStart({}, options)).params.serviceTier, "priority");
+    const turns = api.observations.filter((item: { method: string }) => item.method === "turn/start");
+    assert.equal(turns.length, 4);
+    assert.ok(turns.every((item: { params: { serviceTier: string }; failed: boolean }) =>
+      item.params.serviceTier === "priority" && !item.failed));
+    const failure = new Error("original request failed");
+    class FailingClient extends Client {
+      async sendRequest(_method: string, _params: Record<string, unknown>, _options: unknown): Promise<never> { throw failure; }
+    }
+    const failing = new FailingClient();
+    api.instance(failing);
+    await assert.rejects(() => failing.sendRequest("turn/start", { threadId: "failed" }, options), (error) => error === failure);
+    assert.equal(api.observations.at(-1).failed, true);
   });
 });

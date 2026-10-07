@@ -3146,7 +3146,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"10\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"11\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3722,7 +3722,7 @@ const unsupportedModel = api.applyServiceTierOverride("turn/start", {{
 }}, "conv-should-not-be-model");
 
 const turnWithoutModel = api.applyServiceTierOverride("turn/start", {{
-  threadId: "thread-12345678",
+  threadId: "thread-without-model",
   service_tier: null,
 }}, "conversation-should-not-be-model");
 const turnWithoutModelDiagnosticModel = api.diagnostics().at(-1)?.detail?.model;
@@ -3953,7 +3953,6 @@ api.setServiceTierState({{ status: "ok", serviceTier: null, configServiceTier: "
 const inheritedConfigFastBlocked = api.applyServiceTierOverride("turn/start", {{
   threadId: "thread-12345678",
   model: "gpt-4.1",
-  service_tier: null,
 }}, "");
 const appServerParamsUnchanged = appServerCalls[0]?.params === nativeAppServerParams
   && appServerCalls[0]?.params?.workspaceKind === "project"

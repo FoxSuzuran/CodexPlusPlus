@@ -25,6 +25,8 @@
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
+      "[data-ds-part='composer-toolbar']",
+      "[data-composer-footer-responsive]",
       selectors.appHeader,
       selectors.archiveNav,
       selectors.pluginNavButton,
@@ -62,6 +64,8 @@
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
+      // 新版工具栏同时包住编辑器。输入由命令监听处理，不为每次按键重扫全部布局。
+      if ((target?.nodeType === 1 ? target : target?.parentElement)?.closest?.("[contenteditable='true'], textarea")) return false;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
       const changedElements = changedNodes.filter((node) => node.nodeType === 1);
       // 我们自己插入的节点挂在 Codex 的容器里，而容器本身是 scan-relevant，

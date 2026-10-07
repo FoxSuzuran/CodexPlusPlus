@@ -5,6 +5,7 @@
     }
     refreshCodexPlusBackendToggles();
     if (loaded) syncOfficialUsagePolicy();
+    if (loaded && codexPlusSettings().serviceTierControls) void loadCodexServiceTierState();
     return loaded;
   }
 
@@ -26,11 +27,16 @@
     syncBackendSettingsInFlight = true;
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
+      const previousFast = !!codexPlusSettings().serviceTierControls;
+      const previousProfile = codexPlusBackendSettings.activeRelayId;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
         syncOfficialUsagePolicy();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
+        }
+        if (codexPlusSettings().serviceTierControls && (!previousFast || previousProfile !== codexPlusBackendSettings.activeRelayId)) {
+          void loadCodexServiceTierState();
         }
       }
     } finally {

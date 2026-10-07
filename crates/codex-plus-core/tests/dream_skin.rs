@@ -635,7 +635,7 @@ fn dream_skin_api_bootstrap_marks_parts_without_rescanning_on_streaming() {
     settings.codex_app_dream_skin_enabled = true;
     let script = injection_script_with_settings(57321, &settings);
     let marker = script
-        .find("data-ds-part")
+        .find("window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__?.disconnect?.();")
         .expect("dream skin bootstrap should mark skin parts");
     let start = script[..marker]
         .rfind("(() => {")

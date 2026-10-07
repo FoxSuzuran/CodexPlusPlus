@@ -1002,6 +1002,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        gap: 4px;
         flex: 0 0 auto;
         height: 24px;
         min-width: 54px;
@@ -1024,6 +1025,18 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
+      .${codexServiceTierBadgeClass} .codex-fast-icon { opacity: .45; filter: grayscale(1); }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] .codex-fast-icon { opacity: 1; filter: none; }
+      .codex-fast-slash-menu { position: fixed; z-index: 2147483000; width: 340px; padding: 4px;
+        border: 1px solid var(--codex-plus-border); border-radius: 10px;
+        background: var(--codex-plus-bg-elevated); color: var(--codex-plus-text);
+        box-shadow: 0 4px 16px #0003; font-family: inherit; font-size: 13px; line-height: 1.4; }
+      .codex-fast-slash-menu button { display: flex; justify-content: space-between; align-items: center;
+        width: 100%; padding: 6px 8px; gap: 12px; border: 0; border-radius: 6px; color: inherit;
+        background: transparent; cursor: pointer; text-align: left; font: inherit; }
+      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu button:focus-visible { background: #10a37f26; }
+      .codex-fast-slash-menu button:disabled { opacity: .6; cursor: not-allowed; }
+      [data-codex-fast-slash-status] { font-size: 11px; opacity: .75; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -2253,4 +2266,3 @@
     if (!width) return;
     setCodexPlusSetting("conversationViewMaxWidth", width);
   }
-

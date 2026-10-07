@@ -495,7 +495,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "3";
+  const codexServiceTierBadgeVersion = "4";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -545,8 +545,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "10";
+  const codexServiceTierRequestOverrideVersion = "11";
+  const codexAppServerModelRequestPatchVersion = "11";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";

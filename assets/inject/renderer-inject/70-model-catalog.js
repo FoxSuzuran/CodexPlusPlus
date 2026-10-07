@@ -597,7 +597,15 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest(method, nextParams, options);
+      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      let result;
+      try {
+        result = await originalSendRequest(method, nextParams, options);
+      } catch (error) {
+        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        throw error;
+      }
+      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -607,9 +615,9 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
-    if (typeof client.prewarmThreadStart === "function"
-        && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = client.prewarmThreadStart.bind(client);
+    if (typeof client.prewarmThreadStart === "function") {
+      const originalPrewarmThreadStart = client.__codexPlusServiceTierOriginalPrewarmThreadStart
+        || client.prewarmThreadStart.bind(client);
       client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
         const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
@@ -759,7 +767,15 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest.call(client, method, nextParams, options);
+      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      let result;
+      try {
+        result = await originalSendRequest.call(client, method, nextParams, options);
+      } catch (error) {
+        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        throw error;
+      }
+      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -769,9 +785,9 @@
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
-    if (typeof proto.prewarmThreadStart === "function"
-        && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = proto.prewarmThreadStart;
+    if (typeof proto.prewarmThreadStart === "function") {
+      const originalPrewarmThreadStart = proto.__codexPlusServiceTierOriginalPrewarmThreadStart
+        || proto.prewarmThreadStart;
       proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
         const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);

@@ -469,6 +469,11 @@
     const key = typeof validThreadScrollSessionKey === "function"
       ? validThreadScrollSessionKey(threadId)
       : String(threadId || "");
+    if (typeof codexServiceTierComposerModelName === "function"
+        && (!key || key === currentSessionRef()?.session_id)) {
+      const selected = codexServiceTierComposerModelName();
+      if (selected) return selected;
+    }
     if (key) {
       const cached = codexServiceTierThreadModels.get(key);
       if (cached) return cached;
@@ -492,7 +497,8 @@
   }
 
   function codexServiceTierModelForRequest(params, modelHint = "") {
-    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
+    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint)
+      || codexServiceTierUiModelName(params?.threadId || params?.conversationId || currentSessionRef()?.session_id || "");
   }
 
   function codexServiceTierFastSupportedForModel(modelName) {

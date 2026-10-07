@@ -618,11 +618,13 @@
   }
 
   function codexServiceTierVisibleComposerFooters(root = document) {
+    const selector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
     const footers = [
-      ...(root?.matches?.(".composer-footer") ? [root] : []),
-      ...Array.from(root?.querySelectorAll?.(".composer-footer") || []),
+      ...(root?.matches?.(selector) ? [root] : []),
+      ...Array.from(root?.querySelectorAll?.(selector) || []),
     ];
     return footers
+      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
       .filter(codexServiceTierBadgeVisibleElement)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
@@ -649,7 +651,8 @@
   function codexServiceTierComposerCandidates() {
     const candidates = new Set();
     const threadComposer = conversationViewFindComposerEl();
-    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)) candidates.add(threadComposer);
+    if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)
+        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) candidates.add(threadComposer);
     codexServiceTierVisibleComposerFooters().forEach((footer) => {
       candidates.add(footer);
       let node = footer.parentElement;
@@ -685,7 +688,7 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.(".composer-footer")) return composer;
+    if (composer?.matches?.("[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer")) return composer;
     return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
   }
 
@@ -705,8 +708,17 @@
   function codexServiceTierBadgePlacement(composer) {
     const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
     if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
+    const footer = composer ? codexServiceTierComposerFooter(composer) : null;
+    // 新版工具栏包含输入框；挂在模型/权限按钮同级，不能塞进输入框或原生按钮。
+    const control = Array.from(footer?.querySelectorAll?.("button") || [])
+      .find((button) => codexServiceTierBadgeVisibleElement(button)
+        && !button.closest("[data-codex-plus-ext]")
+        && (/更改权限|permissions|选择强度|model/i.test(`${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent}`)));
+    if (control?.parentElement && !control.parentElement.closest("button, [contenteditable='true']")) {
+      return { parent: control.parentElement, before: control };
+    }
     const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
-    if (group) return { parent: group, before: group.firstChild };
+    if (group) return { parent: group, before: Array.from(group.childNodes).find((node) => !node.matches?.("[data-codex-service-tier-badge]")) || null };
     return null;
   }
 
@@ -718,14 +730,14 @@
     badge.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (codexServiceTierState.status === "loading") return;
+      if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
     badge.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       event.stopPropagation();
-      if (codexServiceTierState.status === "loading") return;
+      if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
   }
@@ -752,13 +764,16 @@
       badge.className = codexServiceTierBadgeClass;
       badge.dataset.codexServiceTierBadge = "true";
       badge.dataset.codexServiceTierBadgeVersion = codexServiceTierBadgeVersion;
+      badge.dataset.codexPlusExt = "codex-fast-controls";
     }
     wireCodexServiceTierBadge(badge);
-    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    const before = placement.before !== badge && placement.before?.parentElement === placement.parent ? placement.before : null;
     if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
       placement.parent.insertBefore(badge, before);
     }
+    syncCodexServiceTierEffectiveState();
     refreshCodexServiceTierBadges();
+    refreshCodexFastSlashMenu();
   }
 
   function removeCodexServiceTierBadges() {

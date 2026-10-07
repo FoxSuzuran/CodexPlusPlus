@@ -3781,9 +3781,12 @@
     if (!codexPlusSettings().serviceTierControls || method !== "turn/start") return null;
     const threadId = codexServiceTierThreadIdForRequest(method, params);
     if (!threadId) return null;
+    const explicitTier = ["serviceTier", "service_tier"].find((key) =>
+      Object.prototype.hasOwnProperty.call(params || {}, key) && params[key] !== undefined);
     const observation = {
       threadId,
-      requestedTier: codexServiceTierRequestedValue(params) ?? null,
+      requestedTier: explicitTier ? params[explicitTier] ?? null : null,
+      inherited: !explicitTier,
       actualTier: null,
       failed: false,
     };
@@ -3829,8 +3832,9 @@
     if (observation.actualTier != null) {
       const label = isFastServiceTierValue(observation.actualTier) ? "Fast"
         : observation.actualTier === "default" ? "Standard" : observation.actualTier;
-      return `本轮服务方确认：${label}；请求参数：${observation.requestedTier || "Standard"}。`;
+      return `本轮服务方确认：${label}；请求参数：${observation.inherited ? "未指定，沿用默认" : observation.requestedTier || "Standard"}。`;
     }
+    if (observation.inherited) return "本轮：未指定服务等级，沿用默认；服务方未确认。";
     return isFastServiceTierValue(observation.requestedTier)
       ? "本轮：已请求 Fast，服务方未确认。"
       : "本轮：请求使用 Standard，服务方未确认。";

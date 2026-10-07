@@ -156,6 +156,8 @@ test("response confirmation never mistakes an echoed request tier for the actual
   f.api.result("turn/start", { threadId: "thread-a", serviceTier: "priority" }, { turn: { id: "turn-1" } });
   f.api.sync();
   assert.match(f.api.badge().title, /已请求 Fast，服务方未确认/);
+  f.api.begin("turn/start", { threadId: "thread-a" });
+  assert.match(f.api.badge().title, /未指定服务等级，沿用默认/);
   f.api.result("turn/start", { threadId: "thread-a", serviceTier: "priority" }, { service_tier: "default" });
   assert.match(f.api.badge().title, /服务方确认：Standard/);
   f.api.result("turn/start", { threadId: "thread-a", serviceTier: "priority" }, { service_tier: "future_accelerated_tier" });

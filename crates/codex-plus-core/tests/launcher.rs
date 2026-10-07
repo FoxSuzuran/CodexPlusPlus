@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use codex_plus_core::app_paths::{
     build_codex_executable, codex_app_version, find_bundled_codex_cli, find_latest_codex_app_dir,
     find_latest_codex_app_dir_from_roots, find_linux_codex_app, find_macos_codex_app,
-    normalize_codex_app_path, packaged_app_user_model_id, resolve_codex_app_dir_with_saved,
-    user_data_candidates_from,
+    derive_packaged_app_user_model_id, normalize_codex_app_path, packaged_app_user_model_id,
+    resolve_codex_app_dir_with_saved, user_data_candidates_from,
 };
 use codex_plus_core::launcher::{
     CodexLaunch, DefaultLaunchHooks, LaunchHooks, LaunchOptions, MacosCleanupPolicy,
@@ -77,12 +77,8 @@ fn app_paths_find_latest_windows_package_accepts_chatgpt_desktop_migration() {
         Some("2026.514.421.0")
     );
     assert_eq!(
-        packaged_app_user_model_id(&latest).as_deref(),
-        if cfg!(windows) {
-            None
-        } else {
-            Some("OpenAI.ChatGPT-Desktop_abc!App")
-        }
+        derive_packaged_app_user_model_id(&latest).as_deref(),
+        Some("OpenAI.ChatGPT-Desktop_abc!App")
     );
 }
 
@@ -104,12 +100,8 @@ fn app_paths_find_latest_windows_package_detects_beta_package() {
     );
     assert_eq!(codex_app_version(&latest).as_deref(), Some("26.527.7698.0"));
     assert_eq!(
-        packaged_app_user_model_id(&latest).as_deref(),
-        if cfg!(windows) {
-            None
-        } else {
-            Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
-        }
+        derive_packaged_app_user_model_id(&latest).as_deref(),
+        Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
     );
 }
 
@@ -431,12 +423,8 @@ fn app_paths_normalizes_chatgpt_desktop_executable_and_builds_it() {
     );
     assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
     assert_eq!(
-        packaged_app_user_model_id(&app).as_deref(),
-        if cfg!(windows) {
-            None
-        } else {
-            Some("OpenAI.Codex_abc!App")
-        }
+        derive_packaged_app_user_model_id(&app).as_deref(),
+        Some("OpenAI.Codex_abc!App")
     );
 }
 
@@ -850,7 +838,7 @@ fn launcher_constructs_windows_packaged_activation_without_real_app() {
 }
 
 #[test]
-fn packaged_app_user_model_id_reads_application_id_from_manifest() {
+fn derive_packaged_app_user_model_id_reads_application_id_from_manifest() {
     // 新版 ChatGPT Desktop 可能调整 manifest 中的 Application Id（见 issue #2148）。
     // 这段校验曾被 #2202 的 799ef0c9 静默回退掉，导致 #2308/#2310 的「该进程没有
     // 程序包标识符」；恢复实现时一并恢复测试，避免再次无声丢失。
@@ -873,18 +861,14 @@ fn packaged_app_user_model_id_reads_application_id_from_manifest() {
     .unwrap();
 
     assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
-        if cfg!(windows) {
-            None
-        } else {
-            Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
-        }
+        derive_packaged_app_user_model_id(&app_dir).as_deref(),
+        Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
     );
 }
 
 #[test]
-fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
-    // 已注册包在 manifest 缺失时仍使用默认值 "App"；未注册的临时目录不能生成 AUMID。
+fn derive_packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
+    // 仅验证默认 Id 推导；未注册目录不得启动的校验由启动与注册判定测试覆盖。
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp
         .path()
@@ -893,12 +877,8 @@ fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
     std::fs::create_dir_all(&app_dir).unwrap();
 
     assert_eq!(
-        packaged_app_user_model_id(&app_dir).as_deref(),
-        if cfg!(windows) {
-            None
-        } else {
-            Some("OpenAI.Codex_2p2nqsd0c76g0!App")
-        }
+        derive_packaged_app_user_model_id(&app_dir).as_deref(),
+        Some("OpenAI.Codex_2p2nqsd0c76g0!App")
     );
 }
 

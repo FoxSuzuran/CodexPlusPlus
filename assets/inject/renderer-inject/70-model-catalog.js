@@ -651,6 +651,22 @@
     return null;
   }
 
+  // issue #2399：抓取目标不能再按 asset 文件名前缀写死。Codex 26.930 把
+  // AppServerRequestClient 从 `app-initial-*.js` 搬到了 `app-shared-*.js`，
+  // 按前缀找资产必然 anchor_missing，模型白名单解锁在整条 app-server 路径上失效。
+  // 加一项前缀只治当前这一版，下次改名又会失灵，所以改成**按内容找类定义**：
+  // 遍历已加载的 app asset，谁包含 marker 文本谁就是目标，两代产物都能覆盖。
+  // 自用版沿原生依赖图查找，保留同源校验、去重和单次扫描，避免文件改名后漏检。
+  async function locateCodexAppServerClientInAssets() {
+    const urls = codexAppAssetCandidateUrls();
+    for await (const { url, text } of codexAppAssetSources()) {
+      if (!urls.includes(url)) urls.push(url);
+      const location = locateCodexAppServerClientBreakpoint(text);
+      if (location) return { urls, hit: { url, location } };
+    }
+    return { urls, hit: null };
+  }
+
     let codexAppServerClientCaptureStarted = false;
     let codexAppServerClientCapturePromise = null;
   async function installCodexAppServerClientCapture() {
@@ -659,20 +675,25 @@
     codexAppServerClientCaptureStarted = true;
     codexAppServerClientCapturePromise = (async () => { try {
       if (typeof fetch !== "function") return;
-      for await (const { url, text } of codexAppAssetSources()) {
-        const location = locateCodexAppServerClientBreakpoint(text);
-        if (!location) continue;
-        const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        window.__codexPlusAppServerClientCapture = {
-          url, urlRegex, ...location, version: codexAppServerModelRequestPatchVersion,
-        };
-        sendCodexPlusDiagnostic("app_server_client_capture_located", {
-          lineNumber: location.lineNumber,
-          columnNumber: location.columnNumber,
+      const { urls, hit } = await locateCodexAppServerClientInAssets();
+      if (!hit) {
+        // 区分「一个候选资产都没有」和「有资产但没有类定义」：
+        // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          candidateCount: urls.length,
         });
         return;
       }
-      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
+      const urlRegex = hit.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = {
+        url: hit.url, urlRegex, ...hit.location, version: codexAppServerModelRequestPatchVersion,
+      };
+      sendCodexPlusDiagnostic("app_server_client_capture_located", {
+        lineNumber: hit.location.lineNumber,
+        columnNumber: hit.location.columnNumber,
+        asset: (hit.url.split("/").pop() || "").split("?")[0],
+      });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
       sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {

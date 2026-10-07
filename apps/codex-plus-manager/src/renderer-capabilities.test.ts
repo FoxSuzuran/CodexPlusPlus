@@ -17,11 +17,18 @@ async function modelRuntime(modelMetadata: Record<string, unknown>) {
   const metadata = between(source, "  function codexPlusModelMetadata(", "  function modelArrayLooksPatchable(");
   const fast = between(source, "  function isFastServiceTierValue(", "  function codexServiceTierInheritedValue(");
   return new Function("codexModelCatalog", `
+    const window = {};
+    const currentSessionRef = () => ({ session_id: "active-thread" });
     const codexServiceTierState = {};
     const codexServiceTierSupportedFastModels = new Set(["gpt-5.4"]);
     ${metadata}
     ${fast}
-    return { fast: codexServiceTierFastAvailability, descriptor: codexPlusModelDescriptor };
+    return {
+      fast: codexServiceTierFastAvailability,
+      descriptor: codexPlusModelDescriptor,
+      remember: codexServiceTierRememberThreadModel,
+      uiModel: codexServiceTierUiModelName,
+    };
   `)(catalog);
 }
 
@@ -69,6 +76,20 @@ describe("model capabilities follow metadata rather than model names", () => {
       "future-model": { defaultReasoningEffort: "none", supportedReasoningEfforts: [] },
     });
     assert.deepEqual(api.descriptor("future-model").supportedReasoningEfforts, []);
+  });
+
+  it("uses the active thread model after switching instead of the stale global model", async () => {
+    const api = await modelRuntime({
+      "future-model": { additionalSpeedTiers: ["fast"] },
+      "standard-model": { additionalSpeedTiers: [] },
+    });
+    api.remember("other-thread", "future-model");
+    api.remember("active-thread", "standard-model");
+    assert.equal(api.uiModel("other-thread"), "future-model");
+    assert.equal(api.fast().modelName, "standard-model");
+    assert.equal(api.fast().supported, false);
+    api.remember("active-thread", "future-model");
+    assert.equal(api.fast().supported, true);
   });
 });
 
@@ -155,6 +176,22 @@ describe("request-client discovery follows native assets", () => {
     }, [root]);
     await harness.install();
     assert.ok(harness.window.__codexPlusAppServerClientCapture?.url.endsWith("/lazy.js"));
+  });
+});
+
+describe("native state API discovery", () => {
+  it("recognizes renamed exports by capability and preserves the generic route caller", async () => {
+    const source = await readFile(rendererPath, "utf8");
+    const stateApi = between(source, "  function codexStateApiFromModule(", "  async function codexStateApi(");
+    const discover = new Function(`${stateApi}\nreturn codexStateApiFromModule;`)();
+    const generic = (method: string) => "vscode://codex/" + method;
+    const globalState = (method: string, params: unknown) => {
+      if (method === "get-global-state" || method === "set-global-state") return params;
+    };
+    const unrelated = () => "decoy";
+    assert.equal(discover({ renamed: globalState, unrelated }), globalState);
+    assert.equal(discover({ globalState, renamedAgain: generic }), generic);
+    assert.equal(discover({ unrelated }), null);
   });
 });
 

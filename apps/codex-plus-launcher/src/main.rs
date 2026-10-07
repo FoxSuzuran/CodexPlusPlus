@@ -69,6 +69,8 @@ async fn main() -> Result<()> {
                     .app_dir
                     .map(|path| path.to_string_lossy().to_string()),
                 aumid: None,
+                // 终态不带进行中的阶段（issue #2244 的 phase/progress）。
+                ..LaunchStatus::default()
             });
         }
         return Err(error);
@@ -97,6 +99,7 @@ async fn launcher_main(args: Vec<String>, helper_only: bool, options: LaunchOpti
                 .app_dir
                 .map(|path| path.to_string_lossy().to_string()),
             aumid: None,
+            ..LaunchStatus::default()
         })?;
         return Ok(());
     };
@@ -148,6 +151,36 @@ async fn repair_session_index_automatically(check_setting: bool) {
             json!({ "message": error.to_string() }),
         );
     }
+}
+
+/// 「激活已有实例」路径上的供应商同步。
+///
+/// 与完整启动流程保持一致：仅在设置里启用了供应商同步时执行，
+/// 前后各取一次 app state 快照；会话索引修复由 run_provider_sync 本身串联
+/// （见 LauncherHooks::run_provider_sync）。同步失败只记日志——用户这次点击
+/// 的诉求是把已有窗口拉到前台，不能因为同步失败就整个中止。
+async fn run_activation_provider_sync(
+    hooks: &LauncherHooks,
+    settings: &codex_plus_core::settings::BackendSettings,
+) {
+    if !settings.provider_sync_enabled {
+        return;
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    codex_plus_core::codex_app_state::capture_app_state_snapshot_nonfatal(
+        &home,
+        "launcher.activate_existing.before",
+    );
+    if let Err(error) = hooks.run_provider_sync().await {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.activate_existing_provider_sync.failed",
+            json!({ "message": error.to_string() }),
+        );
+    }
+    codex_plus_core::codex_app_state::sync_app_state_after_provider_switch_nonfatal(
+        &home,
+        "launcher.activate_existing.after_provider_sync",
+    );
 }
 
 fn current_timestamp_ms() -> u64 {
@@ -302,6 +335,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             json!({"blocking_process_ids": blocking_process_ids}),
         );
     }
+    // 快捷方式启动且 Codex 已在运行时，这里会走到「激活已有实例」的早退分支。
+    // 过去该分支直接返回，跳过了完整启动流程里的供应商同步与会话索引修复，
+    // 于是「切换登录方式后 model_provider 没跟着切换」「历史会话没被自动修复」，
+    // 只有管理工具的「重启」才生效（issue #2080）。失败不阻断激活，只记日志。
+    run_activation_provider_sync(&hooks, &settings).await;
     let launch_result = hooks
         .launch_codex(
             &app_dir,
@@ -451,10 +489,33 @@ impl LaunchHooks for LauncherHooks {
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
-        let result = tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"))?;
-        require_completed_provider_sync(&result.status, &result.message)?;
+        // issue #2160：同步失败不再中断启动。前置读取（典型是 .codex-global-state.json
+        // 为空或被截断）失败时，provider sync 返回 Skipped 并带上底层 serde_json 原文；
+        // 以前这里用 `?` 把它变成致命的，用户看到一句无从下手的英文就直接退出了。
+        // 口径与 run_activation_provider_sync 一致：失败只记诊断日志，不阻断启动。
+        let outcome =
+            tokio::task::spawn_blocking(|| codex_plus_data::run_provider_sync(None)).await;
+        match outcome {
+            Ok(result) => {
+                if let Err(error) = require_completed_provider_sync(&result.status, &result.message)
+                {
+                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "launcher.provider_sync.degraded",
+                        json!({
+                            "status": format!("{:?}", result.status),
+                            "message": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Err(error) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "launcher.provider_sync.degraded",
+                    json!({ "message": format!("provider sync task failed: {error}") }),
+                );
+            }
+        }
+        // 同步没做成，索引该修的还是要修——它们各自独立，不能因为一路失败连坐。
         repair_session_index_automatically(false).await;
         Ok(())
     }
@@ -1313,6 +1374,34 @@ mod tests {
         }
     }
 
+    /// issue #2160：判定函数仍然把不完整同步视作失败，但启动路径必须把它降级成
+    /// 一条诊断日志——.codex-global-state.json 坏掉不能把整次启动带下去。
+    #[test]
+    fn startup_provider_sync_failure_is_non_fatal() {
+        let source = include_str!("main.rs").replace("\r\n", "\n");
+        let start = source
+            .find("async fn run_provider_sync(&self)")
+            .expect("provider sync hook");
+        let end = source[start..]
+            .find("fn has_pending_remote_control_session_recoveries")
+            .map(|offset| start + offset)
+            .expect("next method after the hook");
+        let body = &source[start..end];
+
+        // 不再用 `?` 把同步失败变成致命错误。
+        assert!(
+            !body.contains("require_completed_provider_sync(&result.status, &result.message)?"),
+            "provider sync 失败不得中断启动"
+        );
+        assert!(
+            body.contains("launcher.provider_sync.degraded"),
+            "降级要留下诊断日志"
+        );
+        // 同步失败不连坐：索引修复照常执行。
+        assert!(body.contains("repair_session_index_automatically(false).await"));
+        assert!(body.trim_end().ends_with("Ok(())\n    }"));
+    }
+
     #[test]
     fn launcher_uses_single_instance_guard_before_launching() {
         let source = include_str!("main.rs");
@@ -1388,6 +1477,48 @@ mod tests {
         assert!(!body.contains("hooks.ensure_injection"));
         assert!(!body.contains("hooks.start_bridge_watchdog"));
         assert!(body.contains("can_connect_loopback_port(options.helper_port)"));
+    }
+
+    #[test]
+    fn existing_launcher_path_runs_provider_sync_before_activation() {
+        // issue #2080：快捷方式启动且 Codex 已在运行时走早退分支，过去直接返回，
+        // 跳过了供应商同步与会话索引修复，只有管理工具的「重启」才生效。
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_existing_codex_app")
+            .expect("existing launcher activation function");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after existing launcher activation");
+        let body = &source[start..end];
+
+        let sync = body
+            .find("run_activation_provider_sync(&hooks, &settings)")
+            .expect("provider sync on the activation path");
+        let launch = body
+            .find("let launch_result = hooks")
+            .expect("Codex activation");
+        assert!(sync < launch, "provider sync must run before activation");
+    }
+
+    #[test]
+    fn activation_provider_sync_respects_the_setting_and_is_non_fatal() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn run_activation_provider_sync")
+            .expect("activation provider sync helper");
+        let end = source[start..]
+            .find("fn should_finalize_pending_remote_control_recovery")
+            .map(|offset| start + offset)
+            .expect("next function after the helper");
+        let body = &source[start..end];
+
+        // 只在设置启用时同步，与完整启动流程一致。
+        assert!(body.contains("if !settings.provider_sync_enabled"));
+        // 同步失败只记日志，不能把用户这次「激活已有窗口」的诉求一起弄失败。
+        assert!(!body.contains("hooks.run_provider_sync().await?"));
+        assert!(body.contains("launcher.activate_existing_provider_sync.failed"));
     }
 
     #[test]

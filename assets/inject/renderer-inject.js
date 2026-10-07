@@ -296,8 +296,57 @@
       return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
     };
 
+    // 语言包的加载 gate 读的是 Layer 而不是 DynamicConfig（issue #2329 根因 a）：
+    // 应用用 useLayer('72216192').get('enable_i18n', false) 取开关，Layer 的 memo
+    // 缓存键恒为 NoValues，于是即使 DynamicConfig 被补成 enable_i18n:true 也不生效。
+    // 这里给 layer 对象补上同样的取值覆盖；__value 是 Statsig 存原始值的字段，
+    // 一并 assign，避免应用直接从 __value 读时绕过 get。
+    const patchI18nLayer = (layer) => {
+      if (!layer || typeof layer !== "object") return layer;
+      const value = layer.__value && typeof layer.__value === "object" ? layer.__value : {};
+      const nextValue = {
+        ...value,
+        enable_i18n: true,
+        locale_source: "SYSTEM",
+      };
+      try {
+        layer.__value = nextValue;
+      } catch {
+      }
+      try {
+        layer.value = nextValue;
+      } catch {
+      }
+      if (typeof layer.get === "function" && !layer.__codexPlusForceChineseLocaleLayerPatched) {
+        const originalGet = layer.get.bind(layer);
+        layer.get = (key, fallback) => {
+          if (key === "enable_i18n") return true;
+          if (key === "locale_source") return "SYSTEM";
+          return originalGet(key, fallback);
+        };
+        layer.__codexPlusForceChineseLocaleLayerPatched = true;
+      }
+      return layer;
+    };
+
     const patchStatsigClient = (client) => {
       if (!client || typeof client !== "object") return;
+      if (typeof client.getLayer === "function" && !client.__codexPlusForceChineseLocaleLayerChannelPatched) {
+        const originalGetLayer = client.getLayer.bind(client);
+        client.getLayer = (name, options) => {
+          const result = originalGetLayer(name, options);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerChannelPatched = true;
+      }
+      if (typeof client._getLayerImpl === "function" && !client.__codexPlusForceChineseLocaleLayerImplPatched) {
+        const originalGetLayerImpl = client._getLayerImpl.bind(client);
+        client._getLayerImpl = function (name, ...rest) {
+          const result = originalGetLayerImpl(name, ...rest);
+          return name === "72216192" ? patchI18nLayer(result) : result;
+        };
+        client.__codexPlusForceChineseLocaleLayerImplPatched = true;
+      }
       if (typeof client.getDynamicConfig !== "function") return;
       if (!client.__codexPlusForceChineseLocalePatched) {
         const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
@@ -309,6 +358,12 @@
       }
       try {
         patchI18nConfig(client.getDynamicConfig("72216192", { disableExposureLog: true }));
+      } catch {
+      }
+      try {
+        if (typeof client.getLayer === "function") {
+          patchI18nLayer(client.getLayer("72216192", { disableExposureLog: true }));
+        }
       } catch {
       }
     };
@@ -1267,18 +1322,29 @@
        * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
        *
        * 关键：写进来的必须是**布局坐标**（视觉值 / zoom），因为 overlay 自己在缩放
-       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left)
-       * 把右边贴到视口右边缘；两个量都除过 zoom，缩放后才正好补齐。
+       * 空间里布局，宽度也要用同一个空间的量。width 的 calc(100vw / zoom - left - right)
+       * 把右边贴到原生内容区的右边缘；三个量都除过 zoom，缩放后才正好补齐。
        * 注意：本段在 JS 模板字符串里，注释里不能出现反引号，否则会提前闭合。
+       *
+       * 右/下各留一圈槽（原生是 4px）并给四角加圆角，对齐官方面板的观感：
+       * 官方页面面板 [_PageSurface_] 的 rect 与我们这块 overlay 完全相同（都是
+       * [52, 44, 1663, 940]），四角 12px；它外面套了一个 padding: 0 4px 4px 0 的槽，
+       * 右、下能看到底色。我们原先 right/bottom 贴 0 且无圆角，于是方角并且比官方
+       * 多占 4px，用户反馈「少一个圆角」就是这个。
+       * 圆角值由 positionCodexPlusPage 量官方面板写入，四个角一起用，不做左右区分。
+       * overflow: hidden 让圆角真正裁到内容；内容都在 .codex-plus-modal-content 内，
+       * 没有依赖溢出显示的全屏浮层，切掉是安全的。
        */
       .${codexPlusPageClass} {
         position: fixed;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        left: 0;
-        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px));
-        height: calc(100vh / var(--codex-plus-zoom, 1));
+        top: var(--codex-plus-page-top, 0px);
+        right: var(--codex-plus-page-right, 0px);
+        bottom: var(--codex-plus-page-bottom, 0px);
+        left: var(--codex-plus-page-left, 0px);
+        width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px) - var(--codex-plus-page-right, 0px));
+        height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px) - var(--codex-plus-page-bottom, 0px));
+        border-radius: var(--codex-plus-page-radius, 0px);
+        overflow: hidden;
         z-index: 2147483644;
         display: block;
         background: var(--codex-plus-bg-primary, #fff);
@@ -3242,6 +3308,22 @@
   // 实测空闲时 301 次请求/秒，主线程 TaskOtherDuration 占满一半 CPU，JS 堆每秒涨约 1MB，
   // Sentry 又给每个请求记一条 breadcrumb 并回同步一次 scope，把量再翻一倍推给 browser 进程。
   // 记住失败 + 冷却重试，让下游即便还在轮询也只会周期性地试一次。
+  // 「这个 asset 找不到」是可预期的、会随 Codex 版本变化的情形，
+  // 不是异常。用结构化标记而不是靠 message 字符串比对来区分：字符串比对让
+  // loadOptionalCodexAppModule 的「可选」语义只对精确复刻了那段 message 的调用方生效，
+  // 任何一个自己抛错或包了一层的调用方都会漏判，把可选依赖的缺失当成硬失败中断整条流程
+  // （issue #1316 的「未找到 Codex App asset: vscode-api-」就是这么冒到用户面前的）。
+  function codexAppAssetMissingError(namePart) {
+    const error = new Error(`未找到 Codex App asset: ${namePart}`);
+    error.code = "CODEX_PLUS_ASSET_MISSING";
+    error.assetNamePart = namePart;
+    return error;
+  }
+
+  function isCodexAppAssetMissingError(error) {
+    return !!error && (error.code === "CODEX_PLUS_ASSET_MISSING" || error.name === "CodexPlusAssetMissingError");
+  }
+
   async function loadCodexAppModule(namePart) {
     if (!codexServiceTierModulePromises.has(namePart)) {
       const failure = codexAppModuleFailures.get(namePart);
@@ -3252,7 +3334,7 @@
       }
       const promise = Promise.resolve().then(async () => {
         const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
-        if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
+        if (!url) throw codexAppAssetMissingError(namePart);
         return await import(url);
       }).then((module) => {
         // Codex 更新后 asset 可能又出现，成功时把失败记录清掉，冷却计数重新开始。
@@ -3276,8 +3358,9 @@
     try {
       return await loadCodexAppModule(namePart);
     } catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
+      // 结构化标记优先；保留字符串兜底以便老缓存里的 Error 也能被认出来。
+      if (isCodexAppAssetMissingError(error)) return null;
+      if (String(error?.message || error).includes(`未找到 Codex App asset: ${namePart}`)) return null;
       throw error;
     }
   }
@@ -3477,6 +3560,39 @@
     return codexServiceTierModelFromValue(codexModelCatalog.model) || codexServiceTierModelFromValue(codexModelCatalog.default_model);
   }
 
+  // threadId -> 模型名。挂在 window 上跨重注入保留（重注入不该丢掉已知的线程模型）。
+  // 只在请求路径观测到模型时写入，用于让界面判定跟上线程当前模型（issue #1463）。
+  const codexServiceTierThreadModels = window.__codexPlusServiceTierThreadModels
+    || (window.__codexPlusServiceTierThreadModels = new Map());
+
+  // 线程中途换模型后，全局 catalog 的 model 字段往往还没更新，直接拿它判 Fast 可用性
+  // 会落后一拍。因此界面优先读「当前线程最近一次实际请求用的模型」，读不到才回落全局。
+  function codexServiceTierUiModelName(threadId = typeof currentSessionRef === "function" ? currentSessionRef()?.session_id || "" : "") {
+    const key = typeof validThreadScrollSessionKey === "function"
+      ? validThreadScrollSessionKey(threadId)
+      : String(threadId || "");
+    if (key) {
+      const cached = codexServiceTierThreadModels.get(key);
+      if (cached) return cached;
+    }
+    return codexServiceTierCurrentModelName();
+  }
+
+  function codexServiceTierRememberThreadModel(threadId, modelName) {
+    const key = typeof validThreadScrollSessionKey === "function"
+      ? validThreadScrollSessionKey(threadId)
+      : String(threadId || "");
+    const model = codexServiceTierModelFromValue(modelName);
+    if (!key || !model) return;
+    codexServiceTierThreadModels.set(key, model);
+    // 简易上界，避免长会话里 Map 无限增长；Map 的插入序即写入序，删最旧的即可。
+    while (codexServiceTierThreadModels.size > 64) {
+      const oldest = codexServiceTierThreadModels.keys().next().value;
+      if (oldest === undefined) break;
+      codexServiceTierThreadModels.delete(oldest);
+    }
+  }
+
   function codexServiceTierModelForRequest(params, modelHint = "") {
     return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
   }
@@ -3514,7 +3630,16 @@
     });
   }
 
-  function codexServiceTierFastAvailability(modelName = codexServiceTierCurrentModelName()) {
+  // UI 侧「Fast 是否可用」的唯一判据。这里必须复用 codexServiceTierFastSupportedForModel，
+  // 不能再自己对照 codexServiceTierSupportedFastModels：那套只认内置名单，中转场景下
+  // 模型名带前缀（或仅靠上游元数据声明 priority）时，界面会判「不支持/未读取」，而真正
+  // 发请求的路径却按同一模型放了 service_tier=priority——两条判据不一致就会自相矛盾
+  // （issue #772）。
+  //
+  // 默认模型名优先取最近一次在线程里观测到的模型（见 codexServiceTierRememberThreadModel），
+  // 只有完全没观测过时才回落到全局 catalog——否则线程中途换模型后 UI 会落后一拍
+  // （issue #1463）。
+  function codexServiceTierFastAvailability(modelName = codexServiceTierUiModelName()) {
     const normalizedModel = normalizeCodexServiceTierModelName(modelName);
     return {
       modelName: modelName || "",
@@ -3759,7 +3884,13 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
+    if (activeThreadId) {
+      bindDraftServiceTierToThread(activeThreadId);
+      // 界面判 Fast 用「当前线程的模型」，不再回落全局 catalog：线程中途换模型后
+      // 全局值可能是旧的，会让 UI 落后一拍（issue #1463）。
+      const activeModel = codexServiceTierUiModelName(activeThreadId);
+      if (activeModel) codexServiceTierRememberThreadModel(activeThreadId, activeModel);
+    }
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
@@ -3996,6 +4127,9 @@
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
     const requestedFast = isFastServiceTierValue(requestedServiceTier);
     const modelName = codexServiceTierModelForRequest(params, modelHint);
+    // 请求路径是唯一能拿到「本 turn 真正用的模型」的地方，顺手记下来供界面判定使用，
+    // 这样线程中途换模型后 UI 下一次刷新就跟得上（issue #1463）。
+    codexServiceTierRememberThreadModel(threadId, modelName);
     const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
     return {
       threadId,
@@ -5494,7 +5628,49 @@
     const layoutLeft = zoom === 1 ? left : left / zoom;
     overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
     overlay.style.left = `${layoutLeft}px`;
-    overlay.style.top = "0px";
+    // 官方顶部有一条 header（返回/前进/隐藏侧边栏），图标栏与侧边栏都从它的下沿开始。
+    // 我们的 overlay 若从 y=0 铺满就会把整条 header 盖住——用户反馈「比官方少了一条顶部栏」
+    // 就是这个原因。这里同样量图标栏的顶边（而非硬编码高度），让 overlay 从 header 下沿开始。
+    const top = railRect && railRect.height > 0
+      ? Math.max(0, railRect.top)
+      : (rect && rect.height > 0 ? Math.max(0, rect.top) : 0);
+    const layoutTop = zoom === 1 ? top : top / zoom;
+    overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
+    overlay.style.top = `${layoutTop}px`;
+    // 右侧与下方官方各留了一圈槽：整行的 [data-app-shell-workspace-row] 比视口小
+    // （真机 1715x984 / 视口 1719x988，即右、下各 4px），官方内容面板正好收在行的右下角。
+    // 我们原先 right/bottom 都贴 0，于是比官方多占这 4px。这里量取而不是硬编码 4。
+    const row = document.querySelector("[data-app-shell-workspace-row]");
+    const rowRect = row?.getBoundingClientRect?.();
+    const rightGutter = rowRect && rowRect.width > 0 ? Math.max(0, window.innerWidth - rowRect.right) : 0;
+    const bottomGutter = rowRect && rowRect.height > 0 ? Math.max(0, window.innerHeight - rowRect.bottom) : 0;
+    const layoutRight = zoom === 1 ? rightGutter : rightGutter / zoom;
+    const layoutBottom = zoom === 1 ? bottomGutter : bottomGutter / zoom;
+    overlay.style.setProperty("--codex-plus-page-right", `${layoutRight}px`);
+    overlay.style.setProperty("--codex-plus-page-bottom", `${layoutBottom}px`);
+    overlay.style.right = `${layoutRight}px`;
+    overlay.style.bottom = `${layoutBottom}px`;
+    // 圆角同样量取官方面板自身的值，不写死 12px。
+    // 这里量的是 _PageSurface_：官方那个与我们 overlay 同格子的页面面板（rect 都是
+    // [52, 44, 1663, 940]），它四角同为 12px，左侧那一角也真实可见——真机像素扫描确认
+    // 官方左边缘从 y=44 的 x=62 收到 y=54 的 x=52，是一条完整的弧。
+    // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
+    // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
+    // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
+    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
+    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
+    const mainSurfaceStyle = (() => {
+      const main = document.querySelector("main[data-app-shell-main-surface]");
+      return main ? getComputedStyle(main) : null;
+    })();
+    const radius =
+      parseFloat(pageSurfaceStyle?.borderTopLeftRadius || "") ||
+      parseFloat(mainSurfaceStyle?.getPropertyValue("--app-shell-main-surface-clip-end-radius") || "") ||
+      0;
+    const layoutRadius = zoom === 1 ? radius : radius / zoom;
+    overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -6325,7 +6501,13 @@
 
   function patchPluginMarketplaceObject(marketplace) {
     if (!marketplace || typeof marketplace !== "object" || marketplace.__codexPlusMarketplaceUnlockPatched) return false;
-    const displayName = displayNameForPluginMarketplaceName(marketplace.name, marketplace.displayName || marketplace.title || marketplace.label || marketplace.name);
+    // 上游已经给了显示名就用上游的（issue #692：此前无条件用上面的中文编号覆盖，
+    // 用户看到的是「OpenAI插件1(Codex++)」而不是市场真实名字）。
+    // 编号映射只在市场上游确实没给显示名时兜底；去重仍走 restorePluginMarketplaceName，
+    // 与显示名无关，所以不会因此退回重复条目。
+    const upstreamDisplayName = marketplace.displayName || marketplace.title || marketplace.label || "";
+    const displayName = upstreamDisplayName
+      || displayNameForPluginMarketplaceName(marketplace.name, marketplace.name);
     if (!displayName || displayName === marketplace.name) return false;
     marketplace.displayName = displayName;
     marketplace.title = displayName;
@@ -7192,25 +7374,31 @@
     };
   }
 
-  function wrapThreadTitleForBadge(row, titleNode) {
-    const parent = titleNode?.parentElement;
-    if (!parent) return null;
-    if (parent.dataset?.codexThreadIdBadgeWrap === "true") return parent;
-    const wrapper = document.createElement("span");
-    wrapper.dataset.codexThreadIdBadgeWrap = "true";
-    parent.insertBefore(wrapper, titleNode);
-    wrapper.appendChild(titleNode);
-    return wrapper;
+  // issue #2180：过去这里把官方 React 管理的标题节点塞进自建的 wrapper 里
+  // （parent.insertBefore(wrapper, titleNode) + wrapper.appendChild(titleNode)）。
+  // 标题节点一旦被搬走，React 的移除链路就会对着自己记录的旧父节点做
+  // removeChild，抛 `NotFoundError: The node to be removed is not a child of this node`。
+  // 新建对话几分钟后标题从临时名转正式名、侧栏重排时正好命中，页面直接进错误页。
+  // 现在不搬动任何 React 节点：徽章作为 titleNode 的**兄弟**插在它前面，
+  // 行的 flex 布局本来就按顺序排（徽章自带 flex:0 0 auto + margin-right）。
+  function threadIdBadgeInsertBefore(titleNode) {
+    return titleNode?.parentElement || titleNode?.parentNode || null;
   }
 
-  function removeThreadIdBadges(root = document) {
-    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+  // 存量数据清理：旧版留下的 wrapper 需要还原一次，否则标题会一直被困在里面。
+  // 只做还原，不再新建任何 wrapper。
+  function unwrapThreadIdBadgeWrappers(root = document) {
     root.querySelectorAll?.('[data-codex-thread-id-badge-wrap="true"]').forEach((wrapper) => {
       const parent = wrapper.parentElement;
       if (!parent) return;
       while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
       wrapper.remove();
     });
+  }
+
+  function removeThreadIdBadges(root = document) {
+    root.querySelectorAll?.(`.${threadIdBadgeClass}`).forEach((badge) => badge.remove());
+    unwrapThreadIdBadgeWrappers(root);
     const rows = root.matches?.(selectors.sidebarThread) ? [root] : Array.from(root.querySelectorAll?.(selectors.sidebarThread) || []);
     rows.forEach((row) => {
       delete row.dataset.codexThreadIdBadge;
@@ -7231,14 +7419,19 @@
       return;
     }
 
-    const wrapper = wrapThreadTitleForBadge(row, titleNode);
-    if (!wrapper) return;
+    // 旧 wrapper 先还原，保证 badge 与 titleNode 在同一个父节点下做兄弟。
+    unwrapThreadIdBadgeWrappers(row);
 
-    let badge = wrapper.querySelector(`.${threadIdBadgeClass}`);
-    if (!badge) {
+    const parent = threadIdBadgeInsertBefore(titleNode);
+    if (!parent) return;
+
+    let badge = row.querySelector(`.${threadIdBadgeClass}`);
+    if (!badge || badge.parentElement !== parent) {
+      badge?.remove();
       badge = document.createElement("span");
       badge.className = threadIdBadgeClass;
-      wrapper.insertBefore(badge, titleNode);
+      // 只插自己的节点，不碰官方节点。
+      parent.insertBefore(badge, titleNode);
     }
 
     badge.dataset.codexThreadIdBadgeVersion = codexThreadIdBadgeVersion;
@@ -8095,13 +8288,34 @@
       try {
         return /vscode:\/\/codex\/(?:\$\{|["'`]\s*\+)/.test(String(candidate));
       } catch { return false; }
+    }) || codexStateCallByCapability(module);
+  }
+
+  // issue #2399：26.930 起 state API 随 AppServerRequestClient 一起搬进 app-shared-*，
+  // 而这批产物每次构建都会重排压缩导出名（旧版是 qut），按字面量取必然落空。
+  // 改成按能力找：函数源码里带 get-global-state / set-global-state 的就是它。
+  function codexStateCallByCapability(module) {
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    return values.find((candidate) => {
+      if (typeof candidate !== "function") return false;
+      let source = "";
+      try {
+        source = String(candidate);
+      } catch {
+        return false;
+      }
+      return source.includes("get-global-state")
+        && source.includes("set-global-state")
+        && source.includes("params");
     }) || null;
   }
 
   async function codexStateApi() {
     codexStateApiPromise = codexStateApiPromise || (async () => {
       const errors = [];
-      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
+      // 前两项是历史前缀（列表字面量本身是契约的一部分，不要改写）；
+      // app-shared- 是 26.930+ 的新位置，靠内容识别，不依赖压缩导出名。
+      for (const assetPrefix of [...["vscode-api-", "app-initial-"], "app-shared-"]) {
         try {
           const api = await loadCodexAppModule(assetPrefix);
           const call = codexStateApiFromModule(api, assetPrefix);
@@ -8785,6 +8999,22 @@
     return null;
   }
 
+  // issue #2399：抓取目标不能再按 asset 文件名前缀写死。Codex 26.930 把
+  // AppServerRequestClient 从 `app-initial-*.js` 搬到了 `app-shared-*.js`，
+  // 按前缀找资产必然 anchor_missing，模型白名单解锁在整条 app-server 路径上失效。
+  // 加一项前缀只治当前这一版，下次改名又会失灵，所以改成**按内容找类定义**：
+  // 遍历已加载的 app asset，谁包含 marker 文本谁就是目标，两代产物都能覆盖。
+  // 自用版沿原生依赖图查找，保留同源校验、去重和单次扫描，避免文件改名后漏检。
+  async function locateCodexAppServerClientInAssets() {
+    const urls = codexAppAssetCandidateUrls();
+    for await (const { url, text } of codexAppAssetSources()) {
+      if (!urls.includes(url)) urls.push(url);
+      const location = locateCodexAppServerClientBreakpoint(text);
+      if (location) return { urls, hit: { url, location } };
+    }
+    return { urls, hit: null };
+  }
+
     let codexAppServerClientCaptureStarted = false;
     let codexAppServerClientCapturePromise = null;
   async function installCodexAppServerClientCapture() {
@@ -8793,20 +9023,25 @@
     codexAppServerClientCaptureStarted = true;
     codexAppServerClientCapturePromise = (async () => { try {
       if (typeof fetch !== "function") return;
-      for await (const { url, text } of codexAppAssetSources()) {
-        const location = locateCodexAppServerClientBreakpoint(text);
-        if (!location) continue;
-        const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        window.__codexPlusAppServerClientCapture = {
-          url, urlRegex, ...location, version: codexAppServerModelRequestPatchVersion,
-        };
-        sendCodexPlusDiagnostic("app_server_client_capture_located", {
-          lineNumber: location.lineNumber,
-          columnNumber: location.columnNumber,
+      const { urls, hit } = await locateCodexAppServerClientInAssets();
+      if (!hit) {
+        // 区分「一个候选资产都没有」和「有资产但没有类定义」：
+        // 前者是页面还没加载完，后者才是 Codex 真的改了产物形状。
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+          reason: urls.length === 0 ? "asset_url_missing" : "anchor_missing",
+          candidateCount: urls.length,
         });
         return;
       }
-      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
+      const urlRegex = hit.url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = {
+        url: hit.url, urlRegex, ...hit.location, version: codexAppServerModelRequestPatchVersion,
+      };
+      sendCodexPlusDiagnostic("app_server_client_capture_located", {
+        lineNumber: hit.location.lineNumber,
+        columnNumber: hit.location.columnNumber,
+        asset: (hit.url.split("/").pop() || "").split("?")[0],
+      });
     } catch (error) {
       codexAppServerClientCaptureStarted = false;
       sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
@@ -13826,12 +14061,22 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
 
     const TAG = '[PasteFix]';
 
+    // 超过这个长度就不再拦截，交回 Codex 原生的「超长文本转附件」逻辑。
+    // 否则整段长文本会被 insertText 直接塞进输入框，造成渲染层卡死（issue #1931）。
+    const MAX_INLINE_LENGTH = 20000;
+
     const handler = (e) => {
       const cd = e.clipboardData;
       if (!cd) return;
 
       const text = cd.getData('text/plain');
       if (typeof text !== 'string' || text.length === 0) return;
+
+      // 长文本放行：让 Codex 自己决定是否转成附件
+      if (text.length > MAX_INLINE_LENGTH) {
+        console.log(TAG, `text too long (${text.length} chars); letting Codex handle it`);
+        return;
+      }
 
       e.preventDefault();
       e.stopImmediatePropagation();

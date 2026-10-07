@@ -485,6 +485,76 @@ async fn chat_compaction_v2_request_routes_to_summary_endpoint_and_flags_respons
     assert_eq!(result.status_code, 200);
 }
 
+/// #2031：GLM 系上游只接受纯 base64，不认 `data:image/...;base64,` 前缀。
+#[test]
+fn glm_image_urls_are_stripped_to_bare_base64() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": "看图" },
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][1]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "QUJD");
+}
+
+/// 标准 data URL 上游（OpenAI 等）不能被这层改写波及。
+#[test]
+fn non_glm_image_urls_keep_data_url_prefix() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "data:image/png;base64,QUJD" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "data:image/png;base64,QUJD");
+}
+
+/// 远端 https 图片既没有前缀可剥，也不该被改动。
+#[test]
+fn remote_image_urls_are_untouched_for_glm() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "glm-5.3-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_image", "image_url": "https://example.com/a.png" }
+                ]
+            }
+        ]
+    }))
+    .unwrap();
+
+    let url = converted["messages"][0]["content"][0]["image_url"]["url"]
+        .as_str()
+        .expect("image part survives");
+    assert_eq!(url, "https://example.com/a.png");
+}
+
 #[test]
 fn responses_request_converts_to_chat_completions() {
     let converted = responses_to_chat_completions(json!({
@@ -2620,6 +2690,116 @@ fn chat_completion_response_maps_reasoning_tool_calls_and_usage_details() {
     );
 }
 
+/// #332 / #1012：Gemini 3 系要求 functionCall 回传 thought_signature，否则整轮 400。
+/// 签名由上游产生、本仓不理解其语义，因此原样透传 `extra_content`：
+/// 上游返回时记住（按 call_id），下一轮构造请求时挂回对应的 tool_call。
+#[test]
+fn gemini_thought_signature_is_carried_back_across_turns() {
+    // 第一轮：上游在 tool_call 上带了 extra_content
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_sig",
+        "created": 123,
+        "model": "gemini-3.5-flash",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_sig",
+                    "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" },
+                    "extra_content": { "google": { "thought_signature": "SIG-ABC" } }
+                }]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let call_id = converted["output"][0]["call_id"]
+        .as_str()
+        .expect("tool call survives")
+        .to_string();
+
+    // 第二轮：客户端把这个 function_call 作为历史带回来
+    let replayed = responses_to_chat_completions(json!({
+        "model": "gemini-3.5-flash",
+        "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "天气" }] },
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Tokyo\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "sunny"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let tool_call = replayed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .and_then(|calls| calls.first())
+        .expect("tool call replayed into chat history");
+    assert_eq!(
+        tool_call["extra_content"]["google"]["thought_signature"],
+        "SIG-ABC",
+        "签名字段必须原样回到下一轮请求"
+    );
+}
+
+/// 无 extra_content 时不得凭空造字段（其它供应商不受影响）。
+#[test]
+fn tool_call_without_extra_content_replays_without_the_field() {
+    let converted = chat_completion_to_response(json!({
+        "id": "chatcmpl_plain",
+        "created": 123,
+        "model": "gpt-5.4",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_plain",
+                    "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" }
+                }]
+            }
+        }]
+    }))
+    .unwrap();
+
+    let call_id = converted["output"][0]["call_id"].as_str().unwrap().to_string();
+    let replayed = responses_to_chat_completions(json!({
+        "model": "gpt-5.4",
+        "input": [
+            { "type": "function_call", "call_id": call_id, "name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}" },
+            { "type": "function_call_output", "call_id": call_id, "output": "sunny" }
+        ]
+    }))
+    .unwrap();
+
+    let tool_call = replayed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .and_then(|calls| calls.first())
+        .expect("tool call replayed");
+    assert!(
+        tool_call.get("extra_content").is_none(),
+        "没有附带数据时不应凭空造 extra_content"
+    );
+}
+
 #[test]
 fn chat_completion_response_defaults_missing_reasoning_tokens_to_zero() {
     // Kimi 等上游在一次响应无 reasoning 时会省略 completion_tokens_details
@@ -3266,7 +3446,10 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
     .await;
 
     assert!(result.is_err());
-    assert!(started.elapsed() < Duration::from_secs(1));
+    // 断言意图：客户端在 header 超时（100ms）后放弃等待，而不是傻等上游那 2 秒。
+    // 上限取 1.5s：既与「傻等 2 秒」有明确区分，又给满负载下的调度抖动留出余量。
+    // 原先写 1s，跑全量测试（几十个 target 并发）时会间歇性越界。
+    assert!(started.elapsed() < Duration::from_millis(1500));
     server.abort();
 }
 

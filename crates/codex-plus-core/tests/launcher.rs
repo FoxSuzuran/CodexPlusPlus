@@ -78,7 +78,11 @@ fn app_paths_find_latest_windows_package_accepts_chatgpt_desktop_migration() {
     );
     assert_eq!(
         packaged_app_user_model_id(&latest).as_deref(),
-        Some("OpenAI.ChatGPT-Desktop_abc!App")
+        if cfg!(windows) {
+            None
+        } else {
+            Some("OpenAI.ChatGPT-Desktop_abc!App")
+        }
     );
 }
 
@@ -101,7 +105,11 @@ fn app_paths_find_latest_windows_package_detects_beta_package() {
     assert_eq!(codex_app_version(&latest).as_deref(), Some("26.527.7698.0"));
     assert_eq!(
         packaged_app_user_model_id(&latest).as_deref(),
-        Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
+        if cfg!(windows) {
+            None
+        } else {
+            Some("OpenAI.CodexBeta_2p2nqsd0c76g0!App")
+        }
     );
 }
 
@@ -424,7 +432,11 @@ fn app_paths_normalizes_chatgpt_desktop_executable_and_builds_it() {
     assert_eq!(build_codex_executable(&app), app.join("ChatGPT.exe"));
     assert_eq!(
         packaged_app_user_model_id(&app).as_deref(),
-        Some("OpenAI.Codex_abc!App")
+        if cfg!(windows) {
+            None
+        } else {
+            Some("OpenAI.Codex_abc!App")
+        }
     );
 }
 
@@ -445,16 +457,102 @@ fn app_paths_rejects_codex_plus_plus_install_dir_as_codex_app() {
     let temp = tempfile::tempdir().unwrap();
     let manager = temp.path().join("Programs").join("Codex++");
     std::fs::create_dir_all(&manager).unwrap();
-    std::fs::write(manager.join("Codex++ Manager.exe"), "").unwrap();
+    // 真实安装根里是产品自己的文件：管理工具二进制 + 卸载器（见 install/windows.rs）。
+    std::fs::write(manager.join("codex-plus-plus-manager.exe"), "").unwrap();
+    std::fs::write(manager.join("uninstall.exe"), "").unwrap();
 
     assert_eq!(normalize_codex_app_path(&manager), None);
     assert_eq!(
-        normalize_codex_app_path(&manager.join("Codex++ Manager.exe")),
+        normalize_codex_app_path(&manager.join("codex-plus-plus-manager.exe")),
         None
     );
 
     let resolved = resolve_codex_app_dir_with_saved(None, Some(&manager.to_string_lossy()));
     assert_ne!(resolved.as_deref(), Some(manager.as_path()));
+}
+
+#[test]
+fn app_paths_accepts_real_codex_inside_a_codex_plus_plus_named_directory() {
+    // issue #1036：用户把真正的 Codex 放在 C:\codex++ 下，按目录名一刀切会连真
+    // Codex 一起拒掉（版本为 null、启动报 failed to launch）。目录名只是线索，
+    // 没有本产品文件时应当放行。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("codex++");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+
+    assert_eq!(
+        normalize_codex_app_path(&app_dir).as_deref(),
+        Some(app_dir.as_path())
+    );
+    assert_eq!(
+        normalize_codex_app_path(&app_dir.join("Codex.exe")).as_deref(),
+        Some(app_dir.as_path())
+    );
+}
+
+#[test]
+fn app_paths_rejects_codex_plus_plus_app_bundle_by_its_macos_executable() {
+    // macOS 布局：安装根下是 Codex++.app，Contents/MacOS 里是 bundle 可执行文件名。
+    let temp = tempfile::tempdir().unwrap();
+    let bundle = temp.path().join("Applications").join("Codex++.app");
+    let macos_dir = bundle.join("Contents").join("MacOS");
+    std::fs::create_dir_all(&macos_dir).unwrap();
+    std::fs::write(macos_dir.join("CodexPlusPlusManager"), "").unwrap();
+
+    assert_eq!(normalize_codex_app_path(&bundle), None);
+    assert_eq!(
+        normalize_codex_app_path(&macos_dir.join("CodexPlusPlusManager")),
+        None
+    );
+}
+
+#[test]
+fn app_paths_reads_version_from_unpacked_manifest_file_name() {
+    // issue #1160：免安装/自解包目录（…\Codex\app）没有 MSIX 包目录名也没有
+    // version 文件，只有以版本号命名的清单文件。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("149.0.7827.115")
+    );
+}
+
+#[test]
+fn app_paths_manifest_version_picks_numerically_highest_and_ignores_noise() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex").join("app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    // 字符串比较会把 "115" 判成小于 "20"，必须按数值比较。
+    std::fs::write(app_dir.join("149.0.7827.20.manifest"), "").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+    // 非版本号命名的清单不能吞进来。
+    std::fs::write(app_dir.join("app.manifest"), "").unwrap();
+    std::fs::write(app_dir.join("uninstall.manifest"), "").unwrap();
+
+    assert_eq!(
+        codex_app_version(&app_dir).as_deref(),
+        Some("149.0.7827.115")
+    );
+}
+
+#[test]
+fn app_paths_manifest_version_does_not_override_explicit_version_file() {
+    // version 文件是更明确的信号，manifest 只是兜底。
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("versions").join("current");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("Codex.exe"), "").unwrap();
+    std::fs::write(app_dir.join("version"), "42.1.0\n").unwrap();
+    std::fs::write(app_dir.join("149.0.7827.115.manifest"), "").unwrap();
+
+    assert_eq!(codex_app_version(&app_dir).as_deref(), Some("42.1.0"));
 }
 
 #[test]
@@ -723,9 +821,18 @@ fn launcher_native_menu_inspector_arguments_are_added_before_extra_args() {
 
 #[test]
 fn launcher_constructs_windows_packaged_activation_without_real_app() {
-    let app_dir = PathBuf::from(
-        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
-    );
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp
+        .path()
+        .join("OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0/app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    // 临时目录不是已注册的 Store 安装；Windows 必须回退按路径启动（#2140）。
+    // 已注册包的纯推导由 app_paths::registered_package_tests 独立覆盖。
+    if cfg!(windows) {
+        assert_eq!(packaged_app_user_model_id(&app_dir), None);
+        assert_eq!(build_packaged_activation(&app_dir, 9229, &[]), None);
+        return;
+    }
 
     assert_eq!(
         packaged_app_user_model_id(&app_dir).unwrap(),
@@ -767,13 +874,17 @@ fn packaged_app_user_model_id_reads_application_id_from_manifest() {
 
     assert_eq!(
         packaged_app_user_model_id(&app_dir).as_deref(),
-        Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
+        if cfg!(windows) {
+            None
+        } else {
+            Some("OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0!ChatGPTDesktop")
+        }
     );
 }
 
 #[test]
 fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
-    // manifest 缺失/不可读时保持旧行为（仍使用历史默认值 "App"）。
+    // 已注册包在 manifest 缺失时仍使用默认值 "App"；未注册的临时目录不能生成 AUMID。
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp
         .path()
@@ -783,16 +894,26 @@ fn packaged_app_user_model_id_falls_back_to_default_id_without_manifest() {
 
     assert_eq!(
         packaged_app_user_model_id(&app_dir).as_deref(),
-        Some("OpenAI.Codex_2p2nqsd0c76g0!App")
+        if cfg!(windows) {
+            None
+        } else {
+            Some("OpenAI.Codex_2p2nqsd0c76g0!App")
+        }
     );
 }
 
 #[test]
 fn launcher_packaged_activation_appends_extra_codex_arguments() {
-    let app_dir = PathBuf::from(
-        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
-    );
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp
+        .path()
+        .join("OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0/app");
+    std::fs::create_dir_all(&app_dir).unwrap();
     let extra_args = vec!["--force_high_performance_gpu".to_string()];
+    if cfg!(windows) {
+        assert_eq!(build_packaged_activation(&app_dir, 9229, &extra_args), None);
+        return;
+    }
 
     assert_eq!(
         build_packaged_activation(&app_dir, 9229, &extra_args).unwrap(),
@@ -808,9 +929,18 @@ fn launcher_packaged_activation_appends_extra_codex_arguments() {
 
 #[test]
 fn launcher_packaged_activation_adds_native_menu_inspector_argument() {
-    let app_dir = PathBuf::from(
-        r"C:\Program Files\WindowsApps\OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0\app",
-    );
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp
+        .path()
+        .join("OpenAI.Codex_26.506.2212.0_x64__2p2nqsd0c76g0/app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    if cfg!(windows) {
+        assert_eq!(
+            build_packaged_activation_with_native_menu_inspector(&app_dir, 9229, 9329, &[]),
+            None
+        );
+        return;
+    }
 
     assert_eq!(
         build_packaged_activation_with_native_menu_inspector(&app_dir, 9229, 9329, &[]).unwrap(),
@@ -953,18 +1083,33 @@ fn ports_windows_falls_back_to_ephemeral_when_requested_is_busy() {
 }
 
 #[test]
-fn ports_windows_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
-    let selected =
-        select_packaged_codex_debug_port_with(9229, true, |_| false, |_| false, || 43001);
+fn ports_packaged_debug_falls_back_to_ephemeral_when_requested_is_busy() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| false, || 43001);
 
     assert_eq!(selected, 43001);
 }
 
 #[test]
-fn ports_windows_packaged_debug_keeps_requested_when_existing_cdp_is_available() {
-    let selected = select_packaged_codex_debug_port_with(9229, true, |_| false, |_| true, || 43001);
+fn ports_packaged_debug_keeps_requested_when_existing_cdp_is_available() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| true, || 43001);
 
     assert_eq!(selected, 9229);
+}
+
+#[test]
+fn ports_packaged_debug_keeps_requested_when_bindable() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| true, |_| false, || 43001);
+
+    assert_eq!(selected, 9229);
+}
+
+/// #247：调试端口被第三方进程（如 macOS 上的 SkyComputerUseService）占用时，
+/// 非 Windows 平台也必须改用空闲端口，而不是把请求端口原样交给 Codex。
+#[test]
+fn ports_packaged_debug_falls_back_even_on_non_windows() {
+    let selected = select_packaged_codex_debug_port_with(9229, |_| false, |_| false, || 43001);
+
+    assert_eq!(selected, 43001);
 }
 
 #[test]

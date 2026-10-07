@@ -589,7 +589,7 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)(requestMethod, providerParams);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -597,15 +597,15 @@
         nextParams,
         options
       );
-      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
       let result;
       try {
         result = await originalSendRequest(method, nextParams, options);
       } catch (error) {
-        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, null, true, serviceTierRequest);
         throw error;
       }
-      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
+      (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -620,7 +620,7 @@
         || client.prewarmThreadStart.bind(client);
       client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
+        const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)("thread/start", params);
         return originalPrewarmThreadStart(nextParams, options);
       };
     }
@@ -759,7 +759,7 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)(requestMethod, providerParams);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -767,15 +767,15 @@
         nextParams,
         options
       );
-      const serviceTierRequest = beginCodexServiceTierRequest(requestMethod, nextParams);
+      const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
       let result;
       try {
         result = await originalSendRequest.call(client, method, nextParams, options);
       } catch (error) {
-        observeCodexServiceTierRequestResult(requestMethod, nextParams, null, true, serviceTierRequest);
+        (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, null, true, serviceTierRequest);
         throw error;
       }
-      observeCodexServiceTierRequestResult(requestMethod, nextParams, result, false, serviceTierRequest);
+      (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, result, false, serviceTierRequest);
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -790,7 +790,7 @@
         || proto.prewarmThreadStart;
       proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
+        const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)("thread/start", params);
         return originalPrewarmThreadStart.call(this, nextParams, options);
       };
     }

@@ -723,7 +723,9 @@
   }
 
   function wireCodexServiceTierBadge(badge) {
-    if (!badge || badge.dataset.codexServiceTierBadgeWired === codexServiceTierBadgeVersion) return;
+    if (!badge) return;
+    badge.__codexPlusFastToggle = toggleCodexServiceTierFromBadge;
+    if (badge.dataset.codexServiceTierBadgeWired === codexServiceTierBadgeVersion) return;
     badge.dataset.codexServiceTierBadgeWired = codexServiceTierBadgeVersion;
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
@@ -731,14 +733,14 @@
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
-      toggleCodexServiceTierFromBadge();
+      badge.__codexPlusFastToggle();
     });
     badge.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
-      toggleCodexServiceTierFromBadge();
+      badge.__codexPlusFastToggle();
     });
   }
 

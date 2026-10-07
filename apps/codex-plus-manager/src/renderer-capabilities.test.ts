@@ -248,7 +248,8 @@ describe("captured request clients continue forwarding requests", () => {
     api.window.__codexPlusAppServerClientClass = CapturedClient;
     assert.equal(api.prototype(), true);
     const options = { signal: "original-signal" };
-    for (const client of [instanceClient, new CapturedClient()]) {
+    const prototypeClient = new CapturedClient();
+    for (const client of [instanceClient, prototypeClient]) {
       for (let turn = 0; turn < 2; turn++) {
         const result = await client.sendRequest("turn/start", {
           threadId: "thread-repeat", model: "gpt-6.1-sol",
@@ -287,5 +288,20 @@ describe("captured request clients continue forwarding requests", () => {
     api.instance(failing);
     await assert.rejects(() => failing.sendRequest("turn/start", { threadId: "failed" }, options), (error) => error === failure);
     assert.equal(api.observations.at(-1).failed, true);
+    let activeResults = 0;
+    const activeLease = {};
+    api.window.__codexPlusFastRequestHandlers = {
+      apply: (_method: string, params: Record<string, unknown>) => ({ ...params, serviceTier: null }),
+      begin: () => activeLease,
+      observe: (_method: string, _params: unknown, _result: unknown, _failed: boolean, lease: unknown) => {
+        assert.equal(lease, activeLease);
+        activeResults++;
+      },
+    };
+    for (const client of [instanceClient, prototypeClient]) {
+      assert.equal((await client.sendRequest("turn/start", { threadId: "reloaded" }, options)).params.serviceTier, null);
+      assert.equal((await client.prewarmThreadStart({}, options)).params.serviceTier, null);
+    }
+    assert.equal(activeResults, 2, "existing wrappers use the active reload's configuration and observers");
   });
 });

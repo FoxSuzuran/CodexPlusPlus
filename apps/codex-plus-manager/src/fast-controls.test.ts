@@ -6,6 +6,7 @@ import vm from "node:vm";
 const fragments = new URL("../../../assets/inject/renderer-inject/", import.meta.url);
 const menu = await readFile(new URL("20-menu.js", fragments), "utf8");
 const service = await readFile(new URL("30-service-tier.js", fragments), "utf8");
+const bootstrap = await readFile(new URL("../../../assets/inject/user-scripts-bootstrap.js", import.meta.url), "utf8");
 
 function fixture() {
   const storage = new Map<string, string>();
@@ -225,8 +226,18 @@ test("integrated Fast navigation runs before native commands and keeps its order
     selectCodexFastSlashRow = (selected) => { panel.dataset.selected = String(selected); };
     consumeCodexFastComposerCommand = (_, action) => consumed.push(action);
   `, f.context);
+  f.context.window.top = f.context.window.self = f.context.window;
+  f.context.window.location = { href: "app://-/index.html" };
+  f.context.window.electronBridge = {};
+  f.context.document.readyState = "complete";
+  f.context.window.__codexSessionDeleteBridge = () => {
+    listeners.push(() => { native++; });
+    return Promise.resolve({});
+  };
+  vm.runInContext(bootstrap, f.context);
+  vm.runInContext(bootstrap, f.context);
+  assert.equal(listeners.length, 2, "bootstrap reserves one Fast listener before loading plugins");
   f.api.install();
-  listeners.push(() => { native++; });
   const press = (key: string, isComposing = false) => {
     const event = { target: editor, key, isComposing, prevented: false, stopped: false,
       preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };

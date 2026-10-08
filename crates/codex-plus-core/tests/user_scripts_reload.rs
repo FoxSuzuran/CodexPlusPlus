@@ -90,13 +90,29 @@ assert.equal(window.active, 0);
 
 // 新页面启动只请求一次当前脚本，且不在子框架执行。
 let requests = 0;
+const keyListeners = [];
 const fresh = { location: window.location, electronBridge: {},
-  __codexSessionDeleteBridge(path) { assert.equal(path, '/user-scripts/load'); requests++; return Promise.resolve({}); } };
+  addEventListener(type, listener, capture) {
+    assert.equal(type, 'keydown'); assert.equal(capture, true);
+    if (!keyListeners.includes(listener)) keyListeners.push(listener);
+  },
+  __codexSessionDeleteBridge(path) {
+    assert.equal(path, '/user-scripts/load'); assert.equal(keyListeners.length, 1);
+    requests++; return Promise.resolve({});
+  } };
 fresh.self = fresh.top = fresh;
 const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console});
 vm.runInContext(bundles.bootstrap, startup);
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
+assert.equal(keyListeners.length, 1);
+let fastKeys = 0;
+fresh.__codexPlusFastKeydown = () => { fastKeys++; };
+keyListeners[0]({});
+assert.equal(fastKeys, 1);
+fresh.__codexPlusFastKeydown = () => { fastKeys += 2; };
+keyListeners[0]({});
+assert.equal(fastKeys, 3); // 保留注册顺序，同时使用重载后的核心处理函数。
 fresh.__codexPlusUserScriptsBootstrap = false;
 fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);

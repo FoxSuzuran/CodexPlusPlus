@@ -1,0 +1,155 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index 7ac7a75..1e93119 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -2000,6 +2000,19 @@
+     return /codex|conversation|responses|completion|chat|backend-api|openai/.test(text);
+   }
+ 
++  function shouldCaptureResponse(url, contentType) {
++    let pathname = "";
++    try { pathname = new URL(String(url || ""), window.location.href).pathname; } catch {}
++    if (/\/assets(?:\/|$)/i.test(pathname) ||
++        /\.(?:m?js|cjs|css|map|wasm|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)(?:$)/i.test(pathname)) return false;
++    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
++    if (/javascript|ecmascript|^text\/(?:css|html)$|^(?:image|font|audio|video)\//.test(mime)) return false;
++    if (/^(?:application|text)\/(?:[a-z0-9.+-]*\+)?json$/.test(mime) ||
++        /^(?:application|text)\/(?:x-)?ndjson$/.test(mime) ||
++        mime === "application/json-seq" || mime === "text/event-stream") return true;
++    return isLikelyUsageUrl(url) && (mime === "" || mime === "text/plain");
++  }
++
+   function safeParseJson(text) {
+     if (typeof text !== "string") return null;
+     const trimmed = text.trim();
+@@ -2583,6 +2596,8 @@
+   }
+ 
+   function processCapturePayload(payload, source, url = "") {
++    if (typeof payload === "string") payload = parseTextPayloads(payload);
++    if (!payload || (Array.isArray(payload) && !payload.length)) return false;
+     const toolChanged = processToolCallPayload(payload, source);
+     if (sourceMode === "external") return toolChanged;
+     processModelPayload(payload, false);
+@@ -2605,11 +2620,9 @@
+   }
+ 
+   function processModelPayload(payload, recordTools = true) {
++    if (typeof payload === "string") payload = parseTextPayloads(payload);
+     const toolChanged = recordTools ? processToolCallPayload(payload, "model") : false;
+     if (!payload) return toolChanged;
+-    if (typeof payload === "string") {
+-      return parseTextPayloads(payload).some((item) => processModelPayload(item, false)) || toolChanged;
+-    }
+     if (Array.isArray(payload)) {
+       return payload.some((item) => processModelPayload(item, false)) || toolChanged;
+     }
+@@ -2623,34 +2636,23 @@
+     return observed || toolChanged;
+   }
+ 
++  function captureMessage(payload, source) {
++    if (shouldProcessStandalonePayload()) processCapturePayload(payload, source);
++    else processModelPayload(payload);
++  }
++
++  function handleCodexMessage(event) {
++    try { captureMessage(event.detail, "codex-message"); } catch {}
++  }
++
++  function handleWindowMessage(event) {
++    try { captureMessage(event.data, "post-message"); } catch {}
++  }
++
+   function installModelCapture() {
+     if (modelCaptureInstalled) return false;
+-    window.addEventListener?.(
+-      "codex-message-from-view",
+-      (event) => {
+-        try {
+-          if (shouldProcessStandalonePayload()) {
+-            processCapturePayload(event.detail, "codex-message");
+-          } else {
+-            processModelPayload(event.detail);
+-          }
+-        } catch {
+-          // 不影响 Codex 自身消息投递。
+-        }
+-      },
+-      true
+-    );
+-    window.addEventListener?.(
+-      "message",
+-      (event) => {
+-        try {
+-          processModelPayload(event.data);
+-        } catch {
+-          // Ignore unrelated messages.
+-        }
+-      },
+-      true
+-    );
++    window.addEventListener?.("codex-message-from-view", handleCodexMessage, true);
++    window.addEventListener?.("message", handleWindowMessage, true);
+     modelCaptureInstalled = true;
+     return true;
+   }
+@@ -2663,7 +2665,7 @@
+       processModelPayload(init?.body);
+       const response = await originalFetch.call(this, input, init);
+       const contentType = String(response?.headers?.get?.("content-type") || "");
+-      if (response?.clone && (isLikelyUsageUrl(url) || /json|event-stream|text/.test(contentType))) {
++      if (response?.clone && shouldCaptureResponse(url, contentType)) {
+         response
+           .clone()
+           .text()
+@@ -2690,7 +2692,7 @@
+       processModelPayload(args[0]);
+       this.addEventListener?.("loadend", () => {
+         const url = this.__codexDailyTokenUsageUrl || "";
+-        if (!isLikelyUsageUrl(url) && !String(this.getResponseHeader?.("content-type") || "").match(/json|event-stream|text/)) {
++        if (!shouldCaptureResponse(url, this.getResponseHeader?.("content-type"))) {
+           return;
+         }
+         try {
+@@ -2738,29 +2740,12 @@
+     window.WebSocket = DailyTokenUsageWebSocket;
+   }
+ 
+-  function installMessageCapture() {
+-    if (window.__codexDailyTokenUsageMessageCapture === VERSION) return;
+-    window.addEventListener?.(
+-      "message",
+-      (event) => {
+-        try {
+-          processModelPayload(event.data);
+-          processCapturePayload(event.data, "post-message");
+-        } catch {
+-          // Ignore unrelated messages.
+-        }
+-      },
+-      true
+-    );
+-    window.__codexDailyTokenUsageMessageCapture = VERSION;
+-  }
+-
+   function installStandaloneCapture() {
+     if (captureInstalled) return false;
+     installFetchCapture();
+     installXhrCapture();
+     installWebSocketCapture();
+-    installMessageCapture();
++    installModelCapture();
+     captureInstalled = true;
+     sourceMode = "standalone";
+     return true;
+@@ -5481,6 +5466,9 @@
+     observer?.disconnect();
+     resizeObserver?.disconnect();
+     restoreStandaloneCapture();
++    window.removeEventListener?.("codex-message-from-view", handleCodexMessage, true);
++    window.removeEventListener?.("message", handleWindowMessage, true);
++    modelCaptureInstalled = false;
+     document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+     window.removeEventListener("resize", handleWindowResize);
+     root?.remove();

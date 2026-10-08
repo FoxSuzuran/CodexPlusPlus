@@ -26,14 +26,23 @@ for (const platform of ["windows", "macos"]) {
   const compatibility = platform === "windows" ? await read("assets/inject/dream-skin-compat.windows.css") : "";
   const css = baseCss + (compatibility ? `\n${compatibility}` : "");
   const predicates = cssPredicateManifest(css);
+  if (predicates.some(({ selector }) => /:(?:empty|blank|dir)\b/.test(selector))) {
+    throw new Error(`${platform}: text-sensitive predicate added; review the mutation filter`);
+  }
   const declaration = /^  const CSS_PREDICATES = .+;?$/gm;
+  const mutationAnchor = '        if (record.type !== "attributes") return true;';
   if ([...baseRenderer.matchAll(declaration)].length !== 1 ||
+      baseRenderer.split(mutationAnchor).length !== 2 ||
       !baseRenderer.includes("refreshPredicates();") ||
       !baseRenderer.includes("removePredicates();")) {
     throw new Error(`${platform}: upstream predicate contract changed; review the adapter`);
   }
   // Include local compatibility CSS in the upstream manifest, never parse CSS in the renderer.
-  const renderer = baseRenderer.replace(declaration, () => `  const CSS_PREDICATES = ${JSON.stringify(predicates)}`);
+  const renderer = baseRenderer
+    .replace(declaration, () => `  const CSS_PREDICATES = ${JSON.stringify(predicates)}`)
+    .replace(mutationAnchor, `        if (record.type === "childList" && record.addedNodes && record.removedNodes
+            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
+${mutationAnchor}`);
   new Function(renderer);
   for (const [name, source, content] of [
     ["dream-skin.css", baseCss, css],

@@ -37,3 +37,42 @@ test("local Home geometry and upstream predicates do not drift", async () => {
   assert.match(renderer, /removePredicates\(\)/);
   assert.match(renderer, /metrics\.predicateWrites/);
 });
+
+test("both skin observers ignore text-only replacements and retain structural changes", async () => {
+  for (const platform of ["windows", "macos"]) {
+    const renderer = await readFile(new URL(
+      `../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url,
+    ), "utf8");
+    const from = renderer.indexOf("    const predicateClass = ");
+    const to = renderer.indexOf("\n  }\n\n  let mediaQuery", from);
+    assert.ok(from >= 0 && to > from);
+    let callback: (records: unknown[]) => void = () => {};
+    let scheduled = 0;
+    new Function("MutationObserver", "scheduleEnsure",
+      `let partObserver;${renderer.slice(from, to)}`)(
+      class { constructor(fn: typeof callback) { callback = fn; } },
+      () => { scheduled++; },
+    );
+    const text = { nodeType: 3 }, element = { nodeType: 1 };
+    for (const [record, expected] of [
+      [{ type: "childList", addedNodes: [text], removedNodes: [text] }, 0],
+      [{ type: "childList", addedNodes: [], removedNodes: [text] }, 0],
+      [{ type: "childList", addedNodes: [text], removedNodes: [] }, 0],
+      [{ type: "childList", addedNodes: [], removedNodes: [] }, 0],
+      [{ type: "childList", addedNodes: [element], removedNodes: [] }, 1],
+      [{ type: "childList", addedNodes: [], removedNodes: [element] }, 1],
+      [{ type: "childList", addedNodes: [text, element], removedNodes: [] }, 1],
+      [{ type: "childList" }, 1],
+      [{ type: "attributes", attributeName: "class", oldValue: "scrolling",
+        target: { getAttribute: () => "scrolled" } }, 0],
+      [{ type: "attributes", attributeName: "class", oldValue: "_MainContentSurface_old",
+        target: { getAttribute: () => "_MainContentSurface_new" } }, 1],
+      [{ type: "attributes", attributeName: "role", oldValue: null,
+        target: { getAttribute: () => "dialog" } }, 1],
+    ] as const) {
+      scheduled = 0;
+      callback([record]);
+      assert.equal(scheduled, expected, `${platform}: ${JSON.stringify(record)}`);
+    }
+  }
+});

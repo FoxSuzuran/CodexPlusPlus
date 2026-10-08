@@ -1049,6 +1049,8 @@
     const predicateClass = /main-surface|_MainContentSurface_|home-banners|_homeUtilityBar_|_ComposerHomeUtilityBar_|horizontal-scroll-fade-mask|group\/project-selector/;
     partObserver = new MutationObserver((records) => {
       const changed = records.some((record) => {
+        if (record.type === "childList" && record.addedNodes && record.removedNodes
+            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
         if (record.type !== "attributes") return true;
         const current = record.target.getAttribute(record.attributeName);
         if (record.oldValue === current) return false;

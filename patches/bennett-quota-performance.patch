@@ -1,0 +1,119 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+index d562458..445e520 100644
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -3828,11 +3828,25 @@ const FEATURES = {
+       }
+       return node;
+     };
+-    const scanGuestUsage = () => {
++    const usageMutationRoots = (records, selector) => {
++      const roots = new Set();
++      for (const record of records) {
++        const target = record.target?.nodeType === 1 ? record.target : record.target?.parentElement;
++        if (target?.closest("[data-message-author-role], article, [contenteditable='true'], [data-codexpp='usage-box'], [data-codexpp='usage-boxes']")) continue;
++        const surface = target?.closest(selector);
++        if (surface) roots.add(surface);
++        for (const node of record.addedNodes || []) {
++          if (node.nodeType === 1 && !node.closest("[data-message-author-role], article, [contenteditable='true']")) roots.add(node);
++        }
++      }
++      return roots;
++    };
++    const pendingRoots = new Set();
++    const scanGuestUsage = (usageMutationRoots) => {
+       const STYLE_ID = "codex-plus-hide-usage-alert-style";
+       const HIDDEN_ATTR = "data-codex-plus-hidden-usage-alert";
+       const STATE_KEY = "__codexPlusUsageAlertGuestState";
+-      const state = window[STATE_KEY] || { observer: null, timer: 0 };
++      const state = window[STATE_KEY] || { observer: null, timer: 0, pendingRoots: new Set() };
+       window[STATE_KEY] = state;
+       const quotaRe = /(Codex\s*消息限额已用尽|消息限额已用尽|message\s+limit|usage\s+limit|out\s+of\s+Codex\s+messages|额度|限额|quota|rate\s+limit)/i;
+       const resetRe = /(额度将于|继续使用\s*Codex|升级至\s*Plus|quota\s+will\s+reset|limit\s+will\s+reset|rate\s+limit\s+resets|reset|重置|upgrade\s+to\s+plus)/i;
+@@ -3906,9 +3920,10 @@ const FEATURES = {
+         style.textContent = `[${HIDDEN_ATTR}="true"] { display: none !important; visibility: hidden !important; pointer-events: none !important; }`;
+         document.documentElement.appendChild(style);
+       }
+-      const scan = () => {
++      const scan = (root = document.body) => {
++        if (!root?.isConnected) return 0;
+         let hiddenCount = 0;
+-        for (const node of document.body?.querySelectorAll(quotaSurfaceSelector) || []) {
++        for (const node of [root, ...root.querySelectorAll(quotaSurfaceSelector)]) {
+           if (!node.hasAttribute(HIDDEN_ATTR) && shouldHide(node)) {
+             findHideTarget(node).setAttribute(HIDDEN_ATTR, "true");
+             hiddenCount += 1;
+@@ -3917,8 +3932,14 @@ const FEATURES = {
+         return hiddenCount;
+       };
+       if (!state.observer) {
+-        state.observer = new MutationObserver(() => {
+-          if (!state.timer) state.timer = window.setTimeout(() => { state.timer = 0; scan(); }, 80);
++        state.observer = new MutationObserver((records) => {
++          for (const root of usageMutationRoots(records, quotaSurfaceSelector)) state.pendingRoots.add(root);
++          if (state.pendingRoots.size && !state.timer) state.timer = window.setTimeout(() => {
++            state.timer = 0;
++            const roots = [...state.pendingRoots];
++            state.pendingRoots.clear();
++            for (const root of roots) scan(root);
++          }, 80);
+         });
+         state.observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+       }
+@@ -3933,12 +3954,12 @@ const FEATURES = {
+       document.querySelectorAll(`[${HIDDEN_ATTR}="true"]`).forEach((node) => node.removeAttribute(HIDDEN_ATTR));
+       document.getElementById("codex-plus-hide-usage-alert-style")?.remove();
+     };
+-    const scanGuests = () => {
+-      for (const guest of document.querySelectorAll("webview")) {
++    const scanGuests = (guests = guestListeners.keys()) => {
++      for (const guest of guests) {
+         if (typeof guest.executeJavaScript !== "function" || guestPending.has(guest)) continue;
+         guestPending.add(guest);
+         try {
+-          Promise.resolve(guest.executeJavaScript(`(${scanGuestUsage.toString()})()`, true)).catch(() => {}).finally(() => guestPending.delete(guest));
++          Promise.resolve(guest.executeJavaScript(`(${scanGuestUsage.toString()})(${usageMutationRoots.toString()})`, true)).catch(() => {}).finally(() => guestPending.delete(guest));
+         } catch {
+           guestPending.delete(guest);
+         }
+@@ -3957,17 +3978,24 @@ const FEATURES = {
+       target.setAttribute(HIDDEN_ATTR, "true");
+       hidden.add(target);
+     };
+-    const scan = () => {
+-      timer = 0;
+-      if (!document.body) return;
+-      for (const node of document.body.querySelectorAll(quotaSurfaceSelector)) {
++    const scan = (root = document.body) => {
++      if (!root?.isConnected) return;
++      for (const node of [root, ...root.querySelectorAll(quotaSurfaceSelector)]) {
+         if (!node.hasAttribute(HIDDEN_ATTR) && shouldHide(node)) hide(node);
+       }
+-      for (const guest of document.querySelectorAll("webview")) attachGuest(guest);
+-      scanGuests();
++      const guests = [...root.querySelectorAll("webview")];
++      if (root.matches("webview")) guests.push(root);
++      for (const guest of guests) attachGuest(guest);
++      scanGuests(guests);
+     };
+-    const schedule = () => {
+-      if (!timer) timer = window.setTimeout(scan, 80);
++    const schedule = (records) => {
++      for (const root of usageMutationRoots(records, quotaSurfaceSelector)) pendingRoots.add(root);
++      if (pendingRoots.size && !timer) timer = window.setTimeout(() => {
++        timer = 0;
++        const roots = [...pendingRoots];
++        pendingRoots.clear();
++        for (const root of roots) scan(root);
++      }, 80);
+     };
+     const style = document.createElement("style");
+     style.id = STYLE_ID;
+@@ -3980,6 +4008,7 @@ const FEATURES = {
+     return () => {
+       if (timer) window.clearTimeout(timer);
+       observer?.disconnect();
++      pendingRoots.clear();
+       for (const [guest, listener] of guestListeners) {
+         guest.removeEventListener("dom-ready", listener);
+         guest.removeEventListener("did-stop-loading", listener);

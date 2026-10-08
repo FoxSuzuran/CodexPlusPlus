@@ -45,6 +45,7 @@ TypeScript 检查通过；Rust 1779 项通过、8 项 ignored，另跳过 1 项�
 
 完整 JS、两份 EXE、原件备份、增量补丁、trace/CPU profile 和哈希清单在
 `dist/windows/daily-token-fix-20261009/`。
+仓库将此补丁固定为 LF 换行，避免 Windows 检出时变为 CRLF 而无法应用。
 在仓库以外的备份副本目录中，先核对基线哈希，再应用补丁：
 
 ```powershell

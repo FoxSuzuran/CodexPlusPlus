@@ -86,6 +86,17 @@
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
+    // 原生菜单可能晚于 input 的 RAF 挂载或整体替换；自身插入不触发布局补扫。
+    if (mutations && document.querySelector("[data-codex-fast-editor]") && mutations.some((mutation) => {
+      if (isExtensionUiNode(mutation.target)) return false;
+      const changed = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
+        .filter((node) => node.nodeType === 1);
+      if (changed.length && changed.every(isExtensionUiNode)
+          && !Array.from(mutation.removedNodes).some((node) => node.matches?.("[data-codex-fast-slash-menu]"))) return false;
+      const selector = "[data-composer-overlay-floating-ui], [data-mention-list-scroll-area], [role='listbox']";
+      return mutation.target.closest?.(selector) || changed.some((node) =>
+        node.matches?.(selector) || node.querySelector?.(selector));
+    })) scheduleCodexFastSlashMenu();
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;

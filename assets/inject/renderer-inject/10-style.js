@@ -979,16 +979,21 @@
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
       .${codexServiceTierBadgeClass} .codex-fast-icon { opacity: .45; filter: grayscale(1); }
       .${codexServiceTierBadgeClass}[data-tier="fast"] .codex-fast-icon { opacity: 1; filter: none; }
-      .codex-fast-slash-menu { position: fixed; z-index: 2147483000; width: 340px; padding: 4px;
-        border: 1px solid var(--codex-plus-border); border-radius: 10px;
-        background: var(--codex-plus-bg-elevated); color: var(--codex-plus-text);
-        box-shadow: 0 4px 16px #0003; font-family: inherit; font-size: 13px; line-height: 1.4; }
-      .codex-fast-slash-menu button { display: flex; justify-content: space-between; align-items: center;
-        width: 100%; padding: 6px 8px; gap: 12px; border: 0; border-radius: 6px; color: inherit;
+      .codex-fast-slash-menu { display: contents; }
+      .codex-fast-slash-menu button { display: flex; align-items: center;
+        width: 100%; padding: var(--suggestion-menu-item-padding, 6px 8px);
+        gap: var(--gap-menu-row-content, 10px); border: 0; border-radius: var(--radius-xl, 6px); color: inherit;
         background: transparent; cursor: pointer; text-align: left; font: inherit; }
-      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu button:focus-visible { background: #10a37f26; }
+      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu[data-selected="true"] button {
+        background: var(--color-primary-ghost-hover, #10a37f26); }
       .codex-fast-slash-menu button:disabled { opacity: .6; cursor: not-allowed; }
-      [data-codex-fast-slash-status] { font-size: 11px; opacity: .75; }
+      .codex-fast-slash-icon { width: 1em; flex-shrink: 0; }
+      .codex-fast-slash-label { flex-shrink: 0; }
+      [data-codex-fast-slash-status] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--color-text-codex-description, inherit); opacity: .75; }
+      [data-codex-fast-native-selection] button:not([data-codex-fast-slash-action]),
+      [data-codex-fast-native-selection] [role="option"]:not([data-codex-fast-slash-action]) {
+        background-color: transparent !important; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,

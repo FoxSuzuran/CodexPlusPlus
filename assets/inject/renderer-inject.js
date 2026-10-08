@@ -82,7 +82,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "27";
+  const codexDeleteStyleVersion = "28";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1393,16 +1393,21 @@
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
       .${codexServiceTierBadgeClass} .codex-fast-icon { opacity: .45; filter: grayscale(1); }
       .${codexServiceTierBadgeClass}[data-tier="fast"] .codex-fast-icon { opacity: 1; filter: none; }
-      .codex-fast-slash-menu { position: fixed; z-index: 2147483000; width: 340px; padding: 4px;
-        border: 1px solid var(--codex-plus-border); border-radius: 10px;
-        background: var(--codex-plus-bg-elevated); color: var(--codex-plus-text);
-        box-shadow: 0 4px 16px #0003; font-family: inherit; font-size: 13px; line-height: 1.4; }
-      .codex-fast-slash-menu button { display: flex; justify-content: space-between; align-items: center;
-        width: 100%; padding: 6px 8px; gap: 12px; border: 0; border-radius: 6px; color: inherit;
+      .codex-fast-slash-menu { display: contents; }
+      .codex-fast-slash-menu button { display: flex; align-items: center;
+        width: 100%; padding: var(--suggestion-menu-item-padding, 6px 8px);
+        gap: var(--gap-menu-row-content, 10px); border: 0; border-radius: var(--radius-xl, 6px); color: inherit;
         background: transparent; cursor: pointer; text-align: left; font: inherit; }
-      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu button:focus-visible { background: #10a37f26; }
+      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu[data-selected="true"] button {
+        background: var(--color-primary-ghost-hover, #10a37f26); }
       .codex-fast-slash-menu button:disabled { opacity: .6; cursor: not-allowed; }
-      [data-codex-fast-slash-status] { font-size: 11px; opacity: .75; }
+      .codex-fast-slash-icon { width: 1em; flex-shrink: 0; }
+      .codex-fast-slash-label { flex-shrink: 0; }
+      [data-codex-fast-slash-status] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--color-text-codex-description, inherit); opacity: .75; }
+      [data-codex-fast-native-selection] button:not([data-codex-fast-slash-action]),
+      [data-codex-fast-native-selection] [role="option"]:not([data-codex-fast-slash-action]) {
+        background-color: transparent !important; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -3884,8 +3889,9 @@
 
   function codexFastComposerEditor() {
     return codexFastComposerEditors().find((editor) => editor === document.activeElement)
-      || (document.activeElement?.closest?.("[data-codex-fast-slash-menu]")
-        ? codexFastComposerEditors().find((editor) => editor.dataset.codexFastEditor === "active") : null) || null;
+      || (document.activeElement?.closest?.("[data-codex-fast-slash-menu]") || document.activeElement === document.body
+        ? codexFastComposerEditors().find((editor) => editor.dataset.codexFastEditor === "menu"
+          || (document.activeElement !== document.body && editor.dataset.codexFastEditor === "active")) : null) || null;
   }
 
   function codexFastComposerText(editor) {
@@ -3929,6 +3935,52 @@
     });
   }
 
+  function codexFastNativeSlashList() {
+    return Array.from(document.querySelectorAll(
+      "[data-composer-overlay-floating-ui] [data-mention-list-scroll-area], [role='listbox']"
+    )).find((node) => node.getClientRects().length && !node.closest("[data-codex-plus-ext]")
+      && (node.hasAttribute("data-mention-list-scroll-area")
+        || node.querySelector("[data-key='model'], [data-key='plan'], [data-key='fast']"))) || null;
+  }
+
+  function codexFastNativeSlashRows(list) {
+    return Array.from(list?.querySelectorAll(
+      "button[data-list-navigation-item='true'], [role='option'], [data-key]"
+    ) || []).filter((node) => node.getClientRects().length && !node.disabled
+      && node.getAttribute("aria-disabled") !== "true" && !node.closest("[data-codex-plus-ext]"));
+  }
+
+  function clearCodexFastSlashMenu() {
+    document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+    document.querySelectorAll("[data-codex-fast-native-selection]").forEach((node) =>
+      node.removeAttribute("data-codex-fast-native-selection"));
+  }
+
+  function selectCodexFastSlashRow(selected, nativeRow = null, focus = true) {
+    const panel = document.querySelector("[data-codex-fast-slash-menu]");
+    const list = codexFastNativeSlashList();
+    const editor = codexFastComposerEditor();
+    if (!panel || !list || !editor) return;
+    if (selected && panel.querySelector("button").disabled) return;
+    if (panel.dataset.selected === String(selected)) return;
+    setCodexServiceTierAttribute(panel, "data-selected", String(selected));
+    if (selected) {
+      setCodexServiceTierAttribute(list, "data-codex-fast-native-selection", "true");
+      if (focus) {
+        setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "menu");
+        panel.querySelector("button").focus({ preventScroll: true });
+      }
+      panel.querySelector("button").scrollIntoView({ block: "nearest" });
+    } else {
+      list.removeAttribute("data-codex-fast-native-selection");
+      setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "active");
+      editor.focus({ preventScroll: true });
+      // 走原生悬停链路更新真正的命令选中状态，不改 React 内部状态。
+      nativeRow?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+      nativeRow?.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+    }
+  }
+
   function refreshCodexFastSlashMenu() {
     const editor = codexFastComposerEditor();
     const text = codexFastComposerText(editor);
@@ -3936,47 +3988,70 @@
     let panel = document.querySelector("[data-codex-fast-slash-menu]");
     if (!codexPlusSettings().serviceTierControls || !editor || !relevant || codexFastSlashComposing
         || codexFastSlashDismissed === text) {
-      panel?.remove();
+      clearCodexFastSlashMenu();
       return;
     }
+    const list = codexFastNativeSlashList();
+    if (!list) {
+      clearCodexFastSlashMenu();
+      return;
+    }
+    const rows = codexFastNativeSlashRows(list);
+    const slot = rows[0]?.closest("[data-mention-section-items]") || list;
+    if (document.activeElement === editor) setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "active");
     if (!panel) {
       panel = document.createElement("div");
       panel.className = "codex-fast-slash-menu";
       panel.dataset.codexFastSlashMenu = "true";
       panel.dataset.codexPlusExt = "codex-fast-controls";
-      panel.setAttribute("role", "group");
-      panel.setAttribute("aria-label", "Codex++ 命令");
       const button = document.createElement("button");
       button.type = "button";
+      button.tabIndex = -1;
       button.dataset.codexFastSlashAction = "true";
+      const icon = document.createElement("span");
+      icon.className = "codex-fast-slash-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "⚡";
       const label = document.createElement("span");
-      label.textContent = "⚡ 快速（Codex++）";
+      label.className = "codex-fast-slash-label";
+      label.textContent = "快速（Codex++）";
       const status = document.createElement("span");
       status.dataset.codexFastSlashStatus = "true";
-      button.append(label, status);
+      button.append(icon, label, status);
       panel.appendChild(button);
-      document.body.appendChild(panel);
     }
+    if (panel.parentElement !== slot) slot.prepend(panel);
     const state = codexServiceTierBadgeState();
     const button = panel.querySelector("button");
+    const native = rows[0];
+    if (native) {
+      const classes = native.className.split(/\s+/).filter((name) =>
+        !["bg-primary-ghost-hover", "opacity-100", "menu-row-opacity"].includes(name)).join(" ");
+      if (button.className !== classes) button.className = classes;
+      // 同时沿用用户主题给原生行设置的密度和字形；不登记原生导航索引，避免其滚动位置偏移。
+      const style = getComputedStyle(native);
+      for (const property of ["height", "minHeight", "padding", "font", "color", "borderRadius"]) {
+        if (button.style[property] !== style[property]) button.style[property] = style[property];
+      }
+      const title = native.querySelector(".truncate");
+      if (title) {
+        const weight = getComputedStyle(title).fontWeight;
+        const label = panel.querySelector(".codex-fast-slash-label");
+        if (label.style.fontWeight !== weight) label.style.fontWeight = weight;
+      }
+    }
     setCodexServiceTierAttribute(button, "title", state.title);
     // 状态查询、关闭不依赖模型能力；开启时由共享处理函数做最终检查。
     if (button.disabled !== !!state.disabled) button.disabled = !!state.disabled;
+    if (button.disabled && panel.dataset.selected === "true") selectCodexFastSlashRow(false);
     const status = panel.querySelector("[data-codex-fast-slash-status]");
     const action = parseCodexFastCommand(text) || "toggle";
     const hint = action === "status" ? "查询当前状态"
       : action === "on" ? "开启当前会话" : action === "off" ? "关闭当前会话"
       : `${state.label} · 仅当前会话`;
     if (status.textContent !== hint) status.textContent = hint;
-    const rect = editor.getBoundingClientRect();
-    // 独立补充行不改 React 管理的原生命令节点；有可识别原生列表时贴在列表旁。
-    const list = Array.from(document.querySelectorAll("[role='listbox']"))
-      .find((node) => node.getClientRects().length && node.querySelector("[data-key='model'], [data-key='plan'], [data-key='fast']"));
-    const bounds = list?.getBoundingClientRect() || rect;
-    const left = Math.max(8, Math.min(bounds.left, window.innerWidth - Math.min(340, window.innerWidth - 16) - 8));
-    const top = Math.max(8, bounds.top - 46);
-    for (const [property, value] of Object.entries({ left: `${left}px`, top: `${top}px`, maxWidth: `${window.innerWidth - 16}px` })) {
-      if (panel.style[property] !== value) panel.style[property] = value;
+    if (editor.dataset.codexFastEditor === "menu" && document.activeElement === document.body) {
+      selectCodexFastSlashRow(true);
     }
   }
 
@@ -4001,12 +4076,12 @@
       }
     }
     if (codexFastComposerText(editor)) return false;
-    document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+    clearCodexFastSlashMenu();
     return executeCodexFastCommand(action);
   }
 
   function installCodexFastCommandControls() {
-    window.__codexPlusFastControlsCleanup?.();
+    window.__codexPlusFastControlsCleanup?.(true);
     const handlers = {
       input(event) {
         if (!codexFastComposerEditors().includes(event.target)) return;
@@ -4020,22 +4095,57 @@
       },
       keydown(event) {
         if (event.isComposing || event.keyCode === 229 || codexFastSlashComposing) return;
-        if (!codexFastComposerEditors().includes(event.target)) return;
+        const editor = codexFastComposerEditor();
+        if (!editor || (event.target !== editor && !event.target?.closest?.("[data-codex-fast-slash-menu]"))) return;
         if (event.key === "Escape") {
-          codexFastSlashDismissed = codexFastComposerText(event.target);
-          document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+          codexFastSlashDismissed = codexFastComposerText(editor);
+          clearCodexFastSlashMenu();
+          if (event.target !== editor) {
+            editor.focus({ preventScroll: true });
+            setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "active");
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+          }
           return;
+        }
+        if (!codexPlusSettings().serviceTierControls || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+        const panel = document.querySelector("[data-codex-fast-slash-menu]");
+        const selected = panel?.dataset.selected === "true";
+        if (panel && !panel.querySelector("button").disabled && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+          const rows = codexFastNativeSlashRows(codexFastNativeSlashList());
+          const current = rows.findIndex((node) => node.getAttribute("aria-current") === "true"
+            || node.getAttribute("aria-selected") === "true" || node.dataset.selected === "true");
+          if (selected || !rows.length || (event.key === "ArrowUp" && current === 0)
+              || (event.key === "ArrowDown" && current === rows.length - 1)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            selectCodexFastSlashRow(!selected || !rows.length, event.key === "ArrowDown" ? rows[0] : rows.at(-1));
+            return;
+          }
         }
         if (!codexPlusSettings().serviceTierControls || !["Enter", "Tab"].includes(event.key)
             || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
-        const action = parseCodexFastCommand(codexFastComposerText(event.target));
+        const action = parseCodexFastCommand(codexFastComposerText(editor)) || (selected ? "toggle" : null);
         if (!action) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        consumeCodexFastComposerCommand(event.target, action);
+        consumeCodexFastComposerCommand(editor, action);
       },
       pointerdown(event) {
         if (event.target?.closest?.("[data-codex-fast-slash-menu]")) event.preventDefault();
+        else if (!event.target?.closest?.("[data-composer-overlay-floating-ui], [role='listbox']")) {
+          document.querySelectorAll("[data-codex-fast-editor='menu']").forEach((editor) =>
+            setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "active"));
+        }
+      },
+      mousemove(event) {
+        const panel = document.querySelector("[data-codex-fast-slash-menu]");
+        if (!panel) return;
+        if (panel.contains(event.target)) selectCodexFastSlashRow(true, null, false);
+        else if (panel.dataset.selected === "true" && codexFastNativeSlashList()?.contains(event.target)) {
+          selectCodexFastSlashRow(false);
+        }
       },
       click(event) {
         const button = event.target?.closest?.("[data-codex-fast-slash-action]");
@@ -4063,7 +4173,7 @@
       compositionstart(event) {
         if (!codexFastComposerEditors().includes(event.target)) return;
         codexFastSlashComposing = true;
-        document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+        clearCodexFastSlashMenu();
       },
       compositionend(event) {
         if (!codexFastComposerEditors().includes(event.target)) return;
@@ -4072,14 +4182,31 @@
       },
       focusout() { scheduleCodexFastSlashMenu(); },
     };
-    Object.entries(handlers).forEach(([type, handler]) => document.addEventListener(type, handler, true));
+    Object.entries(handlers).forEach(([type, handler]) => {
+      if (type !== "keydown") document.addEventListener(type, handler, true);
+    });
+    // 原生菜单也在 window 捕获按键。保留监听顺序，重载只替换闭包，避免原生命令先被执行。
+    const keydown = window.__codexPlusFastKeydownHandler
+      || (window.__codexPlusFastKeydownHandler = (event) => window.__codexPlusFastKeydown?.(event));
+    window.__codexPlusFastKeydown = handlers.keydown;
+    window.addEventListener("keydown", keydown, true);
     window.addEventListener("resize", scheduleCodexFastSlashMenu);
-    window.__codexPlusFastControlsCleanup = () => {
-      Object.entries(handlers).forEach(([type, handler]) => document.removeEventListener(type, handler, true));
+    window.__codexPlusFastControlsCleanup = (reinstall = false) => {
+      Object.entries(handlers).forEach(([type, handler]) => {
+        if (type !== "keydown") document.removeEventListener(type, handler, true);
+      });
+      if (!reinstall) {
+        window.removeEventListener("keydown", keydown, true);
+        delete window.__codexPlusFastKeydownHandler;
+        delete window.__codexPlusFastKeydown;
+      }
       window.removeEventListener("resize", scheduleCodexFastSlashMenu);
       cancelAnimationFrame(codexFastSlashFrame);
       codexFastSlashFrame = 0;
-      document.querySelector("[data-codex-fast-slash-menu]")?.remove();
+      if (document.activeElement?.closest?.("[data-codex-fast-slash-menu]")) {
+        codexFastComposerEditor()?.focus({ preventScroll: true });
+      }
+      clearCodexFastSlashMenu();
       document.querySelectorAll("[data-codex-fast-editor]").forEach((editor) => editor.removeAttribute("data-codex-fast-editor"));
     };
   }
@@ -12750,6 +12877,17 @@
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
+    // 原生菜单可能晚于 input 的 RAF 挂载或整体替换；自身插入不触发布局补扫。
+    if (mutations && document.querySelector("[data-codex-fast-editor]") && mutations.some((mutation) => {
+      if (isExtensionUiNode(mutation.target)) return false;
+      const changed = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
+        .filter((node) => node.nodeType === 1);
+      if (changed.length && changed.every(isExtensionUiNode)
+          && !Array.from(mutation.removedNodes).some((node) => node.matches?.("[data-codex-fast-slash-menu]"))) return false;
+      const selector = "[data-composer-overlay-floating-ui], [data-mention-list-scroll-area], [role='listbox']";
+      return mutation.target.closest?.(selector) || changed.some((node) =>
+        node.matches?.(selector) || node.querySelector?.(selector));
+    })) scheduleCodexFastSlashMenu();
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;

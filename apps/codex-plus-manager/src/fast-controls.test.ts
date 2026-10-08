@@ -66,6 +66,7 @@ function fixture() {
       result: (...args) => observeCodexServiceTierRequestResult(...args),
       begin: beginCodexServiceTierRequest,
       state: () => codexServiceTierState,
+      install: installCodexFastCommandControls,
     };
   `, context);
   return { api: context.api, context, storage, session, toasts, reads: () => reads, finishRead: (value: unknown) => finishRead(value) };
@@ -189,4 +190,67 @@ test("status rendering failures do not throw into a successful native request", 
   const f = fixture();
   f.context.document.querySelectorAll = () => { throw new Error("detached UI"); };
   assert.doesNotThrow(() => f.api.result("turn/start", { threadId: "thread-a", serviceTier: "priority" }, {}));
+});
+
+test("integrated Fast navigation runs before native commands and keeps its order across reloads", () => {
+  const f = fixture();
+  const listeners: Array<(event: any) => void> = [];
+  const consumed: string[] = [];
+  const editor = { textContent: "/", querySelector: () => null };
+  const button = { disabled: false };
+  const panel = { dataset: { selected: "false" }, remove() {}, querySelector: () => button };
+  const rows = [true, false].map((current) => ({
+    getAttribute: (key: string) => key === "aria-current" && current ? "true" : null,
+    dataset: {},
+  }));
+  let native = 0;
+  f.context.window.addEventListener = (type: string, listener: (event: any) => void) => {
+    if (type === "keydown" && !listeners.includes(listener)) listeners.push(listener);
+  };
+  f.context.window.removeEventListener = (type: string, listener: (event: any) => void) => {
+    if (type === "keydown") listeners.splice(listeners.indexOf(listener), 1);
+  };
+  f.context.document.addEventListener = () => {};
+  f.context.document.removeEventListener = () => {};
+  f.context.document.querySelector = () => panel;
+  f.context.cancelAnimationFrame = () => {};
+  f.context.editor = editor;
+  f.context.rows = rows;
+  f.context.panel = panel;
+  f.context.consumed = consumed;
+  vm.runInContext(`
+    codexFastComposerEditor = () => editor;
+    codexFastNativeSlashList = () => ({});
+    codexFastNativeSlashRows = () => rows;
+    selectCodexFastSlashRow = (selected) => { panel.dataset.selected = String(selected); };
+    consumeCodexFastComposerCommand = (_, action) => consumed.push(action);
+  `, f.context);
+  f.api.install();
+  listeners.push(() => { native++; });
+  const press = (key: string, isComposing = false) => {
+    const event = { target: editor, key, isComposing, prevented: false, stopped: false,
+      preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+    for (const listener of listeners) { listener(event); if (event.stopped) break; }
+    return event;
+  };
+  button.disabled = true;
+  assert.equal(press("ArrowUp").prevented, false, "disabled Fast leaves navigation with native commands");
+  button.disabled = false;
+  native = 0;
+  assert.equal(press("ArrowUp").prevented, true);
+  assert.equal(panel.dataset.selected, "true");
+  assert.equal(native, 0);
+  assert.equal(press("ArrowDown").prevented, true);
+  assert.equal(panel.dataset.selected, "false");
+  f.api.install();
+  f.api.install();
+  editor.textContent = "/fast on";
+  assert.equal(press("Enter").prevented, true);
+  assert.deepEqual(consumed, ["on"]);
+  assert.equal(native, 0, "reload must not move the Fast listener behind native menu selection");
+  assert.equal(press("Enter", true).prevented, false);
+  editor.textContent = "/plan";
+  assert.equal(press("Enter").prevented, false);
+  f.context.window.__codexPlusFastControlsCleanup();
+  assert.equal(listeners.length, 1, "full cleanup removes Fast keyboard handling");
 });

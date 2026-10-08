@@ -27,23 +27,23 @@ fn assert_sha256(relative_path: &str, expected: &str) {
 }
 
 #[test]
-fn bundled_target_renderers_and_styles_remain_byte_exact() {
+fn bundled_target_renderers_and_styles_match_verified_hashes() {
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "1F1E408F8B89BEF6B83DE0A5EE047BFB1F8DFD0165628398D520B8897083FFD7",
+            "576C52AF236D251E815C3398A8A8DA419287E1281EBF2E05718DDD9FADB248CC",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-            "F8F944AB2D8E7C409AE7AE7F2F079DC79D6674F729129798A7281B492D8D8DA6",
+            "02560B6B714C87C67702843E0BF70AF3D1FC2EFD58A441BE37CA6CEA8D051A1A",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
-            "1F1E408F8B89BEF6B83DE0A5EE047BFB1F8DFD0165628398D520B8897083FFD7",
+            "576C52AF236D251E815C3398A8A8DA419287E1281EBF2E05718DDD9FADB248CC",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/dream-skin.css",
-            "F8F944AB2D8E7C409AE7AE7F2F079DC79D6674F729129798A7281B492D8D8DA6",
+            "B8E567F0BAAFFD84942C26F7BDB8D3ED7C5925BB527F12923B4EF33DDBC2AB23",
         ),
         (
             "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",

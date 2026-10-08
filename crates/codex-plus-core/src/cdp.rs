@@ -292,7 +292,9 @@ pub fn is_codex_page_target(target: &CdpTarget) -> bool {
         return false;
     }
     let haystack = format!("{} {}", target.title, target.url).to_lowercase();
-    haystack.contains("codex") || is_chatgpt_desktop_page(&target.title, &target.url)
+    is_codex_app_page_target(target)
+        || haystack.contains("codex")
+        || is_chatgpt_desktop_page(&target.title, &target.url)
 }
 
 pub fn is_primary_codex_page_target(target: &CdpTarget) -> bool {
@@ -388,6 +390,19 @@ mod endpoint_tests {
 
         assert!(endpoint_available(port));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn endpoint_available_accepts_native_conversation_titles() {
+        for title in ["ChatGPT", "查找最新实验设计", ""] {
+            let (port, server) = serve_once(|port| {
+                format!(
+                    r#"[{{"id":"codex","type":"page","title":"{title}","url":"app://-/index.html","webSocketDebuggerUrl":"ws://127.0.0.1:{port}/devtools/page/1"}}]"#
+                )
+            });
+            assert!(endpoint_available(port), "title={title}");
+            server.join().unwrap();
+        }
     }
 
     #[test]

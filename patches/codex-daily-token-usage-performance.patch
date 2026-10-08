@@ -1,8 +1,45 @@
 diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
-index 7ac7a75..1e93119 100644
+index 7ac7a75..e99ed04 100644
 --- a/market-codex-daily-token-usage.js
 +++ b/market-codex-daily-token-usage.js
-@@ -2000,6 +2000,19 @@
+@@ -11,6 +11,7 @@
+   "use strict";
+ 
+   const VERSION = "1.4.18";
++  const CAPTURE_REVISION = "native-cumulative-v1";
+   const API_KEY = "__codexDailyTokenUsage";
+   const SOURCE_API_KEY = "__codexTokenUsage";
+   const STORAGE_KEY = "__codexDailyTokenUsageV1";
+@@ -190,6 +191,9 @@
+   let appServicesPromise = null;
+   let domToolScanTimer = null;
+   const modelByConversationKey = new Map();
++  const nativeUsageByThread = new Map();
++  const nativeUsageSyncs = new Map();
++  const nativeHistoryRequests = new Set();
+   const resizeObservedNodes = new WeakSet();
+ 
+   function toCount(value) {
+@@ -313,7 +317,7 @@
+         turn?.last_updated_at ??
+         turn?.timestamp
+     );
+-    if (isHistoryUsageTurn(turn) && direct) return direct;
++    if ((isHistoryUsageTurn(turn) || String(turn?.turnId || "").startsWith("capture:native:")) && direct) return direct;
+ 
+     const uuidEncoded = parseUuidV7Timestamp(turn?.turnId) || parseUuidV7Timestamp(turn?.id);
+     if (uuidEncoded) return uuidEncoded;
+@@ -991,7 +995,8 @@
+     };
+ 
+     const historyCoveredUntil = historyCoverageTimestamp(day);
+-    if (!isHistoryUsageTurn(candidate) && historyCoveredUntil && timestamp <= historyCoveredUntil) {
++    if (!isHistoryUsageTurn(candidate) && !String(turn.turnId).startsWith("capture:native:") &&
++        historyCoveredUntil && timestamp <= historyCoveredUntil) {
+       return false;
+     }
+ 
+@@ -2000,6 +2005,19 @@
      return /codex|conversation|responses|completion|chat|backend-api|openai/.test(text);
    }
  
@@ -22,19 +59,80 @@ index 7ac7a75..1e93119 100644
    function safeParseJson(text) {
      if (typeof text !== "string") return null;
      const trimmed = text.trim();
-@@ -2583,6 +2596,8 @@
+@@ -2070,6 +2088,15 @@
+     const id = extractCandidateId(value) || inheritedId;
+     const model = extractDirectModel(value) || inheritedModel;
+     const candidates = [];
++    if (value.method === "thread/tokenUsage/updated" || value.type === "thread/tokenUsage/updated") {
++      const params = value.params || value;
++      const usage = normalizeCaptureUsage(params.tokenUsage?.total);
++      const conversationKey = extractConversationKey(params);
++      if (usage && conversationKey) {
++        return [{ usage, id: conversationKey, model, nativeCumulative: true, conversationKey,
++          timestamp: parseTimestamp(value.timestamp || params.timestamp) }];
++      }
++    }
+     const tokenCountInfo = value.type === "token_count" && value.info && typeof value.info === "object"
+       ? value.info
+       : value.payload?.type === "token_count" && value.payload?.info && typeof value.payload.info === "object"
+@@ -2394,6 +2421,42 @@
+ 
+   function rememberCapturedUsage(candidate, source, url = "") {
+     const now = Date.now();
++    if (candidate.nativeCumulative) {
++      const threadId = candidate.conversationKey;
++      const previous = nativeUsageByThread.get(threadId);
++      if (!previous) {
++        // 首次通知先读该会话，避免把跨日累计量当成今日用量。
++        const pending = nativeUsageSyncs.get(threadId);
++        if (pending) {
++          if (candidate.usage.total > pending.candidate.usage.total) pending.candidate = candidate;
++        } else if (nativeUsageSyncs.size < HISTORY_THREAD_SCAN_LIMIT) {
++          const queued = Array.from(nativeUsageSyncs.values()).slice(-HISTORY_READ_CONCURRENCY);
++          const wait = queued.length === HISTORY_READ_CONCURRENCY ? queued[0].promise : Promise.resolve();
++          const sync = { candidate };
++          sync.promise = wait.then(() => destroyed ? [] : readThreadSessionUsages({ id: threadId })).then((usages) => {
++            if (destroyed || sourceMode === "external") return;
++            let changed = false;
++            for (const usage of usages) changed = upsertHistorySessionUsage(usage) || changed;
++            if (nativeUsageByThread.has(threadId)) changed = rememberCapturedUsage(sync.candidate, source, url) || changed;
++            if (changed) {
++              pruneState();
++              saveState();
++              render({ animate: true });
++            }
++          }).catch(() => {}).finally(() => nativeUsageSyncs.delete(threadId));
++          nativeUsageSyncs.set(threadId, sync);
++        }
++        return false;
++      }
++      if (candidate.usage.total < previous.usage.total) return false;
++      const delta = cumulativeUsageDelta(candidate.usage, previous.usage);
++      if (!delta) return false;
++      nativeUsageByThread.set(threadId, { usage: candidate.usage, model: candidate.model || previous.model });
++      candidate = { ...candidate, usage: delta,
++        id: `native:${threadId}:${candidate.usage.total}`,
++        model: candidate.model || modelForConversationKey(threadId)?.model || previous.model };
++      source += ":app-server";
++    }
+     cleanupRecentCaptureKeys(now);
+     const signature = usageSignature(candidate.usage);
+     const dedupeKey = candidate.id
+@@ -2583,6 +2646,9 @@
    }
  
    function processCapturePayload(payload, source, url = "") {
++    if (destroyed) return false;
 +    if (typeof payload === "string") payload = parseTextPayloads(payload);
 +    if (!payload || (Array.isArray(payload) && !payload.length)) return false;
      const toolChanged = processToolCallPayload(payload, source);
      if (sourceMode === "external") return toolChanged;
      processModelPayload(payload, false);
-@@ -2605,11 +2620,9 @@
+@@ -2605,11 +2671,10 @@
    }
  
    function processModelPayload(payload, recordTools = true) {
++    if (destroyed) return false;
 +    if (typeof payload === "string") payload = parseTextPayloads(payload);
      const toolChanged = recordTools ? processToolCallPayload(payload, "model") : false;
      if (!payload) return toolChanged;
@@ -44,7 +142,7 @@ index 7ac7a75..1e93119 100644
      if (Array.isArray(payload)) {
        return payload.some((item) => processModelPayload(item, false)) || toolChanged;
      }
-@@ -2623,34 +2636,23 @@
+@@ -2623,34 +2688,23 @@
      return observed || toolChanged;
    }
  
@@ -94,7 +192,7 @@ index 7ac7a75..1e93119 100644
      modelCaptureInstalled = true;
      return true;
    }
-@@ -2663,7 +2665,7 @@
+@@ -2663,7 +2717,7 @@
        processModelPayload(init?.body);
        const response = await originalFetch.call(this, input, init);
        const contentType = String(response?.headers?.get?.("content-type") || "");
@@ -103,7 +201,7 @@ index 7ac7a75..1e93119 100644
          response
            .clone()
            .text()
-@@ -2690,7 +2692,7 @@
+@@ -2690,7 +2744,7 @@
        processModelPayload(args[0]);
        this.addEventListener?.("loadend", () => {
          const url = this.__codexDailyTokenUsageUrl || "";
@@ -112,7 +210,7 @@ index 7ac7a75..1e93119 100644
            return;
          }
          try {
-@@ -2738,29 +2740,12 @@
+@@ -2738,29 +2792,12 @@
      window.WebSocket = DailyTokenUsageWebSocket;
    }
  
@@ -143,7 +241,182 @@ index 7ac7a75..1e93119 100644
      captureInstalled = true;
      sourceMode = "standalone";
      return true;
-@@ -5481,6 +5466,9 @@
+@@ -2864,7 +2901,7 @@
+     if (typeof text !== "string" || !text.trim()) return [];
+     const path = String(fallback.path || "");
+     const pathThreadId = threadIdFromSessionPath(path);
+-    let threadId = pathThreadId || normalizeConversationKey(fallback.threadId);
++    let threadId = normalizeConversationKey(fallback.threadId) || pathThreadId;
+     let model = normalizeModelName(fallback.model);
+     let timestamp = parseTimestamp(fallback.timestamp) || parseTimestamp(`${dateKeyFromSessionPath(path)}T12:00:00`);
+     let previousCumulative = null;
+@@ -2935,9 +2972,17 @@
+       groups.set(groupKey, group);
+     }
+ 
++    if (threadId && previousCumulative &&
++        previousCumulative.total >= (nativeUsageByThread.get(threadId)?.usage.total || 0)) {
++      nativeUsageByThread.set(threadId, { usage: previousCumulative, model });
++      while (nativeUsageByThread.size > MAX_TURNS_PER_DAY) {
++        nativeUsageByThread.delete(nativeUsageByThread.keys().next().value);
++      }
++    }
+     return Array.from(groups.values())
+       .map((usage) => ({
+         ...usage,
++        cumulativeTotal: previousCumulative?.total || 0,
+         stableId: `session-${shortHash(`${usage.threadId}|${usage.model}`)}`,
+         timestamp: usage.timestamp || parseTimestamp(`${usage.dateKey}T12:00:00`) || Date.now(),
+       }))
+@@ -2966,6 +3011,16 @@
+       parseTimestamp(`${sessionUsage.dateKey}T12:00:00`) ||
+       Date.now();
+     removeLegacyCumulativeTurns(sessionUsage.dateKey, stableId, conversationKey, turnId);
++    let changed = false;
++    const day = state.days[sessionUsage.dateKey];
++    for (const [id, turn] of Object.entries(day?.turns || {})) {
++      if (id.startsWith(`capture:native:${conversationKey}:`) &&
++          Number(id.split(":").at(-1)) <= sessionUsage.cumulativeTotal) {
++        delete day.turns[id];
++        changed = true;
++      }
++    }
++    if (changed) invalidateDay(sessionUsage.dateKey);
+     return upsertTurn({
+       turnId,
+       model: sessionUsage.model,
+@@ -2981,7 +3036,7 @@
+         totalTokens: sessionUsage.usage.total,
+         hasBreakdown: true,
+       },
+-    });
++    }) || changed;
+   }
+ 
+   function pruneSupersededUsageTurns(dateKeys) {
+@@ -2993,6 +3048,7 @@
+       const historyCoveredUntil = historyCoverageTimestamp(day);
+       if (!historyCoveredUntil) continue;
+       for (const [turnId, turn] of Object.entries(day.turns)) {
++        if (turnId.startsWith("capture:native:")) continue;
+         if (isHistoryUsageTurn(turn) || toCount(turn?.updatedAt) > historyCoveredUntil) continue;
+         delete day.turns[turnId];
+         removed += 1;
+@@ -3412,7 +3468,11 @@
+     try {
+       response = await sendCliRequest("fs/readFile", { path }, HISTORY_REQUEST_TIMEOUT_MS);
+     } catch (error) {
+-      throw workspaceError || error;
++      try {
++        response = await sendNativeHistoryRequest("fs/readFile", { path });
++      } catch {
++        throw workspaceError || error;
++      }
+     }
+     const dataBase64 =
+       response?.dataBase64 ||
+@@ -3421,6 +3481,10 @@
+       response?.content_base64 ||
+       response?.data?.dataBase64 ||
+       response?.data?.data_base64;
++    if (typeof dataBase64 !== "string" ||
++        dataBase64.length > Math.ceil(HISTORY_MAX_SESSION_BYTES / 3) * 4) {
++      throw new Error("历史文件响应无效或超过大小限制");
++    }
+     return base64DecodeUtf8(dataBase64);
+   }
+ 
+@@ -3442,23 +3506,77 @@
+ 
+   async function readThreadSessionUsages(thread) {
+     let lastError = null;
+-    for (const path of threadPaths(thread)) {
++    let paths = threadPaths(thread);
++    let nativeThread = null;
++    try {
++      const response = await sendNativeHistoryRequest("thread/read", {
++        threadId: threadIdentity(thread),
++        includeTurns: false,
++      });
++      nativeThread = response?.thread;
++      const path = threadPath(nativeThread);
++      if (path) paths = Array.from(new Set([path, ...paths]));
++    } catch (error) {
++      lastError = error;
++    }
++    for (const path of paths) {
+       try {
+         const text = await readSessionText(path);
+         return parseSessionUsagesFromJsonl(text, {
+           path,
+           threadId: threadIdentity(thread),
+-          model: extractDirectModel(thread),
+-          timestamp: threadUpdatedAt(thread),
++          model: extractDirectModel(thread) || extractDirectModel(nativeThread),
++          timestamp: threadUpdatedAt(thread) || threadUpdatedAt(nativeThread),
+         });
+       } catch (error) {
+         lastError = error;
+-        // Try the same thread under the next inferred home directory.
+       }
+     }
+     throw lastError || new Error("无法读取 session 文件");
+   }
+ 
++  function sendNativeHistoryRequest(method, params) {
++    if (destroyed || !window.electronBridge?.sendMessageFromView ||
++        !["thread/read", "fs/readFile"].includes(method)) {
++      return Promise.reject(new Error("原生历史读取通道不可用"));
++    }
++    return new Promise((resolve, reject) => {
++      const id = `daily-history:${Date.now()}:${++captureSeq}`;
++      let timer = 0;
++      const finish = (error, result) => {
++        if (timer) window.clearTimeout(timer);
++        window.removeEventListener("message", onMessage, true);
++        nativeHistoryRequests.delete(cancel);
++        error ? reject(error) : resolve(result);
++      };
++      const cancel = () => finish(new Error("历史读取已取消"));
++      const onMessage = (event) => {
++        const data = event.data;
++        if (data?.type !== "mcp-response" || data.hostId !== "local" || data.message?.id !== id) return;
++        const message = data.message;
++        finish(
++          message.error ? new Error(message.error.message || "历史读取失败") : null,
++          message.result
++        );
++      };
++      timer = window.setTimeout(() => finish(new Error("历史读取超时")), HISTORY_REQUEST_TIMEOUT_MS);
++      nativeHistoryRequests.add(cancel);
++      window.addEventListener("message", onMessage, true);
++      try {
++        Promise.resolve(window.electronBridge.sendMessageFromView({
++          type: "mcp-request",
++          hostId: "local",
++          priority: "background",
++          source: "filesystem",
++          request: { id, method, params },
++          timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
++        })).catch((error) => finish(error));
++      } catch (error) {
++        finish(error);
++      }
++    });
++  }
++
+   async function runHistoryBackfill({ force = false } = {}) {
+     const now = Date.now();
+     if (destroyed || historyBackfillInFlight) return historyBackfillLastResult;
+@@ -5467,6 +5585,7 @@
+ 
+   function destroy(options = {}) {
+     destroyed = true;
++    for (const cancel of Array.from(nativeHistoryRequests)) cancel();
+     if (pollTimer) window.clearInterval(pollTimer);
+     if (midnightTimer) window.clearTimeout(midnightTimer);
+     if (historyBackfillTimer) window.clearTimeout(historyBackfillTimer);
+@@ -5481,6 +5600,9 @@
      observer?.disconnect();
      resizeObserver?.disconnect();
      restoreStandaloneCapture();
@@ -153,3 +426,11 @@ index 7ac7a75..1e93119 100644
      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
      window.removeEventListener("resize", handleWindowResize);
      root?.remove();
+@@ -5499,6 +5621,7 @@
+ 
+   const api = {
+     version: VERSION,
++    captureRevision: CAPTURE_REVISION,
+     refresh,
+     getSnapshot: (dateKey = getDateKey(Date.now())) => aggregateDay(clampDateKey(dateKey)),
+     getSelectedDate: () => selectedDateKey,

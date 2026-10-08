@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -24,6 +26,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Dream Skin sources
+        run: node scripts/sync-dream-skin.mjs --check
 
       - name: Install NSIS
         run: choco install nsis -y
@@ -98,11 +103,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      - name: Check Dream Skin sources
+        run: node scripts/sync-dream-skin.mjs --check
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

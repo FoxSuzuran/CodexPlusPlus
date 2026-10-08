@@ -1,0 +1,24 @@
+/* Personal Home composer geometry; keep task-route popovers unchanged. */
+html[data-dream-skin="active"] [data-codex-composer-root][data-composer-placement="home"]
+  :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
+  border-radius: 22px !important;
+}
+
+html[data-dream-skin="active"]
+  :is([data-ds-part="home"], [role="main"]:has([data-testid="home-icon"]))
+  :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"], [data-composer-surface-variant][data-composer-radius-variant]) {
+  overflow: hidden !important;
+}
+
+/* Keep older native toolbar/code chrome on the existing palette. */
+html[data-dream-skin="active"]
+  main:is(.main-surface, [data-app-shell-main-surface], [class*="_MainContentSurface_"])
+  > header:is(.app-header-tint, [data-app-shell-header-edge-scroll], [class*="_Header_"])
+  [class*="_Toolbar_"] > * {
+  background-color: transparent !important;
+}
+
+html[data-dream-skin="active"] [class*="_CodeBlock_"] [class*="_StickyActionBar_"] {
+  background: rgb(var(--ds-panel-rgb) / .72) !important;
+  border-bottom: 1px solid rgb(var(--ds-muted-rgb) / .14) !important;
+}

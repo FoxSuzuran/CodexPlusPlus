@@ -1,0 +1,4 @@
+[submodule "vendor/codex-dream-skin"]
+	path = vendor/codex-dream-skin
+	url = https://github.com/Fei-Away/Codex-Dream-Skin.git
+	branch = main

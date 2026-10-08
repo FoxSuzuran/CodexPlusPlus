@@ -69,7 +69,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded";
+const DREAM_SKIN_RENDERER_REVISION: &str = "25-dream-predicates";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT

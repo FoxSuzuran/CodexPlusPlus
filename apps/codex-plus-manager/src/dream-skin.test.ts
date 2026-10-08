@@ -140,7 +140,7 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "24-home-composer-rounded"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "25-dream-predicates"/);
   });
 
   it("covers the current shell, composer, message, and top-fade contracts", async () => {
@@ -160,6 +160,7 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /_ComposerLayoutBody_/);
     assert.match(css, /data-markdown-table="true"/);
     assert.match(css, /_Toolbar_.*> \*/s);
+    assert.match(css, /--color-text-toolbar-action:\s*var\(--ds-text\)/);
     assert.match(css, /data-composer-home-utility-bar-position="above"[\s\S]*box-sizing:\s*border-box/);
     assert.match(css, /_StickyActionBar_/);
     assert.match(css, /data-ds-part="home"[\s\S]*overflow:\s*hidden\s*!important/);

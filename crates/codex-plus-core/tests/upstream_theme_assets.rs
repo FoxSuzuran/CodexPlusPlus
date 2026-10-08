@@ -31,7 +31,7 @@ fn bundled_target_renderers_and_styles_match_verified_hashes() {
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "576C52AF236D251E815C3398A8A8DA419287E1281EBF2E05718DDD9FADB248CC",
+            "5351F3A6C7B624BE5566033A77C2E7A39DD428AB68830EDF4D95ED57A5A36645",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
@@ -39,7 +39,7 @@ fn bundled_target_renderers_and_styles_match_verified_hashes() {
         ),
         (
             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
-            "576C52AF236D251E815C3398A8A8DA419287E1281EBF2E05718DDD9FADB248CC",
+            "5351F3A6C7B624BE5566033A77C2E7A39DD428AB68830EDF4D95ED57A5A36645",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/dream-skin.css",

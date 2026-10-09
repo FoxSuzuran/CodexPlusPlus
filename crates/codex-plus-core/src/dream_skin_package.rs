@@ -15,8 +15,9 @@ const CSS_LIMIT: usize = 262_144;
 const IMAGE_LIMIT: usize = 10 * 1024 * 1024;
 const LICENSE_LIMIT: usize = 65_536;
 const SIGNATURE_LIMIT: usize = 4096;
-// Dream Skin 客户端兼容级别；packageVersion / skinApiVersion 仍为 1。
-const SUPPORTED_DREAM_SKIN_VERSION: &str = "1.5.18";
+// 包导入的 Dream Skin 兼容级别独立于 Codex++ 产品版本和 Codex Desktop build。
+// 只有配套包格式、Safe CSS 与运行时经过验证后才能提高此值（issue #2339）。
+pub const DREAM_SKIN_PACKAGE_CLIENT_VERSION: &str = "1.5.18";
 
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",
@@ -932,10 +933,12 @@ fn validate_manifest(manifest: &DreamSkinPackageManifest, platform: &str) -> any
     if !valid_semver(&manifest.version) || !valid_semver(&manifest.min_client_version) {
         bail!("manifest 版本号无效");
     }
-    if compare_semver(&manifest.min_client_version, SUPPORTED_DREAM_SKIN_VERSION).is_gt() {
+    if compare_semver(&manifest.min_client_version, DREAM_SKIN_PACKAGE_CLIENT_VERSION).is_gt() {
         bail!(
-            "主题包需要 Dream Skin 客户端版本 {}，Codex++ 当前兼容至 {SUPPORTED_DREAM_SKIN_VERSION}",
-            manifest.min_client_version
+            "主题包要求 Dream Skin 兼容版本 {}，当前支持 {}（Codex++ {}）。minClientVersion 应填写 Dream Skin 引擎版本，不是 Codex Desktop build；请使用兼容的主题包或联系发布者确认版本标注。",
+            manifest.min_client_version,
+            DREAM_SKIN_PACKAGE_CLIENT_VERSION,
+            crate::version::VERSION
         );
     }
     if manifest.platforms.is_empty()

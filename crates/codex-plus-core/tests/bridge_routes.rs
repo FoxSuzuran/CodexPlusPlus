@@ -34,6 +34,10 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/manager/open", json!({})),
         ("/manager/open-transient", json!({})),
         ("/backend/status", json!({})),
+        ("/whale/balance", json!({})),
+        ("/whale/session", json!({"session_id": "s1"})),
+        ("/whale/history", json!({})),
+        ("/whale/full", json!({"path":"/dsh-whale/size.json"})),
         ("/codex-model-catalog", json!({})),
         ("/codex-config-model", json!({})),
         (
@@ -52,7 +56,10 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"request": {"lastUserMessage": "请继续", "lastAssistantMessage": "已完成"}}),
         ),
         ("/stepwise/test", json!({})),
-        ("/delete", json!({"session_id": "s1", "title": "First"})),
+        (
+            "/delete",
+            json!({"session_id": "s1", "title": "First", "host_id": "local"}),
+        ),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
             "/export-markdown",
@@ -80,6 +87,85 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn whale_routes_require_both_enhancements_and_widget_switch() {
+    for (enhancements, widget) in [(false, true), (true, false), (false, false)] {
+        let settings = BackendSettings {
+            enhancements_enabled: enhancements,
+            codex_app_whale_widget_enabled: widget,
+            ..BackendSettings::default()
+        };
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(settings)),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData),
+        );
+        for route in ["/whale/balance", "/whale/session", "/whale/history"] {
+            let result =
+                handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+            assert_eq!(result["status"], "disabled", "{route}");
+        }
+        let result = handle_bridge_request(
+            ctx,
+            "/whale/full",
+            json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"scale":1.5}}),
+        )
+        .await;
+        assert_eq!(result["status"], 403);
+    }
+    let settings = BackendSettings {
+        codex_app_whale_widget_enabled: true,
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let result =
+        handle_bridge_request(ctx.clone(), "/whale/session", json!({"session_id":"s1"})).await;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["sessionId"], "s1");
+    let result = handle_bridge_request(ctx, "/whale/balance", json!({})).await;
+    assert_eq!(result["status"], "unsupported");
+    assert!(result["balances"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn whale_local_statistics_toggle_stops_both_current_and_machine_log_routes() {
+    let service = Arc::new(FakeSettings::with_settings(BackendSettings {
+        codex_app_whale_widget_enabled: true,
+        ..BackendSettings::default()
+    }));
+    let path = service.whale_ledger_path();
+    let ctx = BridgeContext::new(
+        service,
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData),
+    );
+    let history = handle_bridge_request(ctx.clone(), "/whale/history", json!({})).await;
+    assert_eq!(history["status"], "ok");
+    let result = handle_bridge_request(
+        ctx.clone(),
+        "/whale/full",
+        json!({"path":"/dsh-whale/size.json","method":"PUT","body":{"codexStatsOn":false}}),
+    )
+    .await;
+    assert_eq!(result["status"], 200);
+    assert!(path.exists());
+    for route in ["/whale/session", "/whale/history"] {
+        let result = handle_bridge_request(ctx.clone(), route, json!({"session_id":"s1"})).await;
+        assert_eq!(result["status"], "disabled");
+    }
+    let result = handle_bridge_request(
+        ctx,
+        "/whale/full",
+        json!({"path":"/dsh-whale/api-models.json"}),
+    )
+    .await;
+    assert_eq!(result["body"]["codexStatsOn"], false);
 }
 
 #[tokio::test]
@@ -464,7 +550,7 @@ async fn data_routes_forward_payloads_to_data_service() {
         handle_bridge_request(
             ctx.clone(),
             "/delete",
-            json!({"session_id": "s1", "title": "First"}),
+            json!({"session_id": "s1", "title": "First", "host_id": "local"}),
         )
         .await["undo_token"],
         "undo-s1"
@@ -540,7 +626,7 @@ async fn bridge_context_core_with_data_uses_injected_data_service() {
     let result = handle_bridge_request(
         ctx,
         "/delete",
-        json!({"session_id": "s1", "title": "First"}),
+        json!({"session_id": "s1", "title": "First", "host_id": "local"}),
     )
     .await;
 
@@ -603,6 +689,49 @@ async fn user_script_manager_scans_and_persists_inventory_shape() {
         .unwrap(),
         json!({"enabled": false, "scripts": {}})
     );
+}
+
+#[tokio::test]
+async fn delete_refuses_remote_and_unknown_hosts_instead_of_local_fallback() {
+    let ctx = test_context();
+    for host in [
+        json!(null),
+        json!(""),
+        json!("remote-ssh:fixture"),
+        json!({"id":"local"}),
+    ] {
+        let result = handle_bridge_request(
+            ctx.clone(),
+            "/delete",
+            json!({
+                "session_id": "s1", "title": "Same ID on another host", "host_id": host,
+            }),
+        )
+        .await;
+        // FakeData 必定返回 local_deleted/undo-s1，失败说明没有进入本地服务。
+        assert_eq!(result["status"], "failed");
+        assert!(result.get("undo_token").is_none());
+    }
+    let conflict = handle_bridge_request(
+        ctx.clone(),
+        "/delete",
+        json!({
+            "session_id":"s1", "host_id":"local", "hostId":"remote-ssh:fixture",
+        }),
+    )
+    .await;
+    assert_eq!(conflict["status"], "failed");
+    assert!(conflict.get("undo_token").is_none());
+    let local = handle_bridge_request(
+        ctx,
+        "/delete",
+        json!({
+            "session_id":"s1", "title":"Local", "hostId":"local",
+        }),
+    )
+    .await;
+    assert_eq!(local["status"], "local_deleted");
+    assert_eq!(local["undo_token"], "undo-s1");
 }
 
 #[tokio::test]
@@ -1016,10 +1145,20 @@ fn test_context() -> BridgeContext {
     )
 }
 
-#[derive(Default)]
 struct FakeSettings {
     settings: Mutex<BackendSettings>,
     codex_app_version: Mutex<String>,
+    whale_ledger_dir: tempfile::TempDir,
+}
+
+impl Default for FakeSettings {
+    fn default() -> Self {
+        Self {
+            settings: Mutex::new(BackendSettings::default()),
+            codex_app_version: Mutex::new(String::new()),
+            whale_ledger_dir: tempfile::TempDir::new().unwrap(),
+        }
+    }
 }
 
 impl FakeSettings {
@@ -1027,6 +1166,7 @@ impl FakeSettings {
         Self {
             settings: Mutex::new(settings),
             codex_app_version: Mutex::new(String::new()),
+            whale_ledger_dir: tempfile::TempDir::new().unwrap(),
         }
     }
 
@@ -1034,12 +1174,16 @@ impl FakeSettings {
         Self {
             settings: Mutex::new(BackendSettings::default()),
             codex_app_version: Mutex::new(version.to_string()),
+            whale_ledger_dir: tempfile::TempDir::new().unwrap(),
         }
     }
 }
 
 #[async_trait]
 impl BridgeSettingsService for FakeSettings {
+    fn whale_ledger_path(&self) -> std::path::PathBuf {
+        self.whale_ledger_dir.path().join("whale.sqlite3")
+    }
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         Ok(self.settings.lock().unwrap().clone())
     }
@@ -1065,6 +1209,7 @@ impl BridgeSettingsService for FakeSettings {
             "codexAppNativeMenuPlacement",
             "codexAppServiceTierControls",
             "codexAppPetRealMouseLook",
+            "codexAppWhaleWidgetEnabled",
         ] {
             if let Some(value) = payload.get(key).and_then(Value::as_bool) {
                 raw.insert(key.to_string(), json!(value));
@@ -1189,6 +1334,13 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
+    async fn whale_history(&self, _payload: Value) -> anyhow::Result<Value> {
+        Ok(json!({"status":"ok","complete":true,"models":[],"days":[],"records":[]}))
+    }
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "sessionId": session.session_id}))
+    }
+
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         Ok(DeleteResult {
             status: DeleteStatus::LocalDeleted,
@@ -1252,6 +1404,7 @@ impl BridgeDataService for FakeData {
         Ok(Some(SessionRef {
             session_id: "archived-1".to_string(),
             title,
+            host_id: None,
         }))
     }
 }

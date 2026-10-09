@@ -65,6 +65,25 @@ fn dictation_renderer_contract_harness() {
 }
 
 #[test]
+fn model_submit_preparation_renderer_contract_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg("--test")
+        .arg(repo.join("apps/codex-plus-manager/src/model-submit.test.ts"))
+        .output()
+        .expect("node should run the model submit preparation harness");
+    assert!(
+        output.status.success(),
+        "model submit preparation harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn screenshot_command_uses_png_from_surface() {
     assert_eq!(
         bridge::capture_screenshot_params(),

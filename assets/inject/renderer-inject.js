@@ -10994,7 +10994,7 @@
     void appServerModelRequestPatchPromise;
   }
 
-  function codexModelSubmitManager(module) {
+  function codexModelSubmitManager(module, visitRegistry = null) {
     const values = Object.values(module);
     const getters = values.filter((value) => {
       if (typeof value !== "function") return false;
@@ -11018,13 +11018,162 @@
         const scope = hook.memoizedState?.current;
         if (!scope || typeof scope.get !== "function" || !values.includes(scope.scope)) continue;
         for (const getter of getters) {
-          try { return getter(scope, "local"); } catch {}
+          try {
+            const managerScope = visitRegistry ? new Proxy(scope, {
+              get(target, key) {
+                if (key !== "get") return Reflect.get(target, key, target);
+                return (...args) => {
+                  const value = target.get(...args);
+                  if (value && typeof value === "object" && typeof value.forHost === "function") visitRegistry(value);
+                  return value;
+                };
+              },
+            }) : scope;
+            return getter(managerScope, "local");
+          } catch {}
         }
       }
       if (node.child) stack.push(node.child);
       if (node.sibling) stack.push(node.sibling);
     }
     return null;
+  }
+
+  const codexCollaborationModeRuntime = window.__codexPlusCollaborationModeRuntime
+    || (window.__codexPlusCollaborationModeRuntime = { registries: new WeakSet(), clients: new WeakMap() });
+  let codexCollaborationModePatchPromise = null;
+
+  function patchCodexCollaborationModeRegistry(registry) {
+    if (codexCollaborationModeRuntime.registries.has(registry)) return true;
+    const descriptor = Object.getOwnPropertyDescriptor(registry, "forHost");
+    if (!descriptor?.writable || typeof descriptor.value !== "function") return false;
+    const originalForHost = descriptor.value;
+    registry.forHost = function (hostId) {
+      const client = originalForHost.call(this, hostId);
+      if (hostId !== "local" || !client) return client;
+      const cached = codexCollaborationModeRuntime.clients.get(client);
+      if (cached) return cached;
+      if (typeof client.updateThreadSettingsForNextTurn !== "function" || typeof client.startTurn !== "function"
+          || typeof client.getConversation !== "function") return client;
+      // RPC 方法不可写；在可写注册表返回的外层保留原生 RPC 与生命周期。
+      const choices = new Map();
+      const wrapper = new Proxy({}, {
+        get(_target, key) {
+          if (key === "updateThreadSettingsForNextTurn") return (threadId, settings, condition) => {
+            const mode = settings?.collaborationMode;
+            if (!["plan", "default"].includes(mode?.mode) || !mode.settings || typeof mode.settings.model !== "string") {
+              const pending = client.updateThreadSettingsForNextTurn(threadId, settings, condition);
+              const choice = choices.get(threadId);
+              if (choice) {
+                choice.pending = Promise.all([choice.pending, Promise.resolve(pending).catch(() => {})])
+                  .then(([applied]) => applied);
+                void choice.pending.catch(() => {});
+              }
+              return pending;
+            }
+            const choice = { mode: { ...mode, settings: { ...mode.settings } }, pending: null, error: null };
+            choices.set(threadId, choice);
+            choice.pending = (async () => {
+              try {
+                const applied = await client.updateThreadSettingsForNextTurn(threadId, settings, condition);
+                if (applied === false) choice.error = new Error("协作模式更新未成功，请重新选择模式后发送");
+                return applied;
+              } catch (error) {
+                choice.error = error;
+                throw error;
+              } finally {
+                if (choice.error && choices.get(threadId) === choice) {
+                  showToast("协作模式更新失败，请重新选择模式后发送");
+                  sendCodexPlusDiagnostic("collaboration_mode_update_failed", { threadId, mode: mode.mode });
+                }
+              }
+            })();
+            // 原生界面可能吞掉更新异常；保留失败状态，发送时继续拒绝旧模式。
+            void choice.pending.catch(() => {});
+            return choice.pending;
+          };
+          if ((key === "startTurn" || key === "startEmptyTurn")
+              && typeof client[key] === "function") return async (threadId, operation, ...args) => {
+            const emptyTurn = key === "startEmptyTurn";
+            if (!operation || (!emptyTurn && !operation.request) || operation.context?.inheritThreadSettings === false) {
+              return client[key](threadId, operation, ...args);
+            }
+            let choice;
+            let conversation;
+            while ((choice = choices.get(threadId))) {
+              const pending = choice.pending;
+              try { await pending; }
+              catch (error) {
+                if (choices.get(threadId) !== choice) continue;
+                throw error;
+              }
+              if (choices.get(threadId) !== choice || choice.pending !== pending) continue;
+              if (choice.error) throw choice.error;
+              conversation = await client.getConversation(threadId);
+              if (choices.get(threadId) === choice && choice.pending === pending) break;
+            }
+            if (!choice) return client[key](threadId, operation, ...args);
+            if (!conversation) throw new Error("无法确认会话的协作模式，请重新打开会话后发送");
+            if (conversation.mode === "durable"
+                || (conversation.threadSource != null && conversation.threadSource !== "user")) {
+              choices.delete(threadId);
+              return client[key](threadId, operation, ...args);
+            }
+            const request = emptyTurn ? operation : operation.request;
+            const current = request.collaborationMode
+              ?? conversation.latestThreadSettings?.collaborationMode ?? conversation.latestCollaborationMode;
+            const model = request.model ?? current?.settings?.model ?? conversation.latestModel;
+            const effort = request.effort !== undefined ? request.effort
+              : current?.settings?.reasoning_effort !== undefined ? current.settings.reasoning_effort
+              : conversation.latestReasoningEffort ?? null;
+            if (typeof model !== "string" || !model) throw new Error("无法确认协作模式所用模型，请重新选择模式后发送");
+            const selected = current?.mode === choice.mode.mode ? current : choice.mode;
+            const collaborationMode = {
+              ...selected,
+              settings: { ...selected.settings, model, reasoning_effort: effort },
+            };
+            const nextOperation = emptyTurn ? { ...operation, collaborationMode }
+              : { ...operation, request: { ...request, collaborationMode } };
+            sendCodexPlusDiagnostic("collaboration_mode_submit_synced", {
+              threadId, mode: collaborationMode.mode, previousMode: current?.mode || "",
+            });
+            const result = await client[key](threadId, nextOperation, ...args);
+            if (choices.get(threadId) === choice) {
+              // 空回合在任务运行中可能直接返回；确认原生模式后才能清除选择。
+              let confirmed = !emptyTurn;
+              if (emptyTurn) {
+                try {
+                  confirmed = (await client.getConversation(threadId))?.latestCollaborationMode?.mode === collaborationMode.mode;
+                } catch { /* 保留选择，不能把已提交成功的回合报错。 */ }
+              }
+              if (confirmed && choices.get(threadId) === choice) choices.delete(threadId);
+            }
+            return result;
+          };
+          const value = Reflect.get(client, key, client);
+          return typeof value === "function" ? Function.prototype.bind.call(value, client) : value;
+        },
+      });
+      codexCollaborationModeRuntime.clients.set(client, wrapper);
+      return wrapper;
+    };
+    codexCollaborationModeRuntime.registries.add(registry);
+    sendCodexPlusDiagnostic("collaboration_mode_patch_installed", {});
+    return true;
+  }
+
+  function installCodexCollaborationModePatch() {
+    if (codexCollaborationModePatchPromise) return codexCollaborationModePatchPromise;
+    codexCollaborationModePatchPromise = (async () => {
+      const module = await loadOptionalCodexAppModule("app-shared-");
+      if (!module) return false;
+      let installed = false;
+      codexModelSubmitManager(module, (registry) => {
+        installed = patchCodexCollaborationModeRegistry(registry) || installed;
+      });
+      return installed;
+    })().catch(() => false).finally(() => { codexCollaborationModePatchPromise = null; });
+    return codexCollaborationModePatchPromise;
   }
 
   async function prepareCodexModelSubmit(module, request) {
@@ -11104,6 +11253,7 @@
   }
 
   function ensureCodexModelWhitelistInstalls() {
+    void installCodexCollaborationModePatch();
     void installCodexModelSubmitPreparationPatch();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()

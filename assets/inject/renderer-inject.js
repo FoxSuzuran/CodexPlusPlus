@@ -16035,6 +16035,8 @@ if (window.__CODEX_PLUS_PASTE_FIX__ && window.__CODEX_PLUS_PASTE_FIX__.enabled =
     const handler = (e) => {
       const cd = e.clipboardData;
       if (!cd) return;
+      // 图片可能同时带文字；附件交回原生粘贴，不能被纯文本修复吞掉。
+      if (cd.files?.length || Array.from(cd.items || []).some((item) => item.kind === 'file')) return;
 
       const text = cd.getData('text/plain');
       if (typeof text !== 'string' || text.length === 0) return;

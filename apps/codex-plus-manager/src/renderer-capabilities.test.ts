@@ -106,7 +106,7 @@ async function captureRuntime(assets: Record<string, string>, roots: string[]) {
     `
       const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
       const codexAppServerClientCaptureAnchor = "async sendRequest(";
-      const codexAppServerModelRequestPatchVersion = "10";
+      const codexAppServerModelRequestPatchVersion = "13";
       const codexAppAssetUrl = () => roots[0];
       const codexAppAssetUrlFromScriptText = async () => roots[0];
       const roots = ${JSON.stringify(roots)};
@@ -203,7 +203,10 @@ describe("captured request clients continue forwarding requests", () => {
     const requestTier = between(source, "  function applyCodexServiceTierRequestOnly(", "  function applyCodexServiceTierRequestOverride(");
     const api = new Function(`
       const window = {};
-      const codexAppServerModelRequestPatchVersion = "10";
+      const codexAppServerModelRequestPatchVersion = "13";
+      const registerNativeHostClient = () => {};
+      const codexPlusPluginNativeInterceptClient = () => null;
+      const codexPluginMarketplacePatchEnabled = () => false;
       const codexPlusModelUnlockEnabled = () => false;
       const codexPlusBackendSettingsLoaded = false;
       const codexRemoteSessionProviderPatchEnabled = () => false;

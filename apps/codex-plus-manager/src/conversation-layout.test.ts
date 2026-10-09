@@ -132,17 +132,22 @@ test("extension attribute mutations are ignored, native and mixed records still 
   assert.equal(f.stats.disconnects, 2);
 });
 
-test("detached conversation targets resolve from the rebuilt DOM", () => {
+test("conversation targets resolve from the rebuilt DOM and restore replaced elements", () => {
   const stale = { isConnected: false, parentElement: null };
   const host = { parentElement: null };
   const replacement = { isConnected: true, parentElement: host };
   const composer = { isConnected: true, parentElement: host };
   const observed: unknown[] = [];
-  const state = { contentEl: stale, composerEl: composer };
+  const restored: unknown[] = [];
+  const state = {
+    contentEl: stale, composerEl: composer,
+    elements: new Set([stale, composer]), observed: new WeakSet([stale, composer]),
+  };
   const context = vm.createContext({
     conversationViewState: state,
     conversationViewFindContentEl: () => replacement,
-    conversationViewFindComposerEl: () => { throw new Error("Connected composer should be retained"); },
+    conversationViewFindComposerEl: () => composer,
+    conversationViewRestoreElement: (node: unknown) => restored.push(node),
     conversationViewObserveIfNeeded: (node: unknown) => { if (node) observed.push(node); },
     document: { documentElement: {}, body: {} },
   });
@@ -152,4 +157,10 @@ test("detached conversation targets resolve from the rebuilt DOM", () => {
   assert.equal(state.composerEl, composer);
   assert.ok(observed.includes(replacement));
   assert.ok(observed.includes(host));
+  assert.deepEqual(restored, [stale]);
+  context.conversationViewFindComposerEl = () => null;
+  vm.runInContext("conversationViewResolveTargets();", context);
+  assert.equal(state.composerEl, null, "connected elements must be rechecked against the current DOM");
+  assert.deepEqual(restored, [stale, composer]);
+  assert.equal(state.elements.has(composer), false);
 });

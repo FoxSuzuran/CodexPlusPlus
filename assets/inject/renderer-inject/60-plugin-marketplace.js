@@ -162,6 +162,9 @@
     const originalSendRequest = client.__codexPluginMarketplaceOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       const restoredRequestParams = restorePluginMarketplaceRequestParams(params, requestMethod);
       const requestProfile = pluginMarketplaceRequestProfile(restoredRequestParams);
@@ -388,8 +391,10 @@
   }
 
   function installPluginMarketplaceBridgePatch() {
+    ensureCodexPlusPluginNativeTransportReinjection();
     if (window.__codexPluginMarketplaceBridgePatch === codexPluginMarketplaceUnlockVersion) return;
     if (!codexPluginMarketplacePatchEnabled()) return;
+    installCodexPlusPluginNativeTransportListener();
     installPluginMarketplaceWindowEventPatchOnly();
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") {
@@ -399,6 +404,7 @@
     if (!bridge.__codexPluginMarketplaceOriginalSendMessageFromView) {
       bridge.__codexPluginMarketplaceOriginalSendMessageFromView = bridge.sendMessageFromView.bind(bridge);
       bridge.sendMessageFromView = function codexPluginMarketplacePatchedSendMessageFromView(message) {
+        if (codexPlusPluginNativeInterceptOutgoing(message)) return Promise.resolve();
         let nextMessage = message;
         try {
           nextMessage = patchPluginMarketplaceRequestMessage(message);
@@ -425,6 +431,11 @@
       window.dispatchEvent = function patchedCodexPluginMarketplaceDispatchEvent(event) {
         try {
           const detail = event?.detail;
+          if (event?.type === "codex-message-from-view" && event.__codexForwardedViaBridge
+              && codexPlusPluginNativeSuppressForwarded(detail)) return true;
+          if (event?.type === "codex-message-from-view" && !event.__codexForwardedViaBridge
+              && codexPlusPluginNativeInterceptOutgoing(detail)) return true;
+          if (event?.type === "message" && codexPlusPluginNativeInterceptIncoming(event.data)) return true;
           if (event?.type === "codex-message-from-view" && detail?.type === "mcp-request") {
             const patched = patchPluginMarketplaceRequestMessage(detail);
             if (patched !== detail) {
@@ -620,6 +631,7 @@
     const href = row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
     const idMatch = href.match(/(?:session|conversation|thread)[=/:-]([A-Za-z0-9_.-]+)/i) || href.match(/([A-Za-z0-9_-]{8,})$/);
     const codexThreadId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    const scopedThread = codexThreadId.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     const fallbackId = row.getAttribute("data-session-id") || row.getAttribute("data-testid") || "";
     const placeholderThreadId = isClientNewThreadId(codexThreadId);
     const hrefId = idMatch && idMatch[1];
@@ -630,6 +642,7 @@
     const sessionId = placeholderThreadId
       ? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : "")
       : normalizedCodexThreadUuid(codexThreadId)
+        || (scopedThread ? scopedThread[2] : "")
         || canonicalHrefId
         || codexThreadId
         || hrefId
@@ -637,13 +650,192 @@
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
-    return { session_id: sessionId, title };
+    return { session_id: sessionId, title, host_id: sessionHostIdFromRow(row, sessionId, scopedThread?.[1]) };
+  }
+
+  function sessionHostIdFromRow(row, sessionId, scopedHost) {
+    return sessionHostEvidenceFromRow(row, sessionId, scopedHost).hostId;
+  }
+
+  function sessionHostEvidenceFromRow(row, sessionId, scopedHost) {
+    const hosts = new Set();
+    let matchingMetadata = 0;
+    let identityConflict = false;
+    const add = (value) => {
+      if (typeof value === "string" && value.trim()) hosts.add(value.trim());
+    };
+    const identity = (value) => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      const raw = value.trim();
+      const scoped = raw.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+      const id = normalizedCodexThreadUuid(raw) || scoped?.[2];
+      return id ? { id: id.toLowerCase(), host: scoped?.[1] } : raw === sessionId ? { id: raw, host: null } : null;
+    };
+    const canonicalWanted = normalizedCodexThreadUuid(sessionId);
+    const wanted = canonicalWanted ? canonicalWanted.toLowerCase() : sessionId || "";
+    const identities = (record) => [record?.conversationId, record?.threadId, record?.id].map(identity).filter(Boolean);
+    const collect = (record) => {
+      if (!record || typeof record !== "object") return;
+      const ownIds = identities(record);
+      const matched = ownIds.some((candidate) => candidate.id === wanted);
+      const nested = [record.threadSummary, record.thread, record.target].filter((value) => value && typeof value === "object");
+      const allIds = [...ownIds, ...nested.flatMap(identities)];
+      if (allIds.some((candidate) => candidate.id === wanted) && allIds.some((candidate) => candidate.id !== wanted)) {
+        identityConflict = true;
+        return;
+      }
+      if (matched) {
+        matchingMetadata += 1;
+        add(record.hostId);
+        ownIds.forEach((candidate) => add(candidate.host));
+        // 26.930 原生 sidebar 行的 {conversationId,hostId,threadSummary}：
+        // hostId ?? threadSummary?.hostId。summary 没有自己的 id 时仍属于这条会话。
+        if (record.threadSummary && !["conversationId", "threadId", "id"].some((key) => typeof record.threadSummary[key] === "string" && record.threadSummary[key].trim())) add(record.threadSummary.hostId);
+      }
+      for (const child of nested) {
+        const childIds = identities(child);
+        if (!childIds.some((candidate) => candidate.id === wanted)) continue;
+        matchingMetadata += 1;
+        add(child.hostId);
+        childIds.forEach((candidate) => add(candidate.host));
+      }
+    };
+    add(row.getAttribute("data-app-action-sidebar-thread-host-id"));
+    const rowIdentity = identity(row.getAttribute("data-app-action-sidebar-thread-id"));
+    if (rowIdentity?.id === wanted) add(scopedHost || rowIdentity.host);
+    // 只接受同一条会话的成对身份。原生 locator 为 {hostId,threadId}，
+    // sidebarThreadRow 为 {hostId,id}；bare UUID 或不相关祖先的 hostId 都不说明归属。
+    const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? row[fiberKey] : null;
+    for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
+      for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
+        collect(props);
+      }
+    }
+    const conflict = identityConflict || hosts.size > 1;
+    return {
+      hostId: !conflict && hosts.size === 1 ? [...hosts][0] : null,
+      reason: conflict ? "conflicting" : hosts.size === 1 ? "resolved" : "unknown",
+      hostCount: hosts.size,
+      matchingMetadata,
+    };
   }
 
   if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
     window.__codexPlusSessionRefTest = {
       fromRow: sessionRefFromRow,
     };
+  }
+
+  // 注册数据跨重注入保留；只存弱引用，不缓存会重建的 sidebar DOM。
+  const codexNativeHostClients = window.__codexPlusNativeHostClients instanceof Map
+    ? window.__codexPlusNativeHostClients
+    : (window.__codexPlusNativeHostClients = new Map());
+  const codexNativeHostClientLimit = 32;
+
+  function bindNativeHostClient(hostId, client, getterBound = false) {
+    if (typeof hostId !== "string" || !hostId.trim() || !client || typeof client.sendRequest !== "function") return false;
+    hostId = hostId.trim();
+    if (typeof client.hostId === "string" && client.hostId !== hostId) return false;
+    if (!getterBound && client.hostId !== hostId) return false;
+    codexNativeHostClients.delete(hostId);
+    codexNativeHostClients.set(hostId, {
+      hostId, getterBound,
+      ref: typeof WeakRef === "function" ? new WeakRef(client) : { deref: () => client },
+    });
+    while (codexNativeHostClients.size > codexNativeHostClientLimit) {
+      codexNativeHostClients.delete(codexNativeHostClients.keys().next().value);
+    }
+    return true;
+  }
+
+  function registerNativeHostClient(client) {
+    try {
+      // 已安装客户端的 RequestClient 构造器把 hostId 绑定到 dispatcher。
+      // 普通 HTTP/IPC duck-type sendRequest 对象不能充当这个删除客户端。
+      if (!Function.prototype.toString.call(client?.constructor).includes(codexAppServerClientCaptureMarker)) return false;
+      return bindNativeHostClient(client.hostId, client);
+    } catch { return false; }
+  }
+
+  function nativeHostClient(hostId) {
+    const entry = codexNativeHostClients.get(hostId);
+    const client = entry?.ref?.deref();
+    // AppScope 的 forHost RPC proxy 每次操作现取，避免跨账号/树重建复用旧 scope。
+    if (entry?.getterBound) return null;
+    if (!client || client.disposed === true || (typeof client.hostId === "string" && client.hostId !== hostId)
+        || (!entry.getterBound && client.hostId !== hostId)) {
+      codexNativeHostClients.delete(hostId);
+      return null;
+    }
+    return client;
+  }
+
+  async function discoverNativeHostClient(ref) {
+    // 原生 DeleteThreadDialog 的实装：getter(scope, hostId).sendRequest("thread/delete", {threadId})。
+    // getter 读取 AppScope 的 manager RPC，再 forHost(hostId)。只接受这个已验证的签名。
+    const module = await loadOptionalCodexAppModule("app-shared-");
+    const values = Object.values(module || {});
+    const getters = values.filter((value) => {
+      if (typeof value !== "function") return false;
+      const source = Function.prototype.toString.call(value);
+      return source.includes("AppServerManager RPC is not connected") && /\.forHost\(/.test(source);
+    });
+    if (!getters.length) return null;
+    for (const row of sessionRows(true)) {
+      const rowRef = sessionRefFromRow(row);
+      if (rowRef.session_id !== ref.session_id || rowRef.host_id !== ref.host_id) continue;
+      const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+      let fiber = fiberKey ? row[fiberKey] : null;
+      for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
+        let hook = fiber.memoizedState;
+        for (let index = 0; hook && index < 64; index += 1, hook = hook.next) {
+          const scope = hook.memoizedState?.current;
+          if (!scope || typeof scope.get !== "function" || !values.includes(scope.scope)) continue;
+          for (const getter of getters) {
+            try {
+              const client = getter(scope, ref.host_id);
+              if (bindNativeHostClient(ref.host_id, client, true)) return client;
+            } catch {}
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function deletePayloadHost(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const parse = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
+    const snake = parse(payload?.host_id);
+    const camel = parse(payload?.hostId);
+    if (payload && "host_id" in payload && "hostId" in payload && snake !== camel) return null;
+    return snake || camel;
+  }
+
+  async function deleteRemoteSession(ref) {
+    const failed = (message) => ({ status: "failed", session_id: ref.session_id, message, undo_token: null, backup_path: null });
+    if (!ref.host_id || ref.host_id === "local" || !normalizedCodexThreadUuid(ref.session_id)) {
+      return failed("无法安全确定远端会话归属，未进行本地删除");
+    }
+    try {
+      let client = null;
+      try { client = await discoverNativeHostClient(ref); } catch {}
+      client = client || nativeHostClient(ref.host_id);
+      if (!client) return failed("当前未找到对应主机的原生删除客户端；请使用 Codex 原生删除，未进行本地回退");
+      const result = await client.sendRequest("thread/delete", { threadId: ref.session_id });
+      if (result?.error || result?.status === "failed") throw new Error("native deletion failed");
+      // 原生 thread/deleted 通知由同 host manager 清理缓存；这里不碰本地库或伪造 undo。
+      return { status: "server_deleted", session_id: ref.session_id, message: "远端任务及子任务已永久删除，无法撤销", undo_token: null, backup_path: null };
+    } catch {
+      return failed("远端删除结果未确认，未进行本地回退；请先刷新远端状态再决定是否重试");
+    }
+  }
+
+  if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
+    Object.assign(window.__codexPlusSessionRefTest, {
+      registerNativeHostClient, deleteRemoteSession, deletePayloadHost,
+    });
   }
 
   function threadIdBadgeTitleNode(row) {
@@ -1441,6 +1633,11 @@
   }
 
   async function postJson(path, payload) {
+    if (path === "/delete") {
+      const hostId = deletePayloadHost(payload);
+      if (!hostId) return { status: "failed", message: "无法确定会话主机归属，未删除", session_id: payload?.session_id || "" };
+      if (hostId !== "local") return deleteRemoteSession({ ...payload, host_id: hostId });
+    }
     async function fetchBackendStatusFromHelper(path, payload) {
       const controller = typeof AbortController === "function" ? new AbortController() : null;
       const timeoutId = setTimeout(() => controller?.abort(), 2000);

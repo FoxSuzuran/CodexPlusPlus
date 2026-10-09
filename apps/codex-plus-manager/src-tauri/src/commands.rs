@@ -411,6 +411,8 @@ pub struct SaveRelayFileRequest {
 pub struct BackfillRelayProfileRequest {
     pub settings: BackendSettings,
     pub profile_id: String,
+    #[serde(default)]
+    pub adopt_provider_identity: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -486,10 +488,12 @@ pub struct WatcherPayload {
 pub struct AdsPayload {
     pub version: u64,
     pub ads: Vec<Value>,
-    /// 置顶赞助位。与 `ads` 是两回事：`top_ad` 是单独售卖的贵价位置，
-    /// 不参与推荐池的排序，概览页只认它。
+    /// 单条兼容字段，保留给仍使用旧格式的管理端消费者。
     #[serde(rename = "topAd", skip_serializing_if = "Option::is_none")]
     pub top_ad: Option<Value>,
+    /// 独立于推荐池的置顶赞助位，支持概览横幅轮播。
+    #[serde(rename = "topAds", skip_serializing_if = "Vec::is_empty")]
+    pub top_ads: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3051,6 +3055,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
     let session = SessionRef {
         session_id: session_id.to_string(),
         title: request.title,
+        host_id: Some("local".into()),
     };
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
@@ -3793,6 +3798,7 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
                 version: 1,
                 ads: Vec::new(),
                 top_ad: None,
+                top_ads: Vec::new(),
             },
         ),
     }
@@ -3809,6 +3815,46 @@ pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
             &format!("脚本市场加载失败：{error}"),
             failed_script_market_payload(&format!("脚本市场加载失败：{error}")),
         ),
+    }
+}
+
+#[tauri::command]
+pub async fn refresh_plugin_market(source: String, refresh: bool) -> Value {
+    match codex_plus_core::plugin_market::list_plugins(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        refresh,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "plugins": []}),
+    }
+}
+
+#[tauri::command]
+pub async fn install_plugin_market_item(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_plugin(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    )
+    .await
+    {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string()}),
+    }
+}
+
+#[tauri::command]
+pub fn plugin_market_install_status(source: String, id: String) -> Value {
+    match codex_plus_core::plugin_market::install_status(
+        &codex_plus_core::codex_home::default_codex_home_dir(),
+        &source,
+        &id,
+    ) {
+        Ok(payload) => payload,
+        Err(error) => json!({"status": "failed", "message": error.to_string(), "busy": false}),
     }
 }
 
@@ -3938,6 +3984,25 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
+pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
+    let manager = default_user_script_manager();
+    match manager.set_global_enabled(enabled) {
+        Ok(_) => settings_payload(
+            if enabled {
+                "本地拓展整体已开启。"
+            } else {
+                "本地拓展整体已关闭。"
+            },
+            "本地拓展整体开关设置失败",
+        ),
+        Err(error) => failed(
+            &format!("本地拓展整体开关设置失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -4018,10 +4083,10 @@ pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
 #[tauri::command]
 pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
     let manager = default_skills_manager();
-    let remote = all_cached_repo_skills();
+    let payload = skills_payload(&manager, &[], Vec::new());
     ok(
         "已加载本地 Skills。",
-        skills_payload(&manager, &remote, Vec::new()),
+        payload,
     )
 }
 
@@ -4179,7 +4244,7 @@ fn skills_payload(
     repo_errors: Vec<String>,
 ) -> SkillsPayload {
     SkillsPayload {
-        skills: manager.merge_entries(remote),
+        skills: if remote.is_empty() { manager.local_inventory() } else { manager.merge_entries(remote) },
         repos: manager.list_repos(),
         backups: manager.list_backups(),
         repo_errors,
@@ -4332,8 +4397,33 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn perform_update(
+    app: tauri::AppHandle,
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    let result = perform_update_inner(release).await;
+    if result.status == "ok" {
+        // 先返回准备结果，再正常退出；独立更新进程等待当前管理工具结束。
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            app.exit(0);
+        });
+    }
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn perform_update(
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    perform_update_inner(release).await
+}
+
+// 无需 app runtime 的业务核心；其它平台测试不应引入 Wry 析构依赖。
+async fn perform_update_inner(
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
     let Some(release) = release else {
@@ -4347,17 +4437,23 @@ pub async fn perform_update(
     };
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
-        Ok(result) => ok(
-            "安装包已下载并启动，请按安装向导完成更新。",
-            json!({
+        Ok(result) => {
+            ok(
+                if cfg!(target_os = "macos") {
+                    "安装包已验证，管理工具将关闭以安装更新，完成后自动重启；失败时保留旧版。"
+                } else {
+                    "安装包已下载并启动，请按安装向导完成更新。"
+                },
+                json!({
                 "currentVersion": codex_plus_core::version::VERSION,
                 "latestVersion": result.release.version,
                 "releaseSummary": result.release.body,
                 "installedPath": result.installer_path.to_string_lossy(),
                 "launched": result.launched,
                 "progress": 100
-            }),
-        ),
+                }),
+            )
+        },
         Err(error) => failed(
             &format!("安装更新失败：{error}"),
             json!({
@@ -4805,16 +4901,39 @@ pub fn backfill_relay_profile_from_live(
         );
     }
 
+    if !request.adopt_provider_identity {
+        match codex_plus_core::relay_config::live_config_matches_other_profile_in_home(
+            &home, &settings, &request.profile_id,
+        ) {
+            Ok(true) => return ok(
+                "实时配置属于其它已保存供应商，已保留原快照。",
+                SettingsBackfillPayload { settings },
+            ),
+            Ok(false) => {}
+            Err(error) => return failed(
+                &format!("读取实时配置归属失败，已保留原配置：{error}"),
+                SettingsBackfillPayload { settings },
+            ),
+        }
+    }
+
     // 回填会就地改写 profile 与公共配置。先在副本上跑，成功才提交，避免中途
     // 失败时留下「改了一半」的 profile 被后续切换流程用上。
     let mut next_profile = settings.relay_profiles[profile_index].clone();
     let mut next_context = settings.relay_context_config_contents.clone();
-    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
         &home,
         &mut next_profile,
         &mut next_context,
+        if request.adopt_provider_identity {
+            codex_plus_core::relay_config::RelayBackfillPolicy::AdoptLiveIdentity
+        } else {
+            codex_plus_core::relay_config::RelayBackfillPolicy::PreserveIdentity
+        },
     ) {
         Ok(()) => {
+            let changed = next_profile != settings.relay_profiles[profile_index]
+                || next_context != settings.relay_context_config_contents;
             settings.relay_profiles[profile_index] = next_profile;
             settings.relay_context_config_contents = next_context;
             log_manager_event(
@@ -4824,7 +4943,13 @@ pub fn backfill_relay_profile_from_live(
                 }),
             );
             ok(
-                "当前供应商配置已从 live 文件回填。",
+                if !changed {
+                    "实时配置没有需要回填的内容，已保留当前供应商快照。"
+                } else if request.adopt_provider_identity {
+                    "已采纳当前 URL 与认证，并重置旧自定义请求头。"
+                } else {
+                    "当前供应商配置已从 live 文件回填。"
+                },
                 SettingsBackfillPayload { settings },
             )
         }
@@ -6101,6 +6226,11 @@ fn ads_payload(payload: Value) -> AdsPayload {
             .cloned()
             .unwrap_or_default(),
         top_ad: payload.get("topAd").cloned(),
+        top_ads: payload
+            .get("topAds")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
     }
 }
 
@@ -7044,7 +7174,7 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn update_install_requires_release_payload() {
-        let result = tauri::async_runtime::block_on(perform_update(None));
+        let result = tauri::async_runtime::block_on(perform_update_inner(None));
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("请先检查更新"));
@@ -8078,6 +8208,19 @@ enabled = true
     }
 
     #[test]
+    fn backfill_request_preserves_identity_unless_explicitly_adopted() {
+        let settings = serde_json::to_value(BackendSettings::default()).unwrap();
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a"
+        })).unwrap();
+        assert!(!request.adopt_provider_identity);
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a", "adoptProviderIdentity": true
+        })).unwrap();
+        assert!(request.adopt_provider_identity);
+    }
+
+    #[test]
     fn normalize_settings_before_save_preserves_profile_context_until_manual_extract() {
         let settings = BackendSettings {
             relay_common_config_contents: "[mcp_servers.context7]\ncommand = \"npx\"\n".to_string(),
@@ -8518,12 +8661,20 @@ model_reasoning_effort = "high"
     fn ads_payload_keeps_version_and_ad_items() {
         let payload = ads_payload(json!({
             "version": 1,
-            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}]
+            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}],
+            "topAd": {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
+            "topAds": [
+                {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
+                {"id": "banner-2", "type": "sponsor", "title": "Banner 2"}
+            ]
         }));
 
         assert_eq!(payload.version, 1);
         assert_eq!(payload.ads.len(), 1);
         assert_eq!(payload.ads[0]["id"], json!("ad-1"));
+        assert_eq!(payload.top_ad.as_ref().unwrap()["id"], json!("banner-1"));
+        assert_eq!(payload.top_ads.len(), 2);
+        assert_eq!(payload.top_ads[1]["id"], json!("banner-2"));
     }
 
     #[test]

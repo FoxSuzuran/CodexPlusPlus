@@ -1,19 +1,20 @@
 use codex_plus_core::protocol_proxy::{
-    ChatSseToResponsesConverter, CompactionSseConverter, audio_transcriptions_url,
-    chat_completion_to_response, chat_completion_to_response_with_request, chat_completions_url,
-    chat_sse_to_responses_sse, chat_sse_to_responses_sse_with_request, image_edits_url,
-    image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
-    is_image_edits_proxy_path, is_image_generations_proxy_path, is_models_proxy_path,
-    is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
-    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
-    open_image_edits_proxy_request, open_image_generations_proxy_request,
-    open_models_proxy_request, open_responses_proxy_request,
+    ChatSseToResponsesConverter, CompactionSseConverter, ProxySessionHeaders,
+    audio_transcriptions_url, chat_completion_to_response,
+    chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
+    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
+    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
+    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
+    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
+    open_chat_completions_proxy_request, open_image_edits_proxy_request,
+    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
-    open_responses_proxy_request_with_settings_for_path, request_has_compaction_trigger,
-    responses_compact_url, responses_error_from_upstream, responses_to_chat_completions,
-    responses_to_chat_completions_with_options, send_upstream_request_with_header_timeout,
-    upstream_header_timeout, upstream_http_client, upstream_stream_header_timeout,
-    wrap_non_stream_response_as_compaction,
+    open_responses_proxy_request_with_settings_for_path,
+    open_responses_proxy_request_with_settings_for_path_and_session_headers,
+    request_has_compaction_trigger, responses_compact_url, responses_error_from_upstream,
+    responses_to_chat_completions, responses_to_chat_completions_with_options,
+    send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
+    upstream_stream_header_timeout, wrap_non_stream_response_as_compaction,
 };
 use codex_plus_core::relay_config::test_relay_profile;
 use codex_plus_core::settings::{
@@ -89,6 +90,95 @@ fn compaction_history_item_expands_to_user_message_in_chat_conversion() {
         })
         .expect("compaction item 应展开为摘要 user 消息");
     assert_eq!(replayed["role"], "user");
+}
+
+#[test]
+fn chat_conversion_rejects_encrypted_agent_content_without_echoing_payload() {
+    for input in [
+        json!([{"type":"message","role":"user","content":[
+            {"type":"input_text","text":"Payload:"},
+            {"type":"encrypted_content","text":"private-agent-payload"}
+        ]}]),
+        json!([{"type":"encrypted_content","encrypted_content":"private-agent-payload"}]),
+        json!([{"type":"agent_message","content":[
+            {"type":"encrypted_content","encrypted_content":"private-agent-payload"}
+        ]}]),
+        json!({"type":"encrypted_content","encrypted_content":"private-agent-payload"}),
+        json!([{"type":"message","role":"user","content":[{"type":"encrypted_content"}]}]),
+    ] {
+        for standard in [false, true] {
+            let error = responses_to_chat_completions_with_options(
+                json!({"model":"custom-model","input":input}), standard,
+            ).expect_err("加密 agent 内容必须明确拒绝，不能静默丢弃或视为明文");
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
+            assert!(!diagnostic.contains("private-agent-payload"));
+        }
+    }
+}
+
+#[test]
+fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts() {
+    let converted = responses_to_chat_completions(json!({
+        "model":"custom-model",
+        "input":[
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"visible-summary"}],
+             "encrypted_content":"opaque-reasoning"},
+            {"type":"message","role":"user","content":[
+                {"type":"input_text","text":"Payload:"},
+                {"type":"input_text","text":"plaintext-task"}
+            ]},
+            {"type":"compaction","encrypted_content":"local-summary"},
+            {"type":"function_call_output","call_id":"orphan",
+             "output":{"type":"encrypted_content","text":"tool-output-text"}}
+        ]
+    })).unwrap();
+    let messages = converted["messages"].to_string();
+    assert!(messages.contains("plaintext-task"));
+    assert!(messages.contains("visible-summary"));
+    assert!(messages.contains("local-summary"));
+    assert!(messages.contains("tool-output-text"));
+    assert!(!messages.contains("opaque-reasoning"));
+}
+
+#[tokio::test]
+async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        tokio::select! {
+            request = capture_json_request_once(listener) => Some(request),
+            _ = stopped => None,
+        }
+    });
+    let settings = session_header_settings(RelayProtocol::ChatCompletions, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(
+        &json!({"model":"custom-model","stream":false,"input":[
+            {"type":"encrypted_content","encrypted_content":"private-agent-payload"}
+        ]}).to_string(), settings,
+    ).await;
+    let _ = stop.send(());
+    let request = upstream.await.unwrap();
+    assert!(result.is_err(), "必须在发送上游请求前拒绝不支持的加密内容");
+    assert!(request.is_none(), "不得向 Chat 上游发送删掉 payload 的请求");
+}
+
+#[tokio::test]
+async fn responses_upstream_preserves_encrypted_agent_content() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(capture_json_request_once(listener));
+    let request = json!({"model":"custom-model","stream":false,"input":[
+        {"type":"agent_message","sender_agent_id":"sender","recipient_agent_id":"recipient",
+         "content":[{"type":"encrypted_content","encrypted_content":"opaque-agent-payload"}]},
+        {"type":"encrypted_content","encrypted_content":"standalone-opaque-agent-payload"}
+    ]});
+    let settings = session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+    let result = open_responses_proxy_request_with_settings(&request.to_string(), settings).await.unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, sent) = upstream.await.unwrap();
+    assert_eq!(sent, request);
 }
 
 #[test]
@@ -852,6 +942,20 @@ fn responses_request_maps_kimi_coding_reasoning_effort_per_official_spec() {
     .unwrap();
     assert_eq!(off["thinking"]["type"], "disabled");
     assert!(off.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn kimi_k3_standard_protocol_avoids_adaptive_and_preserves_opt_in_vendor_behavior() {
+    for model in ["kimi-k3", "k3-256k"] {
+        let request = json!({"model":model,"reasoning":{"effort":"xhigh"},"input":"hello"});
+        let standard = responses_to_chat_completions_with_options(request.clone(), true).unwrap();
+        assert!(standard.get("thinking").is_none());
+        assert!(standard.get("reasoning_effort").is_none());
+        let vendor = responses_to_chat_completions_with_options(request, false).unwrap();
+        assert_eq!(vendor["thinking"]["type"], "adaptive");
+        assert_eq!(vendor["reasoning_effort"], "max");
+        assert_eq!(standard["messages"], vendor["messages"]);
+    }
 }
 
 #[test]
@@ -4244,6 +4348,208 @@ async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() 
 
     let request = server.finish();
     assert_eq!(request.user_agent, "Original-Codex-UA/1.0");
+}
+
+fn captured_header_values<'a>(headers: &'a str, expected_name: &str) -> Vec<&'a str> {
+    headers
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(expected_name)
+                .then(|| value.trim())
+        })
+        .collect()
+}
+
+fn session_header_settings(protocol: RelayProtocol, base_url: String) -> BackendSettings {
+    BackendSettings {
+        relay_profiles_enabled: true,
+        active_relay_id: "session-headers".to_string(),
+        relay_profiles: vec![RelayProfile {
+            id: "session-headers".to_string(),
+            base_url,
+            api_key: "sk-upstream".to_string(),
+            protocol,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_preserves_session_headers_through_both_protocols() {
+    for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
+        // 连续两次请求携带不同的客户端会话，不能混成供应商级固定值。
+        for (session_id, thread_id, opencode_session) in [
+            ("session-a", "thread-a", "opencode-a"),
+            ("session-b", "thread-b", "opencode-b"),
+        ] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(capture_request_with_response(
+                listener,
+                "application/json",
+                "{}".to_string(),
+            ));
+            let settings = session_header_settings(protocol, format!("http://{address}/v1"));
+            let result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+                r#"{"model":"session-probe","input":"hello","stream":false}"#,
+                settings,
+                "/v1/responses",
+                Some("remote_compaction_v2"),
+                ProxySessionHeaders {
+                    session_id: Some(session_id),
+                    thread_id: Some(thread_id),
+                    opencode_session: Some(opencode_session),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.status_code, 200);
+            let (headers, _) = server.await.unwrap();
+            let endpoint = if protocol == RelayProtocol::Responses {
+                "/v1/responses"
+            } else {
+                "/v1/chat/completions"
+            };
+            assert!(headers.starts_with(&format!("POST {endpoint} HTTP/1.1")));
+            assert_eq!(
+                captured_header_values(&headers, "session-id"),
+                vec![session_id]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "thread-id"),
+                vec![thread_id]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "x-opencode-session"),
+                vec![opencode_session]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "authorization"),
+                vec!["Bearer sk-upstream"]
+            );
+            assert_eq!(
+                captured_header_values(&headers, "x-codex-beta-features"),
+                if protocol == RelayProtocol::Responses {
+                    vec!["remote_compaction_v2"]
+                } else {
+                    vec![]
+                },
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_session_headers_keep_custom_headers_authoritative() {
+    for protocol in [RelayProtocol::Responses, RelayProtocol::ChatCompletions] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            "{}".to_string(),
+        ));
+        let mut settings = session_header_settings(protocol, format!("http://{address}/v1"));
+        let relay = &mut settings.relay_profiles[0];
+        relay.custom_headers = vec![
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "Session-ID".to_string(),
+                value: "configured-session".to_string(),
+            },
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "THREAD-id".to_string(),
+                value: "configured-thread".to_string(),
+            },
+            codex_plus_core::settings::RelayHeaderKeyValue {
+                key: "X-OpenCode-Session".to_string(),
+                value: String::new(),
+            },
+        ];
+        let result = open_responses_proxy_request_with_settings_for_path_and_session_headers(
+            r#"{"model":"session-probe","input":"hello","stream":false}"#,
+            settings,
+            "/v1/responses",
+            None,
+            ProxySessionHeaders {
+                session_id: Some("client-session"),
+                thread_id: Some("client-thread"),
+                opencode_session: Some("client-opencode"),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, _) = server.await.unwrap();
+        assert_eq!(
+            captured_header_values(&headers, "session-id"),
+            vec!["configured-session"]
+        );
+        assert_eq!(
+            captured_header_values(&headers, "thread-id"),
+            vec!["configured-thread"]
+        );
+        assert_eq!(
+            captured_header_values(&headers, "x-opencode-session"),
+            vec![""]
+        );
+        assert!(!headers.contains("client-"));
+    }
+}
+
+#[tokio::test]
+async fn responses_proxy_omits_empty_or_invalid_session_headers_and_keeps_legacy_api() {
+    for legacy_api in [false, true] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            "{}".to_string(),
+        ));
+        let settings =
+            session_header_settings(RelayProtocol::Responses, format!("http://{address}/v1"));
+        let body = r#"{"model":"session-probe","input":"hello","stream":false}"#;
+        let result = if legacy_api {
+            open_responses_proxy_request_with_settings_for_path(body, settings, "/v1/responses")
+                .await
+        } else {
+            open_responses_proxy_request_with_settings_for_path_and_session_headers(
+                body,
+                settings,
+                "/v1/responses",
+                None,
+                ProxySessionHeaders {
+                    session_id: Some("   "),
+                    thread_id: Some("invalid\r\nx-injected: value"),
+                    opencode_session: None,
+                },
+            )
+            .await
+        }
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, _) = server.await.unwrap();
+        for name in [
+            "session-id",
+            "thread-id",
+            "x-opencode-session",
+            "x-injected",
+        ] {
+            assert!(
+                captured_header_values(&headers, name).is_empty(),
+                "unexpected header: {name}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

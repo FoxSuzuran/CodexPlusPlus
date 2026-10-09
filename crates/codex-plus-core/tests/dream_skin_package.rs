@@ -3,7 +3,9 @@ use std::io::{Cursor, Write};
 use codex_plus_core::dream_skin_library::{
     load_stored_dream_skin_theme, prepare_dream_skin_activation, save_validated_dream_skin_package,
 };
-use codex_plus_core::dream_skin_package::{compile_safe_css, validate_and_read_package};
+use codex_plus_core::dream_skin_package::{
+    DREAM_SKIN_PACKAGE_CLIENT_VERSION, compile_safe_css, validate_and_read_package,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -12,10 +14,19 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn package_bytes(platform: &str, css: &[u8], image_hash: Option<String>) -> Vec<u8> {
-    package_bytes_with_prefix(platform, css, image_hash, "", "0.0.0")
+    package_bytes_with_prefix(platform, css, image_hash, "")
 }
 
 fn package_bytes_with_prefix(
+    platform: &str,
+    css: &[u8],
+    image_hash: Option<String>,
+    prefix: &str,
+) -> Vec<u8> {
+    package_bytes_with_min_client_version(platform, css, image_hash, prefix, "0.0.0")
+}
+
+fn package_bytes_with_min_client_version(
     platform: &str,
     css: &[u8],
     image_hash: Option<String>,
@@ -79,6 +90,29 @@ fn package_bytes_with_prefix(
 }
 
 #[test]
+fn package_compatibility_uses_dream_skin_version_instead_of_product_version() {
+    let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
+    let supported = package_bytes_with_min_client_version(
+        "macos",
+        css,
+        None,
+        "",
+        DREAM_SKIN_PACKAGE_CLIENT_VERSION,
+    );
+    assert!(validate_and_read_package(&supported, "macos").is_ok());
+
+    for minimum in ["1.5.19", "26.805.11740"] {
+        let bytes = package_bytes_with_min_client_version("macos", css, None, "", minimum);
+        let error = validate_and_read_package(&bytes, "macos")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(minimum));
+        assert!(error.contains(DREAM_SKIN_PACKAGE_CLIENT_VERSION));
+        assert!(error.contains("Dream Skin 引擎版本"));
+    }
+}
+
+#[test]
 fn validates_real_dream_skin_package_shape() {
     let css = br#"[data-ds-part="root"] { color: var(--ds-theme-color-text); }"#;
     let package = validate_and_read_package(&package_bytes("macos", css, None), "macos").unwrap();
@@ -92,7 +126,7 @@ fn validates_real_dream_skin_package_shape() {
 fn validates_package_inside_one_top_level_directory() {
     let css = br#"[data-ds-part="root"] { color: var(--ds-theme-color-text); }"#;
     let package = validate_and_read_package(
-        &package_bytes_with_prefix("macos", css, None, "studio-theme/", "0.0.0"),
+        &package_bytes_with_prefix("macos", css, None, "studio-theme/"),
         "macos",
     )
     .unwrap();
@@ -105,16 +139,16 @@ fn validates_package_inside_one_top_level_directory() {
 fn supports_dream_skin_1_5_18_without_accepting_future_clients() {
     let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
     for version in ["0.0.0", "1.5.12", "1.5.18"] {
-        let bytes = package_bytes_with_prefix("windows", css, None, "", version);
+        let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         validate_and_read_package(&bytes, "windows").unwrap();
     }
     for version in ["1.5.19", "1.6.0", "2.0.0"] {
-        let bytes = package_bytes_with_prefix("windows", css, None, "", version);
+        let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         let error = validate_and_read_package(&bytes, "windows")
             .unwrap_err()
             .to_string();
         assert!(error.contains(version), "{error}");
-        assert!(error.contains("当前兼容至 1.5.18"), "{error}");
+        assert!(error.contains("当前支持 1.5.18"), "{error}");
     }
 }
 

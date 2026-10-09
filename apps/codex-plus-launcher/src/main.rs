@@ -723,6 +723,10 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    async fn capture_injected_launch_identity(&self, debug_port: u16) {
+        self.core.capture_injected_launch_identity(debug_port).await;
+    }
+
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let ctx = self.watchdog_bridge_context()?;
         let runtime = self.runtime.clone();
@@ -788,6 +792,8 @@ impl Default for LauncherDataService {
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
+        // 只读本地 SQLite 的实现不能接收远端/未知来源；同 ID 不代表同一主机。
+        session.require_local_delete()?;
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {
@@ -823,6 +829,24 @@ impl BridgeDataService for LauncherDataService {
         tokio::task::spawn_blocking(move || adapter.codex_thread_usage_history(&session))
             .await
             .map_err(|error| anyhow::anyhow!("thread usage history task failed: {error}"))
+    }
+
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let adapter = self.storage_adapter();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_usage::session_summary(&adapter, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
+    }
+
+    async fn whale_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale history task failed: {error}"))
     }
 
     async fn find_archived_thread_by_title(

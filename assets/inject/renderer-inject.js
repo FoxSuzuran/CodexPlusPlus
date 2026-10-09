@@ -10994,7 +10994,117 @@
     void appServerModelRequestPatchPromise;
   }
 
+  function codexModelSubmitManager(module) {
+    const values = Object.values(module);
+    const getters = values.filter((value) => {
+      if (typeof value !== "function") return false;
+      try {
+        const source = Function.prototype.toString.call(value);
+        return source.includes("AppServerManager RPC") && /\.forHost\(/.test(source);
+      } catch { return false; }
+    });
+    if (!getters.length) return null;
+    const root = document.getElementById("root");
+    const key = root && Object.keys(root).find((name) => name.startsWith("__reactContainer$") || name.startsWith("__reactFiber$"));
+    let fiber = root?.[key];
+    if (fiber?.stateNode?.current) fiber = fiber.stateNode.current;
+    const stack = [fiber], seen = new Set();
+    while (stack.length && seen.size < 8000) {
+      const node = stack.pop();
+      if (!node || typeof node !== "object" || seen.has(node)) continue;
+      seen.add(node);
+      let hook = node.memoizedState;
+      for (let index = 0; hook && index < 64; index += 1, hook = hook.next) {
+        const scope = hook.memoizedState?.current;
+        if (!scope || typeof scope.get !== "function" || !values.includes(scope.scope)) continue;
+        for (const getter of getters) {
+          try { return getter(scope, "local"); } catch {}
+        }
+      }
+      if (node.child) stack.push(node.child);
+      if (node.sibling) stack.push(node.sibling);
+    }
+    return null;
+  }
+
+  async function prepareCodexModelSubmit(module, request) {
+    const profile = codexRemoteSessionActiveProfile();
+    if (profile?.relayMode !== "pureApi"
+        || codexRemoteSessionTargetProvider() !== "openai"
+        || typeof request?.conversationId !== "string" || !request.conversationId
+        || typeof request.model !== "string" || !codexPureApiAllowedModelSet("local")?.has(request.model)) return false;
+    const manager = codexModelSubmitManager(module);
+    if (!manager) return false;
+    const conversation = await manager.getConversation(request.conversationId);
+    const previousModel = conversation?.latestCollaborationMode?.settings?.model ?? conversation?.latestModel;
+    if (!previousModel || previousModel === request.model || conversation.modelProvider !== "openai"
+        || conversation.daybreakEnabled === true || conversation.mode === "durable"
+        || (conversation.threadSource != null && conversation.threadSource !== "user")
+        || codexRemoteSessionActiveProfile()?.id !== profile.id
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi"
+        || codexRemoteSessionTargetProvider() !== "openai"
+        || !codexPureApiAllowedModelSet("local")?.has(request.model)) return false;
+    // 原生设置队列同步 model 与 collaborationMode；条件更新避免覆盖期间发生的用户切换。
+    const applied = await manager.updateThreadSettingsForNextTurn(request.conversationId, { model: request.model }, {
+      ifModelEquals: conversation.latestModel,
+      ifEffortEquals: conversation.latestReasoningEffort,
+    });
+    sendCodexPlusDiagnostic(applied ? "model_submit_state_synced" : "model_submit_sync_conflict", {
+      threadId: request.conversationId, from: previousModel, to: request.model,
+    });
+    return applied === true;
+  }
+
+  let codexModelSubmitPatchPromise = null;
+
+  async function installCodexModelSubmitPreparationPatch() {
+    window.__codexPlusPrepareModelSubmit = prepareCodexModelSubmit;
+    const previous = window.__codexPlusModelSubmitPatch;
+    if (previous && previous.services.daybreakPreferences === previous.wrapper) return true;
+    if (codexModelSubmitPatchPromise) return codexModelSubmitPatchPromise;
+    if (codexRemoteSessionActiveProfile()?.relayMode !== "pureApi" || codexRemoteSessionTargetProvider() !== "openai") return false;
+    codexModelSubmitPatchPromise = (async () => {
+      const module = await loadOptionalCodexAppModule("app-shared-");
+      if (!module) return false;
+      const services = Object.values(module).find((value) => {
+        try {
+          return value && typeof value === "object"
+            && Object.getOwnPropertyDescriptor(value, "daybreakPreferences")?.writable === true
+            && "appServerManagers" in value
+            && typeof value.daybreakPreferences?.getApiKeyCyberAccessProgram === "function";
+        } catch { return false; }
+      });
+      const original = services?.daybreakPreferences;
+      if (typeof original?.getApiKeyCyberAccessProgram !== "function") return false;
+      // RPC 方法不可写；替换服务引用，其他方法仍交给原生 proxy。
+      const wrapper = new Proxy(original, {
+        get(target, key) {
+          if (key !== "getApiKeyCyberAccessProgram") return Reflect.get(target, key, target);
+          return async (request) => {
+            const result = await target.getApiKeyCyberAccessProgram(request);
+            if (result?.allowed !== false || result.enabled !== false) return result;
+            let synced = false;
+            try { synced = await window.__codexPlusPrepareModelSubmit(module, request); }
+            catch (error) {
+              sendCodexPlusDiagnostic("model_submit_sync_failed", { errorName: error?.name || "Error" });
+            }
+            return synced ? await target.getApiKeyCyberAccessProgram(request) : result;
+          };
+        },
+      });
+      services.daybreakPreferences = wrapper;
+      window.__codexPlusModelSubmitPatch = { services, original, wrapper };
+      sendCodexPlusDiagnostic("model_submit_preparation_patch_installed", {});
+      return true;
+    })().catch((error) => {
+      sendCodexPlusDiagnostic("model_submit_preparation_patch_failed", { errorName: error?.name || "Error" });
+      return false;
+    }).finally(() => { codexModelSubmitPatchPromise = null; });
+    return codexModelSubmitPatchPromise;
+  }
+
   function ensureCodexModelWhitelistInstalls() {
+    void installCodexModelSubmitPreparationPatch();
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())

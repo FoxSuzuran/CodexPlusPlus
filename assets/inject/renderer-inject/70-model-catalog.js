@@ -737,14 +737,14 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)(requestMethod, providerParams);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
         method,
-        nextParams,
+        providerParams,
         options
       );
+      const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)(requestMethod, providerParams);
       const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
       let result;
       try {
@@ -768,7 +768,7 @@
         || client.prewarmThreadStart.bind(client);
       client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)("thread/start", params);
+        const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)("thread/start", params);
         return originalPrewarmThreadStart(nextParams, options);
       };
     }
@@ -913,14 +913,14 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)(requestMethod, providerParams);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
         method,
-        nextParams,
+        providerParams,
         options
       );
+      const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)(requestMethod, providerParams);
       const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
       let result;
       try {
@@ -944,7 +944,7 @@
         || proto.prewarmThreadStart;
       proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = (window.__codexPlusFastRequestHandlers?.apply || applyCodexServiceTierRequestOnly)("thread/start", params);
+        const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)("thread/start", params);
         return originalPrewarmThreadStart.call(this, nextParams, options);
       };
     }
@@ -1115,7 +1115,10 @@
       const client = originalForHost.call(this, hostId);
       if (hostId !== "local" || !client) return client;
       const cached = codexCollaborationModeRuntime.clients.get(client);
-      if (cached) return cached;
+      if (cached) {
+        window.__codexPlusFastRequestHandlers?.manager?.(cached);
+        return cached;
+      }
       if (typeof client.updateThreadSettingsForNextTurn !== "function" || typeof client.startTurn !== "function"
           || typeof client.getConversation !== "function") return client;
       // RPC 方法不可写；在可写注册表返回的外层保留原生 RPC 与生命周期。
@@ -1123,9 +1126,12 @@
       const wrapper = new Proxy({}, {
         get(_target, key) {
           if (key === "updateThreadSettingsForNextTurn") return (threadId, settings, condition) => {
+            const sendSettings = () => client.updateThreadSettingsForNextTurn(threadId, settings, condition);
+            const update = () => window.__codexPlusFastRequestHandlers?.settings
+              ? window.__codexPlusFastRequestHandlers.settings(threadId, settings, sendSettings) : sendSettings();
             const mode = settings?.collaborationMode;
             if (!["plan", "default"].includes(mode?.mode) || !mode.settings || typeof mode.settings.model !== "string") {
-              const pending = client.updateThreadSettingsForNextTurn(threadId, settings, condition);
+              const pending = update();
               const choice = choices.get(threadId);
               if (choice) {
                 choice.pending = Promise.all([choice.pending, Promise.resolve(pending).catch(() => {})])
@@ -1138,7 +1144,7 @@
             choices.set(threadId, choice);
             choice.pending = (async () => {
               try {
-                const applied = await client.updateThreadSettingsForNextTurn(threadId, settings, condition);
+                const applied = await update();
                 if (applied === false) choice.error = new Error("协作模式更新未成功，请重新选择模式后发送");
                 return applied;
               } catch (error) {
@@ -1158,6 +1164,14 @@
           if ((key === "startTurn" || key === "startEmptyTurn")
               && typeof client[key] === "function") return async (threadId, operation, ...args) => {
             const emptyTurn = key === "startEmptyTurn";
+            const send = async (next) => {
+              const request = emptyTurn ? next : next?.request;
+              if (request && next.context?.inheritThreadSettings !== false && window.__codexPlusFastRequestHandlers?.prepare) {
+                const params = await window.__codexPlusFastRequestHandlers.prepare("turn/start", request, threadId);
+                if (params !== request) next = emptyTurn ? params : { ...next, request: params };
+              }
+              return client[key](threadId, next, ...args);
+            };
             if (!operation || (!emptyTurn && !operation.request) || operation.context?.inheritThreadSettings === false) {
               return client[key](threadId, operation, ...args);
             }
@@ -1175,7 +1189,7 @@
               conversation = await client.getConversation(threadId);
               if (choices.get(threadId) === choice && choice.pending === pending) break;
             }
-            if (!choice) return client[key](threadId, operation, ...args);
+            if (!choice) return send(operation);
             if (!conversation) throw new Error("无法确认会话的协作模式，请重新打开会话后发送");
             if (conversation.mode === "durable"
                 || (conversation.threadSource != null && conversation.threadSource !== "user")) {
@@ -1200,7 +1214,7 @@
             sendCodexPlusDiagnostic("collaboration_mode_submit_synced", {
               threadId, mode: collaborationMode.mode, previousMode: current?.mode || "",
             });
-            const result = await client[key](threadId, nextOperation, ...args);
+            const result = await send(nextOperation);
             if (choices.get(threadId) === choice) {
               // 空回合在任务运行中可能直接返回；确认原生模式后才能清除选择。
               let confirmed = !emptyTurn;
@@ -1213,11 +1227,18 @@
             }
             return result;
           };
+          if (key === "getConversation") return async (threadId, ...args) => {
+            const read = window.__codexPlusFastRequestHandlers?.read?.(threadId);
+            const conversation = await client.getConversation(threadId, ...args);
+            window.__codexPlusFastRequestHandlers?.conversation?.(threadId, conversation, read);
+            return conversation;
+          };
           const value = Reflect.get(client, key, client);
           return typeof value === "function" ? Function.prototype.bind.call(value, client) : value;
         },
       });
       codexCollaborationModeRuntime.clients.set(client, wrapper);
+      window.__codexPlusFastRequestHandlers?.manager?.(wrapper);
       return wrapper;
     };
     codexCollaborationModeRuntime.registries.add(registry);

@@ -8,8 +8,126 @@
     return codexServiceTierControlModes.has(normalized) ? normalized : "inherit";
   }
 
+  const codexServiceTierRuntime = window.__codexPlusServiceTierRuntime
+    || (window.__codexPlusServiceTierRuntime = { threads: new Map(), intents: new Map(), manager: null });
+
+  async function codexServiceTierCheckAccess(mode, manager) {
+    if (!["fast", "ultrafast"].includes(mode)) return true;
+    if (typeof codexRemoteSessionActiveProfile === "function"
+        && codexRemoteSessionActiveProfile()?.relayMode === "pureApi") return true;
+    try {
+      const auth = await manager?.getAuthMethod?.();
+      if (["apiKey", "apikey", "api-key"].includes(auth)) return true;
+      if (!manager?.sendRequest || !auth) {
+        if (mode === "fast") return true;
+        throw new Error("access unavailable");
+      }
+      const access = await manager.sendRequest("configRequirements/read", undefined, { priority: "critical", timeoutMs: 5000 });
+      if (!access || typeof access !== "object") throw new Error("access unavailable");
+      const features = access.requirements?.featureRequirements;
+      const fast = features?.fast_mode !== false;
+      if (mode === "fast" ? fast
+          : (access.supportsIndependentSpeedModes === true || fast) && features?.ultrafast_mode !== false) return true;
+      showToast(`当前账号或工作区未允许 ${codexServiceTierLabel(mode)}`, null);
+    } catch {
+      showToast(`无法确认 ${codexServiceTierLabel(mode)} 权限，请使用原生速度控件或重试`, null);
+    }
+    return false;
+  }
+
+  function observeCodexServiceTierSettings(threadId, settings, send) {
+    if (!codexPlusSettings().serviceTierControls || !Object.prototype.hasOwnProperty.call(settings || {}, "serviceTier")) return send();
+    if (codexServiceTierRuntime.threads.get(threadId)?.passthrough) return send();
+    const tier = settings.serviceTier ?? null;
+    const choice = { tier, pending: null, error: null };
+    const intent = codexServiceTierRuntime.committing || {};
+    if (!codexServiceTierRuntime.committing) codexServiceTierRuntime.controlIntent = null;
+    codexServiceTierRuntime.intents.set(threadId, intent);
+    codexServiceTierRuntime.threads.delete(threadId);
+    codexServiceTierRuntime.threads.set(threadId, choice);
+    while (codexServiceTierRuntime.threads.size > 120) {
+      const first = codexServiceTierRuntime.threads.entries().next().value;
+      if (first[1].pending) break;
+      codexServiceTierRuntime.threads.delete(first[0]);
+      codexServiceTierRuntime.intents.delete(first[0]);
+    }
+    choice.pending = (async () => {
+      try {
+        const applied = await send();
+        if (applied === false) throw new Error("速度更新未成功，请重新选择后发送");
+        if (codexServiceTierRuntime.threads.get(threadId) === choice
+            && codexPlusSettings().serviceTierControls) {
+          if (!setCodexThreadServiceTierOverride(threadId, codexServiceTierEffectiveMode(tier))) {
+            throw new Error("速度选择保存失败，请重新选择后发送");
+          }
+        }
+        return applied;
+      } catch (error) {
+        choice.error = error;
+        if (codexServiceTierRuntime.threads.get(threadId) === choice) showToast("速度切换失败，请重新选择后发送", null);
+        throw error;
+      } finally {
+        choice.pending = null;
+        refreshCodexServiceTierRequestStatus();
+      }
+    })();
+    void choice.pending.catch(() => {});
+    refreshCodexServiceTierRequestStatus();
+    return choice.pending;
+  }
+
+  async function prepareCodexServiceTierRequest(method, params, threadIdHint = "") {
+    if (!codexPlusSettings().serviceTierControls || !codexServiceTierRequestMethods().has(method)) return params;
+    const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
+    if (codexServiceTierRuntime.threads.get(threadId)?.passthrough) return params;
+    for (;;) {
+      const intent = codexServiceTierRuntime.intents.get(threadId);
+      const choice = codexServiceTierRuntime.threads.get(threadId);
+      const control = codexServiceTierRuntime.controlIntent;
+      const current = () => codexServiceTierRuntime.intents.get(threadId) === intent
+        && codexServiceTierRuntime.threads.get(threadId) === choice
+        && codexServiceTierRuntime.controlIntent === control;
+      try {
+        await control?.pending;
+        await intent?.pending;
+        await choice?.pending;
+      }
+      catch (error) {
+        if (!current()) continue;
+        throw error;
+      }
+      if (!current()) continue;
+      if (control?.error || intent?.error || choice?.error) throw control?.error || intent?.error || choice.error;
+      break;
+    }
+    return applyCodexServiceTierRequestOnly(method, params, threadIdHint);
+  }
+
+  function observeCodexServiceTierConversation(threadId, conversation, read = null) {
+    if (!codexPlusSettings().serviceTierControls || !conversation) return;
+    if (read && (read.pending || read.intent !== codexServiceTierRuntime.intents.get(threadId))) return;
+    const model = conversation.latestModel ?? conversation.latestThreadSettings?.model;
+    codexServiceTierRememberThreadModel(threadId, model);
+    if (conversation.mode === "durable"
+        || (conversation.threadSource != null && conversation.threadSource !== "user")) {
+      codexServiceTierRuntime.threads.set(threadId, { tier: conversation.latestThreadSettings?.serviceTier ?? null, passthrough: true });
+      return;
+    }
+    const settings = conversation.latestThreadSettings;
+    if (!Object.prototype.hasOwnProperty.call(settings || {}, "serviceTier")) return;
+    const tier = settings.serviceTier ?? null;
+    const previous = codexServiceTierRuntime.threads.get(threadId);
+    if (previous?.pending || previous?.error || previous?.tier === tier) return;
+    if (previous || codexThreadServiceTierOverride(threadId)) {
+      setCodexThreadServiceTierOverride(threadId, codexServiceTierEffectiveMode(tier));
+    }
+    codexServiceTierRuntime.threads.set(threadId, { tier, pending: null, error: null });
+    refreshCodexServiceTierRequestStatus();
+  }
+
   function serviceTierGlobalStatusMessage(serviceTier) {
     if (isFastServiceTierValue(serviceTier)) return "Fast 已开启";
+    if (serviceTier === "ultrafast") return "Ultrafast 已开启";
     if (!serviceTier) return "默认服务模式";
     return `当前：${serviceTier}`;
   }
@@ -35,8 +153,9 @@
     }
     if (controlMode === "global-standard") return "全局 Standard";
     if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (controlMode === "global-ultrafast") return "全局 Ultrafast";
+    if (threadMode === "inherit") return `自定义：默认 ${codexServiceTierLabel(defaultMode)}`;
+    return `当前会话：${codexServiceTierLabel(threadMode)}`;
   }
 
   function readThreadServiceTierState() {
@@ -162,33 +281,57 @@
       return;
     }
     const normalizedMode = normalizeCodexServiceTierControlMode(mode);
-    if (normalizedMode === "global-fast") {
-      const fastAvailability = codexServiceTierFastAvailability();
-      if (!fastAvailability.supported) {
-        codexServiceTierMaybeLoadModelCatalog(true);
-        showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
+    if (!codexServiceTierControlModes.has(String(mode || "").trim().toLowerCase())) return false;
+    const intent = { pending: null, error: null };
+    codexServiceTierRuntime.controlIntent = intent;
+    intent.pending = Promise.resolve().then(async () => {
+      try {
+        if (!codexServiceTierRuntime.manager && typeof installCodexCollaborationModePatch === "function") {
+          await installCodexCollaborationModePatch();
+        }
+        const speed = codexServiceTierDefaultModeForControlMode(normalizedMode);
+        if (normalizedMode === "global-fast" || normalizedMode === "global-ultrafast") {
+          if (!codexServiceTierSupportedForModel(codexServiceTierUiModelName(), speed)) {
+            codexServiceTierMaybeLoadModelCatalog(true);
+            showToast(`当前模型未声明支持 ${codexServiceTierLabel(speed)}`, null);
+            return false;
+          }
+          if (!await codexServiceTierCheckAccess(speed, codexServiceTierRuntime.manager)) return false;
+        }
+        if (codexServiceTierRuntime.controlIntent !== intent) return false;
+        if (normalizedMode !== "custom" && codexServiceTierRuntime.manager && currentSessionRef().session_id) {
+          if (!await setCodexThreadServiceTierMode(speed, intent)) return false;
+        }
+        if (codexServiceTierRuntime.controlIntent !== intent) return false;
+        const state = readThreadServiceTierState();
+        state.mode = normalizedMode;
+        if (normalizedMode !== "custom") {
+          state.defaultMode = speed;
+          state.entries = Object.create(null);
+          state.draft = null;
+        } else {
+          state.defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
+        }
+        if (!writeThreadServiceTierState(state)) throw new Error("速度选择保存失败，请重新选择后发送");
+        const labels = {
+          inherit: "继承 Codex 默认设置",
+          "global-standard": "全局 Standard",
+          "global-fast": "全局 Fast",
+          "global-ultrafast": "全局 Ultrafast",
+          custom: "自定义",
+        };
+        showToast(`服务模式：${labels[normalizedMode] || normalizedMode}`, null);
+        return true;
+      } catch (error) {
+        intent.error = error;
+        return false;
+      } finally {
+        intent.pending = null;
         refreshCodexServiceTierControls();
-        return;
       }
-    }
-    const state = readThreadServiceTierState();
-    state.mode = normalizedMode;
-    if (normalizedMode !== "custom") {
-      state.defaultMode = codexServiceTierDefaultModeForControlMode(normalizedMode);
-      state.entries = Object.create(null);
-      state.draft = null;
-    } else {
-      state.defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
-    }
-    if (!writeThreadServiceTierState(state)) return false;
+    });
     refreshCodexServiceTierControls();
-    const labels = {
-      inherit: "继承 Codex 默认设置",
-      "global-standard": "全局 Standard",
-      "global-fast": "全局 Fast",
-      custom: "自定义",
-    };
-    showToast(`服务模式：${labels[normalizedMode] || normalizedMode}`, null);
+    return intent.pending;
   }
 
   function syncCodexServiceTierEffectiveState() {
@@ -209,7 +352,11 @@
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
     const override = activeThreadId ? codexThreadServiceTierOverride(activeThreadId) : codexThreadServiceTierDraft();
     const threadMode = normalizeCodexThreadServiceTierMode(override?.mode);
-    const effectiveServiceTier = codexServiceTierValueForControlMode(controlMode, threadMode, defaultMode);
+    const native = codexServiceTierRuntime.threads.get(activeThreadId);
+    const effectiveServiceTier = native && (native.passthrough || controlMode === "inherit"
+      || (controlMode === "custom" && native.tier != null
+        && !["priority", "fast", "ultrafast", "standard", "default"].includes(native.tier))) ? native.tier
+      : codexServiceTierValueForControlMode(controlMode, threadMode, defaultMode);
     const effectiveMode = codexServiceTierEffectiveMode(effectiveServiceTier);
     const fastAvailability = codexServiceTierFastAvailability();
     const message = effectiveMode === "fast" && !fastAvailability.supported
@@ -236,6 +383,11 @@
     if (codexServiceTierState.status === "failed") return { tier: "failed", label: "读取失败", title: "服务模式：读取失败，点击重试" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
+    const native = codexServiceTierRuntime.threads.get(codexServiceTierState.activeThreadId);
+    const intent = codexServiceTierRuntime.intents.get(codexServiceTierState.activeThreadId);
+    const control = codexServiceTierRuntime.controlIntent;
+    if (native?.pending || intent?.pending || control?.pending) return { tier: "loading", label: "切换中", disabled: true, title: "正在同步速度选择，完成后应用到下一次发送" };
+    if (native?.error || intent?.error || control?.error) return { tier: "failed", label: "切换失败", title: "速度切换失败，请重新选择；不会按旧速度发送" };
     const inheritedDefault = codexServiceTierState.effectiveServiceTier == null
       && (codexServiceTierState.controlMode === "inherit"
         || (codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit"
@@ -245,14 +397,24 @@
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
       `下一轮：${scope}`,
-      "点击仅切换当前会话；新会话继续继承现有默认设置。",
+      "点击选择当前会话的速度；新会话继续继承现有默认设置。",
       "Fast 使用模型元数据声明的加速能力，实际支持与计费以服务方为准。",
       codexServiceTierRequestStatusMessage(),
     ].join("\n");
-    if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持 Fast", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；下一轮按 Standard 发送，点击关闭 Fast。` };
+    if (["fast", "ultrafast"].includes(effectiveMode)
+        && !codexServiceTierSupportedForModel(fastAvailability.modelName, effectiveMode)) {
+      const label = codexServiceTierLabel(effectiveMode);
+      return { tier: "unsupported", label: `不支持 ${label}`, title: `${title}\n当前模型未声明支持 ${label}；下一轮按 Standard 发送，请重新选择速度。` };
     }
     if (effectiveMode === "fast") return { tier: "fast", label: "Fast", title };
+    if (effectiveMode === "ultrafast") return {
+      tier: "ultrafast", label: "Ultrafast",
+      title: `${title}\nUltrafast 的支持和计费以服务方为准。`,
+    };
+    if (codexServiceTierState.effectiveServiceTier != null
+        && !["standard", "default", "priority", "fast"].includes(codexServiceTierState.effectiveServiceTier)) {
+      return { tier: "default", label: codexServiceTierLabel(codexServiceTierState.effectiveServiceTier), title };
+    }
     if (inheritedDefault) return { tier: "default", label: "默认", title };
     return { tier: "standard", label: "Standard", title };
   }
@@ -272,7 +434,7 @@
       setCodexServiceTierAttribute(node, "data-tier", state.tier);
       setCodexServiceTierAttribute(node, "data-disabled", !!state.disabled);
       setCodexServiceTierAttribute(node, "aria-disabled", !!state.disabled);
-      setCodexServiceTierAttribute(node, "aria-pressed", state.tier === "fast");
+      if (node.hasAttribute("aria-pressed")) node.removeAttribute("aria-pressed");
       setCodexServiceTierAttribute(node, "title", state.title);
       setCodexServiceTierAttribute(node, "aria-label", `下一轮 ${state.label}，点击切换当前会话。${state.title}`);
       let label = node.querySelector("[data-codex-fast-label]");
@@ -291,7 +453,16 @@
   }
 
   function refreshCodexServiceTierControls() {
+    const activeThreadId = validThreadScrollSessionKey(currentSessionRef()?.session_id);
+    if (codexPlusSettings().serviceTierControls && codexServiceTierRuntime.manager
+        && activeThreadId && codexServiceTierRuntime.observedActiveThread !== activeThreadId) {
+      codexServiceTierRuntime.observedActiveThread = activeThreadId;
+      void codexServiceTierRuntime.manager.getConversation(activeThreadId).catch(() => {});
+    }
     syncCodexServiceTierEffectiveState();
+    const menu = document.querySelector("[data-codex-service-tier-menu]");
+    if (menu && (!codexPlusSettings().serviceTierControls
+        || menu.dataset.codexServiceTierMenu !== (currentSessionRef()?.session_id || ""))) closeCodexServiceTierMenu();
     const featureEnabled = !!codexPlusSettings().serviceTierControls;
     const backendConnected = codexPlusBackendStatus.status === "ok";
     const backendChecking = codexPlusBackendStatus.status === "checking";
@@ -343,6 +514,15 @@
       setCodexServiceTierAttribute(button, "data-active", codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
       setCodexServiceTierAttribute(button, "title", fastTitle);
     });
+    for (const scope of ["", "thread-"]) {
+      document.querySelectorAll(`[data-codex-service-tier-${scope}ultrafast]`).forEach((button) => {
+        setCodexServiceTierProperty(button, "disabled", !featureEnabled || !backendConnected
+          || codexServiceTierState.status === "loading" || !codexServiceTierSupportedForModel(codexServiceTierUiModelName(), "ultrafast"));
+        setCodexServiceTierAttribute(button, "data-active", scope
+          ? codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "ultrafast"
+          : codexServiceTierState.controlMode === "global-ultrafast");
+      });
+    }
     refreshCodexServiceTierBadges();
     refreshCodexFastSlashMenu();
   }
@@ -421,28 +601,80 @@
     }
   }
 
-  function setCodexThreadServiceTierMode(mode) {
+  function setCodexThreadServiceTierMode(mode, controlIntent = null) {
     if (codexPlusBackendStatus.status !== "ok") {
       showToast("后端未连接，无法切换服务模式", null);
       refreshCodexServiceTierControls();
       return false;
     }
-    const normalizedMode = normalizeCodexThreadServiceTierMode(mode);
-    if (normalizedMode === "fast") {
-      const fastAvailability = codexServiceTierFastAvailability();
-      if (!fastAvailability.supported) {
+    const normalizedMode = String(mode || "").trim().toLowerCase();
+    if (!codexThreadServiceTierModes.has(normalizedMode)) {
+      showToast("未知速度档位，请重新选择", null);
+      return false;
+    }
+    if (normalizedMode === "fast" || normalizedMode === "ultrafast") {
+      if (!codexServiceTierSupportedForModel(codexServiceTierUiModelName(), normalizedMode)) {
         codexServiceTierMaybeLoadModelCatalog(true);
-        showToast(codexServiceTierFastUnsupportedMessage(fastAvailability.modelName), null);
+        showToast(`当前模型未声明支持 ${codexServiceTierLabel(normalizedMode)}`, null);
         refreshCodexServiceTierControls();
         return false;
       }
     }
     const threadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (!setCodexThreadServiceTierOverride(threadId, normalizedMode)) return false;
-    refreshCodexServiceTierControls();
-    const target = threadId ? "当前 thread" : "新 thread 草稿";
-    showToast(`${target}服务模式：${normalizedMode === "inherit" ? "继承" : normalizedMode}`, null);
-    return true;
+    if (!controlIntent) codexServiceTierRuntime.controlIntent = null;
+    const intent = { pending: null, error: null };
+    codexServiceTierRuntime.intents.set(threadId, intent);
+    intent.pending = (async () => {
+      try {
+        if (!codexServiceTierRuntime.manager && typeof installCodexCollaborationModePatch === "function") {
+          await installCodexCollaborationModePatch();
+        }
+        const manager = codexServiceTierRuntime.manager;
+        const inheritedTier = controlIntent ? codexServiceTierInheritedValue()
+          : codexServiceTierValueForMode(readThreadServiceTierState().defaultMode);
+        if (!await codexServiceTierCheckAccess(normalizedMode === "inherit"
+          ? codexServiceTierEffectiveMode(inheritedTier) : normalizedMode, manager)) return false;
+        if (threadId && manager) {
+          const conversation = await manager.getConversation(threadId);
+          if (codexServiceTierRuntime.intents.get(threadId) !== intent) return false;
+          codexServiceTierRememberThreadModel(threadId, conversation?.latestModel ?? conversation?.latestThreadSettings?.model);
+          if (!conversation || conversation.mode === "durable"
+              || (conversation.threadSource != null && conversation.threadSource !== "user")) {
+            observeCodexServiceTierConversation(threadId, conversation);
+            showToast("当前会话请使用原生速度控件", null);
+            return false;
+          }
+          let tier = normalizedMode === "inherit" ? inheritedTier
+            : codexServiceTierValueForModel(normalizedMode, codexServiceTierUiModelName(threadId));
+          if (["fast", "ultrafast"].includes(codexServiceTierEffectiveMode(tier))
+              && !codexServiceTierSupportedForModel(codexServiceTierUiModelName(threadId), codexServiceTierEffectiveMode(tier))) tier = null;
+          codexServiceTierRuntime.committing = intent;
+          let pending;
+          try { pending = manager.updateThreadSettingsForNextTurn(threadId, { serviceTier: tier }); }
+          finally { codexServiceTierRuntime.committing = null; }
+          const applied = await pending;
+          if (codexServiceTierRuntime.intents.get(threadId) !== intent) return false;
+          if (applied === false) throw new Error("速度更新未成功，请重新选择后发送");
+        }
+        if (codexServiceTierRuntime.intents.get(threadId) !== intent) return false;
+        if (!setCodexThreadServiceTierOverride(threadId, normalizedMode)) {
+          throw new Error("速度选择保存失败，请重新选择后发送");
+        }
+        refreshCodexServiceTierControls();
+        const target = threadId ? "当前会话" : "新会话草稿";
+        showToast(`${target}速度：${codexServiceTierLabel(normalizedMode)}`, null);
+        return true;
+      } catch (error) {
+        intent.error = error;
+        if (codexServiceTierRuntime.intents.get(threadId) === intent) showToast("速度切换失败，请重新选择后发送", null);
+        return false;
+      } finally {
+        intent.pending = null;
+        refreshCodexServiceTierRequestStatus();
+      }
+    })();
+    refreshCodexServiceTierRequestStatus();
+    return intent.pending;
   }
 
   function toggleCodexServiceTierFromBadge() {
@@ -456,7 +688,7 @@
       return false;
     }
     syncCodexServiceTierEffectiveState();
-    const nextMode = codexServiceTierState.effectiveMode === "fast" ? "standard" : "fast";
+    const nextMode = ["fast", "ultrafast"].includes(codexServiceTierState.effectiveMode) ? "standard" : "fast";
     if (nextMode === "fast") {
       const fastAvailability = codexServiceTierFastAvailability();
       if (!fastAvailability.supported) {
@@ -480,16 +712,17 @@
 
   function codexServiceTierOverrideResult(method, params, threadIdHint, mode, requestedServiceTier, modelHint = "") {
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
-    const requestedFast = isFastServiceTierValue(requestedServiceTier);
+    const requestedMode = codexServiceTierEffectiveMode(requestedServiceTier);
+    const requestedFast = ["fast", "ultrafast"].includes(requestedMode);
     const modelName = codexServiceTierModelForRequest(params, modelHint);
     // 请求路径是唯一能拿到「本 turn 真正用的模型」的地方，顺手记下来供界面判定使用，
     // 这样线程中途换模型后 UI 下一次刷新就跟得上（issue #1463）。
     codexServiceTierRememberThreadModel(threadId, modelName);
-    const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
+    const fastSupported = !requestedFast || codexServiceTierSupportedForModel(modelName, requestedMode);
     return {
       threadId,
       mode,
-      serviceTier: requestedFast && fastSupported ? codexFastServiceTierValue() : null,
+      serviceTier: requestedFast && fastSupported ? codexServiceTierValueForModel(requestedMode, modelName) : null,
       requestedServiceTier: requestedServiceTier || null,
       modelName,
       fastSupported,
@@ -502,19 +735,25 @@
     if (!codexServiceTierRequestMethods().has(method) || !params || typeof params !== "object") return null;
     const state = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(state.mode);
+    const native = codexServiceTierRuntime.threads.get(codexServiceTierThreadIdForRequest(method, params, threadIdHint));
+    if (native?.passthrough) return null;
+    if (native && controlMode === "custom" && native.tier != null
+        && !["priority", "fast", "ultrafast", "standard", "default"].includes(native.tier)) {
+      return { threadId: codexServiceTierThreadIdForRequest(method, params, threadIdHint), mode: "inherit", serviceTier: native.tier, modelName: codexServiceTierModelForRequest(params) };
+    }
     const defaultMode = normalizeCodexThreadServiceTierMode(state.defaultMode);
     if (controlMode === "inherit") {
       const inheritedServiceTier = codexServiceTierRequestedValue(params);
       const override = codexServiceTierOverrideResult(method, params, threadIdHint, "inherit", inheritedServiceTier);
       return override.fastBlocked ? override : null;
     }
-    if (controlMode === "global-standard" || controlMode === "global-fast") {
+    if (controlMode === "global-standard" || controlMode === "global-fast" || controlMode === "global-ultrafast") {
       return codexServiceTierOverrideResult(
         method,
         params,
         threadIdHint,
         controlMode,
-        controlMode === "global-fast" ? codexFastServiceTierValue() : null
+        codexServiceTierValueForMode(codexServiceTierDefaultModeForControlMode(controlMode))
       );
     }
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
@@ -526,7 +765,7 @@
       return inheritedOverride.fastBlocked ? { ...inheritedOverride, threadId, mode } : null;
     }
     return {
-      ...codexServiceTierOverrideResult(method, params, threadIdHint, mode, mode === "fast" ? codexFastServiceTierValue() : null),
+      ...codexServiceTierOverrideResult(method, params, threadIdHint, mode, codexServiceTierValueForMode(mode)),
       threadId,
       mode,
     };
@@ -626,14 +865,11 @@
     if (!observation) return "本轮：尚无可关联的请求结果。";
     if (observation.failed) return "本轮：请求失败，服务方未确认。";
     if (observation.actualTier != null) {
-      const label = isFastServiceTierValue(observation.actualTier) ? "Fast"
-        : observation.actualTier === "default" ? "Standard" : observation.actualTier;
+      const label = codexServiceTierLabel(observation.actualTier);
       return `本轮服务方确认：${label}；请求参数：${observation.inherited ? "未指定，沿用默认" : observation.requestedTier || "Standard"}。`;
     }
     if (observation.inherited) return "本轮：未指定服务等级，沿用默认；服务方未确认。";
-    return isFastServiceTierValue(observation.requestedTier)
-      ? "本轮：已请求 Fast，服务方未确认。"
-      : "本轮：请求使用 Standard，服务方未确认。";
+    return `本轮：已请求 ${codexServiceTierLabel(observation.requestedTier)}，服务方未确认。`;
   }
 
   // 重注入后已有请求包装器继续使用当前配置闭包；注册表不保存 DOM。
@@ -641,10 +877,19 @@
     apply: applyCodexServiceTierRequestOnly,
     begin: beginCodexServiceTierRequest,
     observe: observeCodexServiceTierRequestResult,
+    prepare: prepareCodexServiceTierRequest,
+    settings: observeCodexServiceTierSettings,
+    conversation: observeCodexServiceTierConversation,
+    read: (threadId) => ({
+      intent: codexServiceTierRuntime.intents.get(threadId),
+      pending: !!(codexServiceTierRuntime.intents.get(threadId)?.pending
+        || codexServiceTierRuntime.threads.get(threadId)?.pending),
+    }),
+    manager: (manager) => { codexServiceTierRuntime.manager = manager; },
   };
 
   function parseCodexFastCommand(text) {
-    const match = /^\/fast(?:[ \t]+(on|off|status))?$/i.exec(String(text || "").trim());
+    const match = /^\/fast(?:[ \t]+(on|off|status|standard|ultrafast|inherit))?$/i.exec(String(text || "").trim());
     return match ? (match[1]?.toLowerCase() || "toggle") : null;
   }
 
@@ -656,6 +901,7 @@
     }
     if (action === "toggle") return toggleCodexServiceTierFromBadge();
     if (action === "on" || action === "off") return setCodexThreadServiceTierMode(action === "on" ? "fast" : "standard");
+    if (["standard", "ultrafast", "inherit"].includes(action)) return setCodexThreadServiceTierMode(action);
     return false;
   }
 
@@ -775,7 +1021,7 @@
   function refreshCodexFastSlashMenu() {
     const editor = codexFastComposerEditor();
     const text = codexFastComposerText(editor);
-    const relevant = text === "/" || /^\/f(?:a(?:s(?:t(?:[ \t]+(?:on|off|status)?)?)?)?)?$/i.test(text);
+    const relevant = text === "/" || /^\/f(?:a(?:s(?:t(?:[ \t]+(?:on|off|status|standard|ultrafast|inherit)?)?)?)?)?$/i.test(text);
     let panel = document.querySelector("[data-codex-fast-slash-menu]");
     if (!codexPlusSettings().serviceTierControls || !editor || !relevant || codexFastSlashComposing
         || codexFastSlashDismissed === text) {
@@ -839,6 +1085,7 @@
     const action = parseCodexFastCommand(text) || "toggle";
     const hint = action === "status" ? "查询当前状态"
       : action === "on" ? "开启当前会话" : action === "off" ? "关闭当前会话"
+      : ["standard", "ultrafast", "inherit"].includes(action) ? codexServiceTierLabel(action)
       : `${state.label} · 仅当前会话`;
     if (status.textContent !== hint) status.textContent = hint;
     if (editor.dataset.codexFastEditor === "menu" && document.activeElement === document.body) {
@@ -983,6 +1230,7 @@
     window.addEventListener("keydown", keydown, true);
     window.addEventListener("resize", scheduleCodexFastSlashMenu);
     window.__codexPlusFastControlsCleanup = (reinstall = false) => {
+      if (typeof closeCodexServiceTierMenu === "function") closeCodexServiceTierMenu();
       Object.entries(handlers).forEach(([type, handler]) => {
         if (type !== "keydown") document.removeEventListener(type, handler, true);
       });

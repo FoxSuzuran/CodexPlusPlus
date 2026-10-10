@@ -16,9 +16,10 @@
       "context_window": 272000,
       "max_context_window": 872000,
       "effective_context_window_percent": 100,
-      "additional_speed_tiers": ["fast"],
+      "additional_speed_tiers": ["fast", "ultrafast"],
       "service_tiers": [
-        { "id": "priority", "name": "Fast", "description": "Faster responses, increased usage" }
+        { "id": "priority", "name": "Fast", "description": "Faster responses, increased usage" },
+        { "id": "ultrafast", "name": "Ultrafast", "description": "The fastest available responses, increased usage" }
       ],
       "supports_reasoning_summaries": true,
       "support_verbosity": true,

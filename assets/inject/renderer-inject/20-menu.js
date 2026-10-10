@@ -111,8 +111,8 @@
   const codexAppModuleRetryCooldownMs = 30000;
   const codexAppModuleMaxAttempts = 8;
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
-  const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
-  const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
+  const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast", "ultrafast"]);
+  const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "global-ultrafast", "custom"]);
   // Only the original offline compatibility fallback remains above.
   // Current and future models follow their capability metadata.
 
@@ -436,6 +436,13 @@
     return codexServiceTierState.fastTierValue || codexServiceTierFallbackFastValue;
   }
 
+  function codexServiceTierLabel(value) {
+    if (isFastServiceTierValue(value)) return "Fast";
+    if (value === "ultrafast") return "Ultrafast";
+    if (value === "inherit") return "继承默认";
+    return value == null || ["standard", "default"].includes(value) ? "Standard" : String(value);
+  }
+
   function codexServiceTierFastModelListLabel() {
     const models = typeof codexPlusModelNames === "function" ? codexPlusModelNames() : [];
     return models.filter(codexServiceTierFastSupportedForModel).join(" / ") || "模型元数据声明支持 Fast 的模型";
@@ -508,20 +515,34 @@
   }
 
   function codexServiceTierFastSupportedForModel(modelName) {
+    return codexServiceTierSupportedForModel(modelName, "fast");
+  }
+
+  function codexServiceTierSupportedForModel(modelName, mode) {
+    if (mode === "standard" || mode === "inherit") return true;
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
     // Explicit capabilities override the legacy offline fallback, including
     // an explicit removal of Fast. New models need no whitelist edit.
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
+      if (mode === "fast" && typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
       const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
       const speeds = metadata?.additionalSpeedTiers ?? metadata?.additional_speed_tiers;
       if (Array.isArray(tiers) || Array.isArray(speeds)) {
-        return (Array.isArray(tiers) && tiers.some((tier) => isFastServiceTierValue(tier?.id || tier)))
-          || (Array.isArray(speeds) && speeds.some((tier) => isFastServiceTierValue(tier?.id || tier)));
+        const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
+        return (Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches));
       }
     } catch {}
-    return codexServiceTierSupportedFastModels.has(normalized);
+    return mode === "fast" && codexServiceTierSupportedFastModels.has(normalized);
+  }
+
+  function codexServiceTierValueForModel(mode, modelName) {
+    if (mode !== "fast") return mode === "ultrafast" ? mode : null;
+    const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
+    const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
+    const tier = Array.isArray(tiers) ? tiers.find((tier) => isFastServiceTierValue(tier?.id || tier)) : null;
+    return (tier?.id || tier) || codexFastServiceTierValue();
   }
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
@@ -563,13 +584,14 @@
   }
 
   function codexServiceTierValueForMode(mode) {
-    if (mode === "fast") return codexFastServiceTierValue();
+    if (mode === "fast" || mode === "ultrafast") return codexServiceTierValueForModel(mode, codexServiceTierUiModelName());
     if (mode === "standard") return null;
     return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierDefaultModeForControlMode(controlMode, fallback = "inherit") {
     if (controlMode === "global-fast") return "fast";
+    if (controlMode === "global-ultrafast") return "ultrafast";
     if (controlMode === "global-standard") return "standard";
     if (controlMode === "inherit") return "inherit";
     return normalizeCodexThreadServiceTierMode(fallback);
@@ -583,11 +605,12 @@
 
   function codexServiceTierValueForControlMode(controlMode, threadMode = "inherit", defaultMode = "inherit") {
     if (controlMode === "global-fast") return codexFastServiceTierValue();
+    if (controlMode === "global-ultrafast") return "ultrafast";
     if (controlMode === "global-standard") return null;
     if (controlMode === "custom") return codexServiceTierValueForMode(codexServiceTierEffectiveThreadMode(threadMode, defaultMode));
     return codexServiceTierInheritedValue();
   }
 
   function codexServiceTierEffectiveMode(value) {
-    return isFastServiceTierValue(value) ? "fast" : "standard";
+    return isFastServiceTierValue(value) ? "fast" : value === "ultrafast" ? "ultrafast" : "standard";
   }

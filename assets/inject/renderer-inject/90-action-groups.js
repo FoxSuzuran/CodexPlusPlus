@@ -726,18 +726,12 @@
   }
 
   function codexServiceTierComposerCandidates() {
-    const candidates = new Set();
     const threadComposer = conversationViewFindComposerEl();
     if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)
-        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) candidates.add(threadComposer);
-    codexServiceTierVisibleComposerFooters().forEach((footer) => {
-      candidates.add(footer);
-      let node = footer.parentElement;
-      for (let depth = 0; node instanceof HTMLElement && depth < 6; depth += 1, node = node.parentElement) {
-        if (codexServiceTierBadgeVisibleElement(node)) candidates.add(node);
-      }
-    });
-    return Array.from(candidates);
+        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) return [threadComposer];
+    const footers = codexServiceTierVisibleComposerFooters().filter((footer) =>
+      !footer.closest?.(conversationViewPaneBoundarySelector));
+    return footers.length === 1 ? footers : [];
   }
 
   function codexServiceTierBestComposerFooter(root = document) {
@@ -766,7 +760,7 @@
 
   function codexServiceTierComposerFooter(composer) {
     if (composer?.matches?.("[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer")) return composer;
-    return codexServiceTierBestComposerFooter(composer) || codexServiceTierBestComposerFooter() || null;
+    return codexServiceTierBestComposerFooter(composer) || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
@@ -801,11 +795,13 @@
 
   function wireCodexServiceTierBadge(badge) {
     if (!badge) return;
-    badge.__codexPlusFastToggle = toggleCodexServiceTierFromBadge;
+    badge.__codexPlusFastToggle = openCodexServiceTierMenu;
     if (badge.dataset.codexServiceTierBadgeWired === codexServiceTierBadgeVersion) return;
     badge.dataset.codexServiceTierBadgeWired = codexServiceTierBadgeVersion;
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
+    badge.setAttribute("aria-haspopup", "listbox");
+    badge.setAttribute("aria-expanded", "false");
     badge.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -821,6 +817,103 @@
     });
   }
 
+  function closeCodexServiceTierMenu(focus = false) {
+    window.__codexPlusServiceTierMenuCleanup?.();
+    delete window.__codexPlusServiceTierMenuCleanup;
+    document.querySelector("[data-codex-service-tier-menu]")?.remove();
+    const badge = document.querySelector("[data-codex-service-tier-badge]");
+    badge?.setAttribute("aria-expanded", "false");
+    if (focus === true) badge?.focus({ preventScroll: true });
+  }
+
+  function openCodexServiceTierMenu() {
+    if (codexServiceTierState.status === "failed") {
+      void loadCodexServiceTierState();
+      return;
+    }
+    if (document.querySelector("[data-codex-service-tier-menu]")) {
+      closeCodexServiceTierMenu(true);
+      return;
+    }
+    const badge = document.querySelector("[data-codex-service-tier-badge]");
+    if (!badge || badge.dataset.disabled === "true") return;
+    const sessionId = currentSessionRef()?.session_id || "";
+    syncCodexServiceTierEffectiveState();
+    const menu = document.createElement("div");
+    menu.id = "codex-plus-service-tier-menu";
+    menu.className = "codex-plus-dropdown-menu";
+    menu.dataset.codexServiceTierMenu = sessionId;
+    menu.dataset.codexPlusExt = "codex-fast-controls";
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", "当前会话速度");
+    for (const mode of ["standard", "fast", "ultrafast", "inherit"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "codex-plus-dropdown-option";
+      button.dataset.codexServiceTierOption = mode;
+      button.setAttribute("role", "option");
+      const selected = mode === (codexServiceTierState.threadMode === "inherit"
+        && ["inherit", "custom"].includes(codexServiceTierState.controlMode) ? "inherit" : codexServiceTierState.effectiveMode);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      button.disabled = !codexServiceTierSupportedForModel(codexServiceTierUiModelName(), mode);
+      button.title = button.disabled ? `当前模型未声明支持 ${codexServiceTierLabel(mode)}` : `仅当前会话：${codexServiceTierLabel(mode)}`;
+      const label = document.createElement("span");
+      label.textContent = codexServiceTierLabel(mode);
+      button.appendChild(label);
+      button.insertAdjacentHTML("beforeend", '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>');
+      menu.appendChild(button);
+    }
+    const rect = badge.getBoundingClientRect();
+    menu.style.position = "fixed";
+    menu.style.zIndex = "2147483646";
+    menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 228))}px`;
+    menu.style.bottom = `${Math.max(8, window.innerHeight - rect.top + 6)}px`;
+    document.body.appendChild(menu);
+    badge.setAttribute("aria-controls", menu.id);
+    badge.setAttribute("aria-expanded", "true");
+    const choose = (event) => {
+      const option = event.target?.closest("[data-codex-service-tier-option]");
+      if (!option || option.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if ((currentSessionRef()?.session_id || "") !== sessionId) {
+        closeCodexServiceTierMenu();
+        return;
+      }
+      const mode = option.dataset.codexServiceTierOption;
+      closeCodexServiceTierMenu(true);
+      void setCodexThreadServiceTierMode(mode);
+    };
+    const outside = (event) => {
+      if (!event.target?.closest("[data-codex-service-tier-menu], [data-codex-service-tier-badge]")) closeCodexServiceTierMenu();
+    };
+    const keyboard = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCodexServiceTierMenu(true);
+      } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const options = Array.from(document.querySelectorAll("[data-codex-service-tier-option]")).filter((option) => !option.disabled);
+        const current = options.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+          : (current + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+        options.forEach((option, index) => { option.tabIndex = index === next ? 0 : -1; });
+        options[next]?.focus();
+      } else if (event.key === "Tab") closeCodexServiceTierMenu();
+    };
+    menu.addEventListener("click", choose);
+    menu.addEventListener("keydown", keyboard);
+    document.addEventListener("pointerdown", outside, true);
+    window.addEventListener("resize", closeCodexServiceTierMenu);
+    window.__codexPlusServiceTierMenuCleanup = () => {
+      document.removeEventListener("pointerdown", outside, true);
+      window.removeEventListener("resize", closeCodexServiceTierMenu);
+    };
+    (menu.querySelector('[aria-selected="true"]:not(:disabled)') || menu.querySelector("button:not(:disabled)"))?.focus();
+  }
+
   function installCodexServiceTierBadge() {
     if (!codexPlusSettings().serviceTierControls) {
       removeCodexServiceTierBadges();
@@ -830,6 +923,7 @@
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
     if (!composer || !placement?.parent) {
+      closeCodexServiceTierMenu();
       existingBadges.forEach((badge) => badge.remove());
       return;
     }
@@ -856,6 +950,7 @@
   }
 
   function removeCodexServiceTierBadges() {
+    closeCodexServiceTierMenu();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 

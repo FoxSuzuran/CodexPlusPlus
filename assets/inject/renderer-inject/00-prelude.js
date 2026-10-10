@@ -82,7 +82,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "33";
+  const codexDeleteStyleVersion = "34";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -113,7 +113,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "4";
+  const codexServiceTierBadgeVersion = "5";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   let lastSessionActionTrigger = null;
@@ -122,8 +122,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "12";
-  const codexAppServerModelRequestPatchVersion = "13";
+  const codexServiceTierRequestOverrideVersion = "13";
+  const codexAppServerModelRequestPatchVersion = "14";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";

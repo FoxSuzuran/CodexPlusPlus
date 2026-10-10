@@ -275,13 +275,14 @@ fn astra_metadata_exposes_max_ultra_in_catalog_and_ui() {
     assert_eq!(model["supports_search_tool"], true);
     assert_eq!(model["supports_image_detail_original"], true);
     assert_eq!(model["use_responses_lite"], false);
-    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast", "ultrafast"]));
     assert_eq!(
         metadata["additionalSpeedTiers"],
         model["additional_speed_tiers"]
     );
     assert_eq!(model["service_tiers"][0]["id"], "priority");
     assert_eq!(model["service_tiers"][0]["name"], "Fast");
+    assert_eq!(model["service_tiers"][1]["id"], "ultrafast");
     assert_eq!(metadata["serviceTiers"], model["service_tiers"]);
 
     let overridden: serde_json::Value =
@@ -343,10 +344,11 @@ fn gpt61_sol_metadata_exposes_max_ultra_fast_and_272k_default() {
     assert_eq!(model["max_context_window"], 872_000);
     assert_eq!(model["effective_context_window_percent"], 100);
     assert!(model["auto_compact_token_limit"].is_null());
-    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast"]));
+    assert_eq!(model["additional_speed_tiers"], serde_json::json!(["fast", "ultrafast"]));
     assert_eq!(ui["additionalSpeedTiers"], model["additional_speed_tiers"]);
     assert_eq!(model["service_tiers"][0]["id"], "priority");
     assert_eq!(model["service_tiers"][0]["name"], "Fast");
+    assert_eq!(model["service_tiers"][1]["id"], "ultrafast");
     assert_eq!(ui["serviceTiers"], model["service_tiers"]);
     assert_eq!(model["input_modalities"], serde_json::json!(["text", "image"]));
     assert_eq!(model["supports_search_tool"], true);

@@ -1195,7 +1195,7 @@
               <h2 class="codex-plus-settings-section-title">模型与服务</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+                  <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">点击速度按钮选择 Standard、Fast 或 Ultrafast；可用档位取决于模型与服务方。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
                 </div>
                 <div class="codex-plus-row" data-codex-service-tier-controls="true">
@@ -1206,6 +1206,7 @@
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-ultrafast="true">全局 Ultrafast</button>
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
                     </div>
                     <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
@@ -1213,6 +1214,7 @@
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
                       <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-ultrafast="true" title="仅当前会话使用 Ultrafast">Ultrafast</button>
                     </div>
                   </div>
                 </div>
@@ -1477,6 +1479,10 @@
         setCodexServiceTierControlMode("global-fast");
         return;
       }
+      if (target?.closest("[data-codex-service-tier-ultrafast]")) {
+        void setCodexServiceTierControlMode("global-ultrafast");
+        return;
+      }
       if (target?.closest("[data-codex-service-tier-custom]")) {
         setCodexServiceTierControlMode("custom");
         return;
@@ -1491,6 +1497,10 @@
       }
       if (target?.closest("[data-codex-service-tier-thread-fast]")) {
         setCodexThreadServiceTierMode("fast");
+        return;
+      }
+      if (target?.closest("[data-codex-service-tier-thread-ultrafast]")) {
+        void setCodexThreadServiceTierMode("ultrafast");
         return;
       }
       const userScriptToggle = target?.closest("[data-codex-user-script-key]");

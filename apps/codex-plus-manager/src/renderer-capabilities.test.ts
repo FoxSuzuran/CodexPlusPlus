@@ -106,7 +106,7 @@ async function captureRuntime(assets: Record<string, string>, roots: string[]) {
     `
       const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
       const codexAppServerClientCaptureAnchor = "async sendRequest(";
-      const codexAppServerModelRequestPatchVersion = "13";
+      const codexAppServerModelRequestPatchVersion = "14";
       const codexAppAssetUrl = () => roots[0];
       const codexAppAssetUrlFromScriptText = async () => roots[0];
       const roots = ${JSON.stringify(roots)};
@@ -229,6 +229,7 @@ describe("captured request clients continue forwarding requests", () => {
         : null;
       const sendCodexPlusDiagnostic = () => {};
       ${requestTier}
+      const prepareCodexServiceTierRequest = async (...args) => applyCodexServiceTierRequestOnly(...args);
       ${instance}
       ${prototype}
       return {window,observations,instance:patchAppServerModelRequestClient,prototype:installCodexAppServerClientPrototypePatch};
@@ -294,7 +295,7 @@ describe("captured request clients continue forwarding requests", () => {
     let activeResults = 0;
     const activeLease = {};
     api.window.__codexPlusFastRequestHandlers = {
-      apply: (_method: string, params: Record<string, unknown>) => ({ ...params, serviceTier: null }),
+      prepare: async (_method: string, params: Record<string, unknown>) => ({ ...params, serviceTier: null }),
       begin: () => activeLease,
       observe: (_method: string, _params: unknown, _result: unknown, _failed: boolean, lease: unknown) => {
         assert.equal(lease, activeLease);

@@ -46,7 +46,7 @@ describe("model capabilities follow metadata rather than model names", () => {
   it("accepts speed-tier metadata and respects an explicit removal of Fast", async () => {
     const api = await modelRuntime({
       "future-model": { additionalSpeedTiers: ["fast"] },
-      "gpt-5.4": { additionalSpeedTiers: [], serviceTiers: [] },
+      "gpt-5.4": { additionalSpeedTiers: [], serviceTiers: [], prioritySupportOverride: false },
     });
     assert.equal(api.fast("future-model").supported, true);
     assert.equal(api.fast("gpt-5.4").supported, false);

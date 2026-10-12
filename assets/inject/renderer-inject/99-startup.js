@@ -1,3 +1,4 @@
+  retireSessionSharing();
   void restoreCodexPlusManagedLocale();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);

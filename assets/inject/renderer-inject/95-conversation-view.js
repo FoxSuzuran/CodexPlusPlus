@@ -210,7 +210,6 @@
     // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
     refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
-    installSessionShareImportListener();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -899,7 +898,6 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
-    installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }

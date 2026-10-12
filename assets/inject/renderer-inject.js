@@ -122,8 +122,8 @@
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
-  const codexServiceTierRequestOverrideVersion = "13";
-  const codexAppServerModelRequestPatchVersion = "14";
+  const codexServiceTierRequestOverrideVersion = "14";
+  const codexAppServerModelRequestPatchVersion = "15";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
@@ -3743,17 +3743,14 @@
     if (mode === "standard" || mode === "inherit") return true;
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    // Explicit capabilities override the legacy offline fallback, including
-    // an explicit removal of Fast. New models need no whitelist edit.
+    // 用户明确声明优先；内置空能力数组仍允许已验证模型的兼容回退。
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
       if (mode === "fast" && typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
       const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
       const speeds = metadata?.additionalSpeedTiers ?? metadata?.additional_speed_tiers;
-      if (Array.isArray(tiers) || Array.isArray(speeds)) {
-        const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
-        return (Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches));
-      }
+      const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
+      if ((Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches))) return true;
     } catch {}
     return mode === "fast" && codexServiceTierSupportedFastModels.has(normalized);
   }
@@ -3768,7 +3765,7 @@
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
     const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    return `Fast 支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型，${modelText}；可在供应商的模型配置中设置 Fast 支持`;
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {
@@ -4235,7 +4232,7 @@
     const title = [
       `下一轮：${scope}`,
       "点击选择当前会话的速度；新会话继续继承现有默认设置。",
-      "Fast 使用模型元数据声明的加速能力，实际支持与计费以服务方为准。",
+      "Standard 使用标准处理；Fast/Ultrafast 采用模型声明的能力，可在供应商模型配置中设置；实际支持与计费以服务方为准。",
       codexServiceTierRequestStatusMessage(),
     ].join("\n");
     if (["fast", "ultrafast"].includes(effectiveMode)
@@ -5155,10 +5152,9 @@
   }
 
   function codexRemoteSessionProviderRequestMethod(method) {
-    // app-server restores persisted model/provider/reasoning for thread/resume only
-    // when the caller supplies none of those overrides.
     return [
       "thread/start",
+      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
@@ -5174,6 +5170,8 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
+    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
+    if (requestMethod === "thread/resume" && !pureApi) return params;
     if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
@@ -5664,7 +5662,6 @@
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-        if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
         renderCodexPlusMenu();
         if (previousConversationView !== !!codexPlusSettings().conversationView) {
           refreshConversationView();
@@ -5702,7 +5699,6 @@
     syncStepwisePanel();
     runScanStep(syncCodexPlusTypingEffects);
     if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    if (typeof installSessionShareButton === "function") runScanStep(installSessionShareButton);
     renderCodexPlusMenu();
     scan();
   }
@@ -6868,10 +6864,6 @@
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="markdownExport"><span></span></button>
                 </div>
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">分享会话按钮</div><div class="codex-plus-row-description">在当前会话工具栏显示分享按钮，关闭后立即隐藏。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionShare"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">粘贴修复</div><div class="codex-plus-row-description">从 Word 等富文本来源粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pasteFix"><span></span></button>
                 </div>
@@ -7517,6 +7509,7 @@
       return params;
     }
     const next = { ...params };
+    if (next.forceRefetch === true) clearPluginMarketplaceRemoteCatalogUnavailable();
     const requestProfile = pluginMarketplaceRequestProfile(next);
     const requestCwds = Array.isArray(next.cwds)
       ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
@@ -7529,7 +7522,7 @@
     const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
     const broadCatalogRequest = codexPluginUsesBroadCatalogKinds()
       && (!hadMarketplaceKinds || next.marketplaceKinds == null);
-    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
+    const remoteCatalogUnavailable = pluginMarketplaceRemoteCatalogUnavailable();
     if (broadCatalogRequest && !remoteCatalogUnavailable) {
       sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
         hadMarketplaceKinds,
@@ -7800,8 +7793,32 @@
     return text.includes("chatgpt authentication required for remote plugin catalog") && text.includes("api key auth is not supported");
   }
 
+  const codexPluginRemoteAuthRetryMs = 60_000;
+
+  function clearPluginMarketplaceRemoteCatalogUnavailable() {
+    delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+    delete window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+  }
+
+  function pluginMarketplaceRemoteCatalogUnavailable() {
+    if (window.__codexPluginMarketplaceRemoteCatalogUnavailable !== true) return false;
+    const now = Date.now();
+    const rejectedAt = window.__codexPluginMarketplaceRemoteCatalogRejectedAt;
+    // 兼容旧注入留下的标记；只暂时降级，下次浏览可重新验证登录态。
+    if (!Number.isFinite(rejectedAt)) {
+      window.__codexPluginMarketplaceRemoteCatalogRejectedAt = now;
+      return true;
+    }
+    if (now < rejectedAt || now - rejectedAt >= codexPluginRemoteAuthRetryMs) {
+      clearPluginMarketplaceRemoteCatalogUnavailable();
+      return false;
+    }
+    return true;
+  }
+
   function markPluginMarketplaceRemoteCatalogUnavailable(error) {
     window.__codexPluginMarketplaceRemoteCatalogUnavailable = true;
+    window.__codexPluginMarketplaceRemoteCatalogRejectedAt = Date.now();
     sendCodexPlusDiagnostic("plugin_marketplace_remote_auth_fallback", {
       errorMessage: pluginMarketplaceErrorText(error),
       rememberedCwdCount: Array.isArray(window.__codexPluginMarketplaceLastCwds)
@@ -8037,10 +8054,10 @@
       setCodexAppVersion: (version) => {
         codexPlusBackendSettings.codexAppVersion = String(version || "");
       },
-      remoteCatalogUnavailable: () => window.__codexPluginMarketplaceRemoteCatalogUnavailable === true,
+      remoteCatalogUnavailable: pluginMarketplaceRemoteCatalogUnavailable,
       reset: () => {
         delete window.__codexPluginMarketplaceLastCwds;
-        delete window.__codexPluginMarketplaceRemoteCatalogUnavailable;
+        clearPluginMarketplaceRemoteCatalogUnavailable();
         window.__codexPluginMarketplaceRequestIds = new Set();
         window.__codexPluginMarketplaceFetchRequestIds = new Set();
         window.__codexPluginMarketplaceRequestProfiles = new Map();
@@ -8051,6 +8068,7 @@
   }
 
   function clearPluginMarketplaceQueryCache() {
+    clearPluginMarketplaceRemoteCatalogUnavailable();
     try {
       const queryClient = window.__REACT_QUERY_CLIENT__ || window.__codexQueryClient;
       if (queryClient && typeof queryClient.invalidateQueries === "function") {
@@ -11748,291 +11766,12 @@
     return () => dismissCodexPlusToast(toast);
   }
 
-  function shareBase64Url(bytes) {
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }
-
-  function shareTextFromElement(element) {
-    const clone = element.cloneNode(true);
-    clone.querySelectorAll?.("button, textarea, input, select, [contenteditable='true'], .codex-delete-toast, .codex-plus-modal-overlay, .codex-plus-page-overlay, .codex-session-share-button").forEach((node) => node.remove());
-    return String(clone.innerText || clone.textContent || "").replace(/\u00a0/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  }
-
-  function sessionShareMarkdown() {
-    const ref = currentSessionRef();
-    if (!ref.session_id) return { ref, markdown: "" };
-    const root = conversationRoot();
-    if (!root) return { ref, markdown: "" };
-    const authored = Array.from(root.querySelectorAll("[data-message-author-role]"));
-    const knownTurns = Array.from(root.querySelectorAll([
-      '[data-testid="conversation-turn"]',
-      '[data-testid*="message"]',
-      '[data-message-content]',
-      'main .prose',
-      '[class*="message-bubble"]',
-      '[class*="MessageBubble"]',
-      '[class*="user-message"]',
-      '[class*="UserMessage"]',
-    ].join(",")));
-    const turns = authored.length ? authored : knownTurns;
-    const seen = new Set();
-    const messages = turns.map((node) => {
-      if (!(node instanceof HTMLElement) || seen.has(node)) return "";
-      if (node.parentElement?.closest?.('[data-message-author-role], [data-testid="conversation-turn"]')) return "";
-      seen.add(node);
-      const text = shareTextFromElement(node);
-      if (!text) return "";
-      const role = String(node.getAttribute("data-message-author-role") || "").toLowerCase();
-      const label = role === "user" ? "用户" : role === "assistant" ? "助手" : "消息";
-      return { role: role === "user" || role === "assistant" ? role : "message", label, text };
-    }).filter(Boolean);
-    const title = String(ref.title || document.querySelector(selectors.threadTitle)?.textContent || "未命名会话").replace(/\s+/g, " ").trim();
-    let content = messages.map((message) => `### ${message.label}\n\n${message.text}`).join("\n\n");
-    if (!content) {
-      const fallback = root.cloneNode(true);
-      fallback.querySelectorAll?.([
-        ".composer-footer", ".composer-surface-chrome", "form", "header", "nav", "aside",
-        "button", "textarea", "input", "select", "[contenteditable='true']",
-        ".codex-delete-toast", ".codex-plus-modal-overlay", ".codex-plus-page-overlay",
-        ".codex-session-share-button",
-      ].join(",")).forEach((node) => node.remove());
-      content = String(fallback.innerText || fallback.textContent || "")
-        .replace(/\u00a0/g, " ")
-        .replace(/[ \t]+\n/g, "\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-      if (content) messages.push({ role: "message", label: "会话", text: content });
+  function retireSessionSharing() {
+    document.querySelectorAll(`.${sessionShareButtonClass}`).forEach((button) => button.remove());
+    if (window.__codexSessionShareImportHandler) {
+      window.removeEventListener("message", window.__codexSessionShareImportHandler);
+      delete window.__codexSessionShareImportHandler;
     }
-    const markdown = `# ${title || "未命名会话"}\n\n- 会话 ID：\`${ref.session_id}\`\n\n${content}`.slice(0, codexPlusShareMaxCharacters);
-    return {
-      ref,
-      markdown: content ? markdown : "",
-      session: content ? {
-        version: 1,
-        kind: "codex-session",
-        session_id: ref.session_id,
-        title: title || "未命名会话",
-        messages: messages.map(({ role, text }) => ({ role, text })),
-      } : null,
-    };
-  }
-
-  async function encryptSessionShare(value) {
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-    const exportedKey = await crypto.subtle.exportKey("raw", key);
-    return {
-      key: shareBase64Url(new Uint8Array(exportedKey)),
-      encrypted: {
-        v: 1,
-        iv: shareBase64Url(iv),
-        ciphertext: shareBase64Url(new Uint8Array(ciphertext)),
-      },
-    };
-  }
-
-  async function createSessionShare() {
-    const { ref, markdown, session } = sessionShareMarkdown();
-    if (!ref.session_id) {
-      showToast("当前页面还没有可分享的会话", null);
-      return;
-    }
-    if (!markdown || !session) {
-      showToast("当前会话还没有可分享的消息", null);
-      return;
-    }
-    const shareWindow = window.open("about:blank", "_blank");
-    const button = document.querySelector(`.${sessionShareButtonClass}`);
-    if (button) {
-      button.disabled = true;
-      button.setAttribute("aria-busy", "true");
-      button.textContent = "正在创建…";
-    }
-    try {
-      let shareDocument = session;
-      const nativeSession = await postJson("/session/export", {
-        session_id: ref.session_id,
-        title: session.title,
-      });
-      if (nativeSession?.status !== "ok" || nativeSession.kind !== "codex-rollout" || typeof nativeSession.content !== "string") {
-        throw new Error(nativeSession?.message || "无法读取完整 Codex 会话文件");
-      }
-      shareDocument = { ...nativeSession, title: session.title };
-      const encrypted = await encryptSessionShare(JSON.stringify(shareDocument));
-      const payload = { ttl: 604800, encrypted: encrypted.encrypted };
-      let result;
-      let baseUrl = codexPlusShareBaseUrl;
-      try {
-        result = await postJson("/share/create", payload);
-        if (result?.id) {
-          baseUrl = codexPlusShareBaseUrl;
-        } else if (result?.status !== "failed") {
-          throw new Error(result?.message || "创建分享失败");
-        }
-      } catch (_) {
-        result = null;
-      }
-      if (!result?.id) {
-        let response;
-        try {
-          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        } catch (_) {
-          baseUrl = codexPlusShareFallbackBaseUrl;
-          response = await fetch(`${baseUrl}/api/shares`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        }
-        result = await response.json().catch(() => ({}));
-        if (!response.ok || !result.id) throw new Error(result.error || `创建分享失败（HTTP ${response.status}）`);
-      }
-      const shareUrl = `${baseUrl}/?s=${encodeURIComponent(result.id)}#k=${encrypted.key}`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-      } catch (_) {
-        const input = document.createElement("input");
-        input.value = shareUrl;
-        input.style.position = "fixed";
-        input.style.opacity = "0";
-        document.body.appendChild(input);
-        input.select();
-        document.execCommand("copy");
-        input.remove();
-      }
-      showToast("会话分享链接已复制", null);
-      if (shareWindow && !shareWindow.closed) shareWindow.location.href = shareUrl;
-    } catch (error) {
-      if (shareWindow && !shareWindow.closed) shareWindow.close();
-      showToast(error?.message || "创建分享失败，请稍后重试", null);
-    } finally {
-      if (button) {
-        button.disabled = false;
-        button.removeAttribute("aria-busy");
-        button.textContent = "分享会话";
-      }
-    }
-  }
-
-  function sessionSharePlacement() {
-    // 会话操作锚点唯一时才挂载，不能把右侧审查/浏览器的 header 当作会话栏。
-    const headerSelector = 'header, [data-app-shell-header-edge-scroll], [class*="_Header_"]';
-    const anchors = Array.from(document.querySelectorAll('[data-testid="app-shell-header-context-menu-surface"]'))
-      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]'));
-    if (anchors.length !== 1) return null;
-    const header = anchors[0].closest(headerSelector);
-    if (!(header instanceof HTMLElement) || !visibleElement(header)) return null;
-    const nativeShare = Array.from(header.querySelectorAll('button[aria-label="Share"], button[aria-label="分享"], button[aria-label*="Share"], button[aria-label*="分享"]'))
-      .find((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && !node.classList.contains(sessionShareButtonClass) && node.closest(headerSelector) === header);
-    const nativeGroup = nativeShare?.closest?.(".ms-auto");
-    if (nativeGroup && header.contains(nativeGroup)) return nativeGroup;
-    const groups = Array.from(header.querySelectorAll(".ms-auto"))
-      .filter((node) => visibleElement(node) && !node.closest('[data-codex-plus-ext]') && node.closest(headerSelector) === header);
-    return groups.length === 1 ? groups[0] : null;
-  }
-
-  function installSessionShareButton() {
-    const existing = document.querySelectorAll(`.${sessionShareButtonClass}`);
-    const ref = currentSessionRef();
-    const actionGroup = codexPlusSettings().sessionShare && ref.session_id ? sessionSharePlacement() : null;
-    if (!(actionGroup instanceof HTMLElement)) {
-      existing.forEach((button) => button.remove());
-      return;
-    }
-    let button = existing[0];
-    existing.forEach((node) => { if (node !== button) node.remove(); });
-    if (!button) {
-      button = document.createElement("button");
-      button.type = "button";
-      button.className = `${sessionShareButtonClass} ${headerContextButtonClass}`;
-      button.textContent = "分享会话";
-      button.setAttribute("aria-label", "分享当前会话");
-      button.setAttribute("data-codex-plus-ext", "session-share");
-      button.dataset.codexSessionShareVersion = sessionShareButtonVersion;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void createSessionShare();
-      }, true);
-    }
-    button.setAttribute("data-codex-plus-ext", "session-share");
-    button.style.position = "static";
-    button.style.pointerEvents = "auto";
-    button.style.webkitAppRegion = "no-drag";
-    button.style.marginLeft = "";
-    // 宿主重建时才搬动，避免每轮扫描再次触发 DOM mutation（issue #1960）。
-    if (button.parentElement !== actionGroup) actionGroup.appendChild(button);
-  }
-
-  function sessionImportMarkdown(session) {
-    const title = String(session?.title || "未命名会话").trim() || "未命名会话";
-    const messages = Array.isArray(session?.messages) ? session.messages : [];
-    const body = messages.map((message) => {
-      const role = message?.role === "user" ? "用户" : message?.role === "assistant" ? "助手" : "消息";
-      const text = String(message?.text || "").trim();
-      return text ? `### ${role}\n\n${text}` : "";
-    }).filter(Boolean).join("\n\n");
-    return `# ${title}\n\n${body}`.trim();
-  }
-
-  function importSharedSessionIntoNewChat(session) {
-    if (session?.kind === "codex-rollout" && typeof session.content === "string") {
-      void postJson("/session/import", session).then((result) => {
-        if (result?.status !== "ok") {
-          showToast(result?.message || "原生会话导入失败", null);
-          return;
-        }
-        void refreshRecentConversationsForHost();
-        showToast("已导入完整 Codex 会话", null);
-      }).catch((error) => showToast(error?.message || "原生会话导入失败", null));
-      return;
-    }
-    const markdown = sessionImportMarkdown(session);
-    if (!markdown) {
-      showToast("分享内容为空，无法导入", null);
-      return;
-    }
-    const newChat = Array.from(document.querySelectorAll("button")).find((button) => {
-      if (!visibleElement(button) || isExtensionUiNode(button)) return false;
-      const text = String(button.textContent || "").replace(/\s+/g, " ").trim();
-      const label = button.getAttribute("aria-label") || "";
-      return /^(新对话|New chat)$/i.test(text) || /^(新对话|New chat)$/i.test(label);
-    });
-    if (newChat instanceof HTMLElement) newChat.click();
-    const deadline = Date.now() + 5000;
-    const fill = () => {
-      const editor = Array.from(document.querySelectorAll("textarea, [contenteditable='true']"))
-        .filter((node) => visibleElement(node))
-        .at(-1);
-      if (!(editor instanceof HTMLElement)) {
-        if (Date.now() < deadline) window.setTimeout(fill, 100);
-        else showToast("无法找到 Codex 输入框，请手动打开新对话后重试", null);
-        return;
-      }
-      editor.focus();
-      if (editor instanceof HTMLTextAreaElement) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-        setter?.call(editor, markdown);
-        editor.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        document.execCommand("insertText", false, markdown);
-        editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: markdown }));
-      }
-      showToast("已导入完整会话内容，请发送以继续", null);
-    };
-    window.setTimeout(fill, newChat ? 350 : 0);
-  }
-
-  function installSessionShareImportListener() {
-    window.removeEventListener("message", window.__codexSessionShareImportHandler);
-    window.__codexSessionShareImportHandler = (event) => {
-      if (!/^(https:\/\/share\.codexpp\.cc|https:\/\/codexpp-share\.pages\.dev)$/.test(event.origin || "") || event.data?.type !== "codexpp-import-session") return;
-      const session = event.data?.session;
-      if (!session || !["codex-session", "codex-rollout"].includes(session.kind)) return;
-      if (session.kind === "codex-session" && !Array.isArray(session.messages)) return;
-      if (session.kind === "codex-rollout" && typeof session.content !== "string") return;
-      importSharedSessionIntoNewChat(session);
-    };
-    window.addEventListener("message", window.__codexSessionShareImportHandler);
   }
 
   function visibleElement(node) {
@@ -13006,11 +12745,12 @@
       });
   }
 
+  const codexServiceTierComposerFooterSelector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
+
   function codexServiceTierVisibleComposerFooters(root = document) {
-    const selector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
     const footers = [
-      ...(root?.matches?.(selector) ? [root] : []),
-      ...Array.from(root?.querySelectorAll?.(selector) || []),
+      ...(root?.matches?.(codexServiceTierComposerFooterSelector) ? [root] : []),
+      ...Array.from(root?.querySelectorAll?.(codexServiceTierComposerFooterSelector) || []),
     ];
     return footers
       .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
@@ -13029,8 +12769,8 @@
     if (providerNames.some((name) => name && text.includes(name))) score += 40;
     if (/完全访问权限|full access|model|超高|high|sub2api|provider/i.test(text)) score += 20;
     if (/本地模式|local mode|worktree|branch|codex\//i.test(text)) score -= 30;
-    if (composer.matches?.(".composer-footer")) score += 4;
-    if (composer.querySelector?.(".composer-footer")) score += 8;
+    if (composer.matches?.(codexServiceTierComposerFooterSelector)) score += 4;
+    if (composer.querySelector?.(codexServiceTierComposerFooterSelector)) score += 8;
     const buttons = Array.from(composer.querySelectorAll?.("button, [role='button']") || []).filter(codexServiceTierBadgeVisibleElement);
     if (buttons.some((button) => codexServiceTierLooksLikeProviderButton(button, providerNames))) score += 30;
     score += Math.min(10, buttons.length);
@@ -13040,9 +12780,9 @@
   function codexServiceTierComposerCandidates() {
     const threadComposer = conversationViewFindComposerEl();
     if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)
-        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) return [threadComposer];
+        && !threadComposer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) return [threadComposer];
     const footers = codexServiceTierVisibleComposerFooters().filter((footer) =>
-      !footer.closest?.(conversationViewPaneBoundarySelector));
+      !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`));
     return footers.length === 1 ? footers : [];
   }
 
@@ -13071,7 +12811,7 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.("[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer")) return composer;
+    if (composer?.matches?.(codexServiceTierComposerFooterSelector)) return composer;
     return codexServiceTierBestComposerFooter(composer) || null;
   }
 
@@ -13239,7 +12979,7 @@
       existingBadges.forEach((badge) => badge.remove());
       return;
     }
-    let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
+    let badge = existingBadges.find((node) => node.closest?.(codexServiceTierComposerFooterSelector) || node.closest?.("button") == null) || existingBadges[0];
     existingBadges.forEach((node) => {
       if (node !== badge) node.remove();
     });
@@ -13553,7 +13293,6 @@
    */
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
-    "/session/export",
     "/thread-usage-history",
     "/archived-thread",
     "/export-markdown",
@@ -14393,6 +14132,42 @@
     return encoded;
   }
 
+  // SenseVoice 接收 16 kHz/单声道 PCM WAV；MediaRecorder 在 Chromium 中通常只提供 WebM/Opus，
+  // 因此只在选择本地 provider 时通过浏览器音频解码器做一次无损 PCM 转换。
+  async function codexPlusDictationSenseVoiceWav(blob, signal) {
+    if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    const OfflineContextCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!AudioContextCtor || !OfflineContextCtor) throw new Error("当前环境无法转换本地 SenseVoice 音频");
+    const context = new AudioContextCtor();
+    try {
+      const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+      if (signal.aborted) throw new DOMException("转写已取消", "AbortError");
+      const frames = Math.max(1, Math.ceil(decoded.duration * 16000));
+      const offline = new OfflineContextCtor(1, frames, 16000);
+      const source = offline.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offline.destination);
+      source.start();
+      const rendered = await offline.startRendering();
+      const samples = rendered.getChannelData(0);
+      const bytes = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(bytes);
+      const write = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+      write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE");
+      write(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+      view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+      write(36, "data"); view.setUint32(40, samples.length * 2, true);
+      for (let i = 0; i < samples.length; i++) {
+        const sample = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      }
+      return new Blob([bytes], { type: "audio/wav" });
+    } finally {
+      void context.close?.();
+    }
+  }
+
   async function transcribeCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
     if (!codexPlusDictation.blob) return;
@@ -14413,14 +14188,17 @@
         if (requestStarted) void postJson("/dictation/cancel", { requestId, helperToken: status.helperToken }).catch(() => {});
       };
       controller.signal.addEventListener("abort", cancelRequest, { once: true });
-      const audioBase64 = await codexPlusDictationAudioBase64(codexPlusDictation.blob, controller.signal);
+      const uploadBlob = status.provider === "sensevoice"
+        ? await codexPlusDictationSenseVoiceWav(codexPlusDictation.blob, controller.signal)
+        : codexPlusDictation.blob;
+      const audioBase64 = await codexPlusDictationAudioBase64(uploadBlob, controller.signal);
       if (revision !== codexPlusDictation.revision || controller.signal.aborted) return;
       if (!codexPlusDictationEnabled()) { cancelCodexPlusDictation(); return; }
-      const extension = codexPlusDictation.blob.type.includes("mp4") ? "m4a" : "webm";
+      const extension = uploadBlob.type.includes("wav") ? "wav" : uploadBlob.type.includes("mp4") ? "m4a" : "webm";
       requestStarted = true;
       // app:// 的 CSP 不允许 renderer 直接 fetch localhost；音频经既有特权桥接交给 Rust。
       const result = await postJson("/dictation/transcribe", {
-        requestId, audioBase64, mimeType: codexPlusDictation.blob.type || "audio/webm",
+        requestId, audioBase64, mimeType: uploadBlob.type || "audio/webm",
         filename: `dictation.${extension}`, helperToken: status.helperToken,
       });
       controller.signal.removeEventListener("abort", cancelRequest);
@@ -15183,7 +14961,6 @@
     // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
     refreshCodexPlusRailNavigation();
     installCodexPlusPageNavigationCloseHandler();
-    installSessionShareImportListener();
     scheduleBackendHeartbeat();
     installDeleteButtonEventDelegation();
     updateThreadScrollHandlers();
@@ -15872,7 +15649,6 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
-    installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
@@ -16631,6 +16407,7 @@
   syncOfficialUsagePolicy();
   scheduleSidebarNavStartupRetry();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
+  retireSessionSharing();
   void restoreCodexPlusManagedLocale();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);

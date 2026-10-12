@@ -15,7 +15,9 @@ test("retired project enhancements have no UI, dispatch or scanner entry", () =>
   assert.match(source, /zedRemoteButtonClass = "codex-zed-remote-button"/);
   assert.match(source, /upstreamWorktreeDialogClass = "codex-upstream-worktree-dialog"/);
   assert.match(source, /function installCodexRemoteSessionRecoveryListener\(/);
-  assert.match(source, /function installSessionShareButton\(/);
+  assert.match(source, /function retireSessionSharing\(/);
+  assert.doesNotMatch(source, /function installSessionShareButton\(/);
+  assert.doesNotMatch(source, /\/share\/create|\/session\/export|\/session\/import/);
   assert.match(source, /function activateSessionCopyMenuItem\(/);
 });
 

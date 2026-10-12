@@ -69,14 +69,6 @@ async fn bridge_routes_cover_all_current_paths() {
             "/thread-usage-history",
             json!({"session_id": "s1", "title": "First"}),
         ),
-        (
-            "/session/export",
-            json!({"session_id": "s1", "title": "First"}),
-        ),
-        (
-            "/session/import",
-            json!({"kind": "codex-rollout", "session_id": "s1", "content": "{}"}),
-        ),
         ("/archived-thread", json!({"title": "Archived"})),
     ];
 
@@ -86,6 +78,15 @@ async fn bridge_routes_cover_all_current_paths() {
             result["message"], "Unknown bridge path",
             "{path} should be routed"
         );
+    }
+}
+
+#[tokio::test]
+async fn retired_sharing_paths_are_not_routed() {
+    let ctx = test_context();
+    for path in ["/share/create", "/session/export", "/session/import"] {
+        let result = handle_bridge_request(ctx.clone(), path, json!({})).await;
+        assert_eq!(result["message"], "Unknown bridge path", "{path}");
     }
 }
 

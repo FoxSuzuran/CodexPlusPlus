@@ -1,0 +1,16 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+index 445e520..07bc226 100644
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -2426,9 +2426,8 @@ const FEATURES = {
+     };
+ 
+     const matches = (el, text) => {
+-      if (!text || isAppUpdateControl(el)) return false;
+-      if (EXACT.has(text)) return true;
+-      for (const c of CONTAINS) if (text.includes(c)) return true;
++      if (!text) return false;
++      if (EXACT.has(text) || CONTAINS.some((c) => text.includes(c))) return !isAppUpdateControl(el);
+       return false;
+     };
+     const CANDIDATE_SELECTOR = 'button, a, [role="button"], [role="menuitem"]';

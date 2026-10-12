@@ -398,7 +398,7 @@
     const title = [
       `下一轮：${scope}`,
       "点击选择当前会话的速度；新会话继续继承现有默认设置。",
-      "Fast 使用模型元数据声明的加速能力，实际支持与计费以服务方为准。",
+      "Standard 使用标准处理；Fast/Ultrafast 采用模型声明的能力，可在供应商模型配置中设置；实际支持与计费以服务方为准。",
       codexServiceTierRequestStatusMessage(),
     ].join("\n");
     if (["fast", "ultrafast"].includes(effectiveMode)
@@ -1318,10 +1318,9 @@
   }
 
   function codexRemoteSessionProviderRequestMethod(method) {
-    // app-server restores persisted model/provider/reasoning for thread/resume only
-    // when the caller supplies none of those overrides.
     return [
       "thread/start",
+      "thread/resume",
       "start-conversation",
       "start-thread-for-host",
       "thread-prewarm-start",
@@ -1337,6 +1336,8 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
+    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
+    if (requestMethod === "thread/resume" && !pureApi) return params;
     if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");

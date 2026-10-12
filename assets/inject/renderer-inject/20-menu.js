@@ -522,17 +522,14 @@
     if (mode === "standard" || mode === "inherit") return true;
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    // Explicit capabilities override the legacy offline fallback, including
-    // an explicit removal of Fast. New models need no whitelist edit.
+    // 用户明确声明优先；内置空能力数组仍允许已验证模型的兼容回退。
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
       if (mode === "fast" && typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
       const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
       const speeds = metadata?.additionalSpeedTiers ?? metadata?.additional_speed_tiers;
-      if (Array.isArray(tiers) || Array.isArray(speeds)) {
-        const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
-        return (Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches));
-      }
+      const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
+      if ((Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches))) return true;
     } catch {}
     return mode === "fast" && codexServiceTierSupportedFastModels.has(normalized);
   }
@@ -547,7 +544,7 @@
 
   function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
     const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
+    return `Fast 支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型，${modelText}；可在供应商的模型配置中设置 Fast 支持`;
   }
 
   function codexServiceTierMaybeLoadModelCatalog(force = false) {

@@ -57,6 +57,7 @@ function fixture(handler, { enabled = true } = {}) {
     codexPlusSettings: () => ({ serviceTierControls: false }),
     codexRemoteSessionProviderRequestMethod: () => false, codexRemoteSessionProviderOverrideEnabled: () => false,
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
+    prepareCodexServiceTierRequest: async (_, params) => params,
     beginCodexServiceTierRequest: () => null, observeCodexServiceTierRequestResult: () => {},
     refreshCodexThreadModelBeforeTurn: async () => null,
     codexThreadModelRequestState: () => ({ threadId: "", model: "" }),

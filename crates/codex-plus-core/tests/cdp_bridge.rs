@@ -2981,8 +2981,8 @@ fn injection_script_refreshes_sidebar_after_session_undo() {
         .split_once("function showToast(message, options = {})")
         .expect("undo toast should exist")
         .1
-        .split_once("function shareBase64Url")
-        .expect("undo toast should end before sharing helpers")
+        .split_once("function retireSessionSharing")
+        .expect("undo toast should end before sharing retirement cleanup")
         .0;
 
     assert!(refresh.contains("loadOptionalCodexAppModule(\"app-server-manager-signals-\")"));
@@ -3329,7 +3329,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"14\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"15\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3521,7 +3521,10 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("getConfigTomlServiceTier"));
     assert!(script.contains("catalog.service_tier"));
     assert!(script.contains("service_tier=\\\"priority\\\""));
-    assert!(script.contains("Fast 仅支持"));
+    assert!(script.contains("prioritySupportOverride"));
+    assert!(script.contains("codexServiceTierSupportedForModel"));
+    assert!(script.contains("可在供应商的模型配置中设置 Fast 支持"));
+    assert!(script.contains("codexServiceTierRequestOverrideVersion = \"14\""));
     assert!(script.contains("当前 thread"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
@@ -3770,14 +3773,16 @@ fn injection_script_applies_fast_service_tier_contract() {
     assert_eq!(cases["openAiNormalizationDisabled"], true);
     assert_eq!(cases["refreshedCustomProviderOverride"], "refreshed_vendor");
     assert_eq!(cases["refreshedOpenAiProvider"], "openai");
-    assert_eq!(cases["refreshedPureApiResumeProvider"], "openai");
+    assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
     assert_eq!(cases["refreshedPureApiResumeModel"], "gpt-5.6-terra");
     assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiThreadStartProvider"], "custom");
-    assert_eq!(cases["pureApiThreadResumeUnchanged"], true);
-    assert_eq!(cases["pureApiNativeResumeUnchanged"], true);
+    assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
+    assert_eq!(cases["pureApiNativeResumeProvider"], "custom");
+    assert_eq!(cases["pureApiExplicitResumePreserved"], true);
+    assert_eq!(cases["officialResumePreserved"], true);
     assert_eq!(cases["pureApiTurnStartProvider"], "custom");
     assert_eq!(cases["pureApiTurnWithoutProviderUnchanged"], true);
     assert_eq!(cases["pureApiOtherProviderUnchanged"], true);
@@ -3793,7 +3798,7 @@ fn injection_script_applies_fast_service_tier_contract() {
             "turn/start:"
         ])
     );
-    assert_eq!(cases["modelSwitchResumeProvider"], "");
+    assert_eq!(cases["modelSwitchResumeProvider"], "sub2api");
     assert_eq!(cases["failedModelSwitchResumeAttempts"], 2);
     assert_eq!(cases["failedModelSwitchTurnAttempts"], 2);
     assert_eq!(cases["delayedResumeWaited"], true);
@@ -4462,9 +4467,11 @@ const pureApiThreadResumeParams = {{
   threadId: "thread-mobile-pure-api",
   model_provider: "openai",
 }};
-const pureApiThreadResumeUnchanged = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams) === pureApiThreadResumeParams;
+const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams)?.modelProvider;
 const pureApiNativeResumeParams = {{ threadId: "thread-mobile-native-resume" }};
-const pureApiNativeResumeUnchanged = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams) === pureApiNativeResumeParams;
+const pureApiNativeResumeProvider = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams)?.modelProvider;
+const explicitResume = {{ threadId: "thread-other-provider", modelProvider: "other", model: "gpt-custom", reasoningEffort: "high" }};
+const pureApiExplicitResumePreserved = api.applyProviderOverride("thread/resume", explicitResume) === explicitResume;
 const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
   threadId: "thread-mobile-pure-api",
   modelProvider: "openai",
@@ -4484,6 +4491,8 @@ api.setBackendSettings({{
 }});
 const pureOfficialParams = {{ cwd: "C:/mobile", modelProvider: "openai" }};
 const pureOfficialProviderUnchanged = api.applyProviderOverride("thread/start", pureOfficialParams) === pureOfficialParams;
+const officialResume = {{ threadId: "thread-official", modelProvider: "openai" }};
+const officialResumePreserved = api.applyProviderOverride("thread/resume", officialResume) === officialResume;
 api.setBackendSettings({{
   relayProfilesEnabled: true,
   activeRelayId: "per-model-context",
@@ -4825,8 +4834,10 @@ process.stdout.write(JSON.stringify({{
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiThreadStartProvider,
-  pureApiThreadResumeUnchanged,
-  pureApiNativeResumeUnchanged,
+  pureApiThreadResumeProvider,
+  pureApiNativeResumeProvider,
+  pureApiExplicitResumePreserved,
+  officialResumePreserved,
   pureApiTurnStartProvider,
   pureApiTurnWithoutProviderUnchanged,
   pureApiOtherProviderUnchanged,

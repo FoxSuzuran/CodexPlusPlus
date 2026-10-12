@@ -694,11 +694,12 @@
       });
   }
 
+  const codexServiceTierComposerFooterSelector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
+
   function codexServiceTierVisibleComposerFooters(root = document) {
-    const selector = "[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer";
     const footers = [
-      ...(root?.matches?.(selector) ? [root] : []),
-      ...Array.from(root?.querySelectorAll?.(selector) || []),
+      ...(root?.matches?.(codexServiceTierComposerFooterSelector) ? [root] : []),
+      ...Array.from(root?.querySelectorAll?.(codexServiceTierComposerFooterSelector) || []),
     ];
     return footers
       .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
@@ -717,8 +718,8 @@
     if (providerNames.some((name) => name && text.includes(name))) score += 40;
     if (/完全访问权限|full access|model|超高|high|sub2api|provider/i.test(text)) score += 20;
     if (/本地模式|local mode|worktree|branch|codex\//i.test(text)) score -= 30;
-    if (composer.matches?.(".composer-footer")) score += 4;
-    if (composer.querySelector?.(".composer-footer")) score += 8;
+    if (composer.matches?.(codexServiceTierComposerFooterSelector)) score += 4;
+    if (composer.querySelector?.(codexServiceTierComposerFooterSelector)) score += 8;
     const buttons = Array.from(composer.querySelectorAll?.("button, [role='button']") || []).filter(codexServiceTierBadgeVisibleElement);
     if (buttons.some((button) => codexServiceTierLooksLikeProviderButton(button, providerNames))) score += 30;
     score += Math.min(10, buttons.length);
@@ -728,9 +729,9 @@
   function codexServiceTierComposerCandidates() {
     const threadComposer = conversationViewFindComposerEl();
     if (threadComposer && codexServiceTierBadgeVisibleElement(threadComposer)
-        && !threadComposer.closest("[role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) return [threadComposer];
+        && !threadComposer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")) return [threadComposer];
     const footers = codexServiceTierVisibleComposerFooters().filter((footer) =>
-      !footer.closest?.(conversationViewPaneBoundarySelector));
+      !footer.closest?.(`${conversationViewPaneBoundarySelector}, [data-codex-plus-ext]`));
     return footers.length === 1 ? footers : [];
   }
 
@@ -759,7 +760,7 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.("[data-ds-part='composer-toolbar'], [data-composer-footer-responsive], .composer-footer")) return composer;
+    if (composer?.matches?.(codexServiceTierComposerFooterSelector)) return composer;
     return codexServiceTierBestComposerFooter(composer) || null;
   }
 
@@ -927,7 +928,7 @@
       existingBadges.forEach((badge) => badge.remove());
       return;
     }
-    let badge = existingBadges.find((node) => node.closest?.(".composer-footer") || node.closest?.("button") == null) || existingBadges[0];
+    let badge = existingBadges.find((node) => node.closest?.(codexServiceTierComposerFooterSelector) || node.closest?.("button") == null) || existingBadges[0];
     existingBadges.forEach((node) => {
       if (node !== badge) node.remove();
     });

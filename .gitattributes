@@ -28,3 +28,4 @@ assets/inject/upstream/skin-packs/packs/*/theme.json text eol=lf
 
 # Keep the market patch applicable to the byte-exact LF script on Windows.
 patches/codex-daily-token-usage-performance.patch text eol=lf
+patches/bennett-upgrade-performance.patch text eol=lf

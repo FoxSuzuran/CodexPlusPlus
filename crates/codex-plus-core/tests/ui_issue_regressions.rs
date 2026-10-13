@@ -35,8 +35,11 @@ fn session_share_keeps_legacy_default_and_round_trips_partial_updates() {
 #[test]
 fn renderer_share_and_manager_fold_behaviors() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let output = Command::new("node")
-        .arg("--test")
+    let mut command = Command::new("node");
+    command.arg("--test");
+    #[cfg(windows)]
+    command.arg("--test-skip-pattern=^DMG packaging ");
+    let output = command
         .arg("src/*.test.ts")
         .current_dir(root.join("apps/codex-plus-manager"))
         .output()

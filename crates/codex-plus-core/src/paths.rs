@@ -14,6 +14,13 @@ const SKILL_BACKUPS_DIR: &str = "skill-backups";
 const PENDING_MANAGER_NAVIGATION_FILE: &str = "pending-manager-navigation.json";
 
 pub fn default_app_state_dir() -> PathBuf {
+    // Windows Known Folder 不读取 HOME；多开 worker 显式使用实例状态目录。
+    if let Some(state_dir) = std::env::var_os("CODEX_PLUS_APP_STATE_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return state_dir;
+    }
     if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         return home_dir.join(APP_STATE_DIR);
     }

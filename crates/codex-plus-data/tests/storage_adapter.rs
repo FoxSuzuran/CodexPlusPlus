@@ -1302,7 +1302,16 @@ fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
     ));
     fs::write(&rollout_path, lines).unwrap();
     create_codex_thread_db(&db_path, &rollout_path);
-    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+    let stale_db_path = tmp.path().join("sqlite").join("state_5.sqlite");
+    fs::create_dir_all(stale_db_path.parent().unwrap()).unwrap();
+    create_codex_thread_db(&stale_db_path, &tmp.path().join("missing.jsonl"));
+    let stale_db = Connection::open(&stale_db_path).unwrap();
+    stale_db
+        .execute("DELETE FROM threads WHERE id = 't1'", [])
+        .unwrap();
+    let adapter =
+        SQLiteStorageAdapter::new(&stale_db_path, BackupStore::new(tmp.path().join("backups")))
+            .with_allowed_db_paths([db_path.clone()]);
 
     let value = adapter.codex_thread_usage_live(&session("local:t1", "Codex Thread"));
     assert_eq!(value["status"], json!("ok"));
@@ -1338,6 +1347,29 @@ fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
             }
         ])
     );
+    // 旧库缺行、空路径、NULL 或失效路径时，都应继续查询登记的当前库。
+    for stale_path in [Some(""), None, Some("missing.jsonl")] {
+        stale_db
+            .execute(
+                "INSERT OR REPLACE INTO threads (id, rollout_path) VALUES ('t1', ?1)",
+                [stale_path],
+            )
+            .unwrap();
+        let value = adapter.codex_thread_usage_live(&session("local:t1", "Codex Thread"));
+        assert_eq!(value["status"], json!("ok"), "{value}");
+        assert_eq!(value["events"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(
+        adapter.codex_thread_usage_history(&session("local:t1", "Codex Thread"))["status"],
+        json!("ok")
+    );
+    // 读取备用库不应修补或回填旧库。
+    let stale_path: String = stale_db
+        .query_row("SELECT rollout_path FROM threads WHERE id = 't1'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stale_path, "missing.jsonl");
 }
 
 #[test]

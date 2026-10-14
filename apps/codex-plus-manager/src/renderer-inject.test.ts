@@ -2489,7 +2489,7 @@ describe("renderer model reasoning efforts patch", () => {
     );
   });
 
-  it("仍为名单内确认支持 ultra 的模型补 max 与 ultra", async () => {
+  it("名单内模型也遵循显式档位声明，不追加 max 或 ultra", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const efforts = reasoningRuntime(renderer, {
       supportedReasoningEfforts: ["low", "medium", "high", "xhigh"].map((reasoningEffort) => ({ reasoningEffort })),
@@ -2497,7 +2497,7 @@ describe("renderer model reasoning efforts patch", () => {
 
     assert.deepEqual(
       efforts.map((entry) => entry.reasoningEffort),
-      ["low", "medium", "high", "xhigh", "max", "ultra"],
+      ["low", "medium", "high", "xhigh"],
     );
   });
 

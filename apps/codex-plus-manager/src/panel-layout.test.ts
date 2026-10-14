@@ -208,7 +208,7 @@ it("keeps only the current rail entry selected and removes inactive aria-current
   for (const button of buttons) assert.equal(button.attributes.has("aria-current"), false);
 });
 
-it("replaces version 31 styles with bounded panel geometry and keeps version 34 reinjection idempotent", () => {
+it("replaces version 31 styles with bounded panel geometry and keeps version 35 reinjection idempotent", () => {
   const styleSource = functionSource("installStyle");
   const names = new Set([
     "styleId", "codexDeleteStyleVersion",
@@ -232,7 +232,7 @@ it("replaces version 31 styles with bounded panel geometry and keeps version 34 
   };
   const install = new Function("document", `${declarations}\n${styleSource}\nreturn installStyle;`)(document);
   install();
-  assert.equal(existing?.dataset.codexDeleteStyleVersion, "34");
+  assert.equal(existing?.dataset.codexDeleteStyleVersion, "35");
   const pageRules = existing!.textContent!.match(/\.codex-plus-page-overlay\s*\{([^}]+)\}/)![1];
   assert.match(pageRules, /right: var\(--codex-plus-page-right, 0px\)/);
   assert.match(pageRules, /bottom: var\(--codex-plus-page-bottom, 0px\)/);

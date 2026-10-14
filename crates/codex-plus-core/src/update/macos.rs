@@ -1270,20 +1270,25 @@ mod tests {
 
     #[test]
     fn macos_update_accepts_unified_installation_and_requests_manual_legacy_migration() {
+        // 按宿主平台构造路径，Windows 也会执行这组布局策略测试。
         let root = PathBuf::from("/Applications");
-        let executable = |app: &str, binary: &str| root.join(app).join("Contents/MacOS").join(binary);
+        let executable_path = |bundle: &str, executable: &str| {
+            root.join(bundle).join("Contents/MacOS").join(executable)
+        };
         assert_eq!(
-            installed_root_from_executable(&executable("Codex++.app", "CodexPlusPlus"))
-            .unwrap(),
+            installed_root_from_executable(&executable_path("Codex++.app", "CodexPlusPlus"))
+                .unwrap(),
             root
         );
         assert_eq!(
-            installed_root_from_executable(&executable("codex++.app", "CodexPlusPlus"))
-            .unwrap(),
+            installed_root_from_executable(&executable_path("codex++.app", "CodexPlusPlus"))
+                .unwrap(),
             root
         );
-        for executable in [executable("Codex++ 管理工具.app", "CodexPlusPlusManager")]
-        {
+        for executable in [executable_path(
+            "Codex++ 管理工具.app",
+            "CodexPlusPlusManager",
+        )] {
             let error = installed_root_from_executable(&executable).unwrap_err();
             assert!(error.to_string().contains("手动迁移"));
             assert!(
@@ -1292,7 +1297,10 @@ mod tests {
                     .contains("旧版自动更新器不支持单应用安装包")
             );
         }
-        let renamed = installed_root_from_executable(&executable("Codex++ 2.app", "CodexPlusPlus"))
+        let renamed = installed_root_from_executable(&executable_path(
+            "Codex++ 2.app",
+            "CodexPlusPlus",
+        ))
         .unwrap_err();
         assert!(renamed.to_string().contains("标准应用目录"));
         assert!(!renamed.to_string().contains("旧双应用"));

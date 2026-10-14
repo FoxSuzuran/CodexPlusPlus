@@ -1141,6 +1141,7 @@ async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profil
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1196,6 +1197,7 @@ async fn launch_lifecycle_passes_configured_extra_args_to_codex_launch() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1231,6 +1233,7 @@ async fn launch_lifecycle_keeps_js_injection_with_legacy_launch_mode() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1272,6 +1275,7 @@ async fn launch_lifecycle_skips_helper_and_injection_when_enhancements_disabled(
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1320,6 +1324,7 @@ async fn official_mix_responses_profile_starts_fixed_protocol_proxy_without_enha
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1373,6 +1378,7 @@ async fn fixed_protocol_proxy_port_waits_for_the_previous_helper_to_release_it()
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1410,6 +1416,7 @@ async fn a_permanently_busy_protocol_proxy_port_reports_what_the_user_should_do(
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1453,6 +1460,7 @@ async fn a_persistently_forbidden_protocol_proxy_port_fails_after_the_wait_with_
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1516,6 +1524,7 @@ async fn a_transient_forbidden_protocol_proxy_port_retries_until_it_can_bind() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1558,6 +1567,7 @@ async fn an_unrelated_helper_bind_error_is_reported_as_is() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1602,6 +1612,7 @@ async fn a_busy_floating_helper_port_respects_the_platform_retry_budget() {
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1642,6 +1653,7 @@ async fn pending_remote_control_recovery_runs_without_an_official_mix_profile() 
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1685,6 +1697,7 @@ async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_di
             debug_port: 9229,
             helper_port: 58123,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1717,6 +1730,7 @@ async fn launch_lifecycle_does_not_apply_relay_profile_before_launching_codex() 
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1747,6 +1761,7 @@ async fn launch_lifecycle_skips_active_relay_profile_when_supplier_config_disabl
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1798,6 +1813,7 @@ experimental_bearer_token = "sk-test"
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -1825,6 +1841,7 @@ async fn launch_lifecycle_enters_degraded_mode_and_retries_when_injection_fails(
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..Default::default()
         },
         &hooks,
     )
@@ -1869,6 +1886,7 @@ async fn launch_lifecycle_cleans_helper_when_launch_fails_after_helper_started()
             debug_port: 9229,
             helper_port: 57321,
             status_store: status_store.clone(),
+            ..Default::default()
         },
         &hooks,
     )
@@ -1945,6 +1963,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2004,6 +2023,7 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2054,14 +2074,25 @@ async fn launch_starts_helper_when_web_search_history_compat_is_enabled() {
             debug_port: 9229,
             helper_port: 58000,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
     .await
     .unwrap();
-    assert!(events.lock().unwrap().contains(&"start-helper:57321".to_string()));
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"start-helper:57321".to_string())
+    );
     handle.wait_for_codex_exit().await.unwrap();
-    assert!(events.lock().unwrap().contains(&"shutdown-helper:57321".to_string()));
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"shutdown-helper:57321".to_string())
+    );
 }
 
 #[tokio::test]
@@ -2089,6 +2120,7 @@ async fn launch_lifecycle_cleans_helper_and_codex_when_status_save_fails() {
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2133,6 +2165,7 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
             debug_port: 9229,
             helper_port: 57321,
             status_store,
+            ..Default::default()
         },
         &hooks,
     )
@@ -2149,7 +2182,8 @@ async fn launch_lifecycle_keeps_packaged_process_id_running_and_retries_when_inj
 }
 
 #[tokio::test]
-async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit() {
+async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_helper_until_exit()
+{
     let temp = tempfile::tempdir().unwrap();
     let app_dir = temp.path().join("Codex.app");
     std::fs::create_dir_all(&app_dir).unwrap();
@@ -2170,27 +2204,180 @@ async fn degraded_packaged_launch_captures_identity_before_monitoring_and_keeps_
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
     .await
     .unwrap();
     assert_eq!(
-        events.lock().unwrap().iter().filter(|event| *event == "capture-identity:9229").count(),
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| *event == "capture-identity:9229")
+            .count(),
         1,
     );
-    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "running_degraded");
+    assert_eq!(
+        handle.status_store.load_latest().unwrap().unwrap().status,
+        "running_degraded"
+    );
     let mut waiting = std::pin::pin!(handle.wait_for_codex_exit());
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting).await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+            .await
+            .is_err()
+    );
     let current = events.lock().unwrap().clone();
-    let captured = current.iter().position(|event| event == "capture-identity:9229").unwrap();
-    let monitor = current.iter().position(|event| event == "wait-codex").unwrap();
+    let captured = current
+        .iter()
+        .position(|event| event == "capture-identity:9229")
+        .unwrap();
+    let monitor = current
+        .iter()
+        .position(|event| event == "wait-codex")
+        .unwrap();
     assert!(captured < monitor);
-    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    assert!(
+        !current
+            .iter()
+            .any(|event| event.starts_with("shutdown-helper:"))
+    );
     exit.notify_one();
     waiting.await.unwrap();
-    assert!(events.lock().unwrap().iter().any(|event| event == "shutdown-helper:57321"));
-    assert_eq!(handle.status_store.load_latest().unwrap().unwrap().status, "stopped");
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "shutdown-helper:57321")
+    );
+    assert_eq!(
+        handle.status_store.load_latest().unwrap().unwrap().status,
+        "stopped"
+    );
+}
+
+#[tokio::test]
+async fn standalone_quota_unlock_disabled_does_not_connect_to_cdp() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: false,
+        provider_sync_enabled: false,
+        ..BackendSettings::default()
+    });
+    let handle = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    handle.wait_for_codex_exit().await.unwrap();
+}
+
+#[tokio::test]
+async fn isolated_quota_gate_is_not_started_when_status_save_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("Codex.app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let hooks = FakeHooks::new(Arc::new(Mutex::new(Vec::new()))).with_settings(BackendSettings {
+        enhancements_enabled: false,
+        codex_app_standalone_quota_unlock: true,
+        provider_sync_enabled: false,
+        ..BackendSettings::default()
+    });
+    let result = launch_and_inject_with_hooks(
+        LaunchOptions {
+            app_dir: Some(app_dir),
+            debug_port: listener.local_addr().unwrap().port(),
+            status_store: StatusStore::new(temp.path().join("unwritable/status.json")),
+            ..LaunchOptions::default()
+        },
+        &hooks,
+    );
+    std::fs::write(temp.path().join("unwritable"), "not a directory").unwrap();
+    assert!(result.await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept(),)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn isolated_quota_gate_stops_on_exit_monitor_error_and_explicit_restart() {
+    use tokio::io::AsyncReadExt;
+    for (wait_error, explicit_stop) in [(false, false), (true, false), (false, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex.app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let debug_port = listener.local_addr().unwrap().port();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = FakeHooks::new(events).with_settings(BackendSettings {
+            enhancements_enabled: false,
+            codex_app_standalone_quota_unlock: true,
+            provider_sync_enabled: false,
+            ..BackendSettings::default()
+        });
+        hooks.wait_error = wait_error;
+        let handle = launch_and_inject_with_hooks(
+            LaunchOptions {
+                app_dir: Some(app_dir),
+                debug_port,
+                status_store: StatusStore::new(temp.path().join("latest-status.json")),
+                ..LaunchOptions::default()
+            },
+            &hooks,
+        )
+        .await
+        .unwrap();
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut buffer = [0; 2048];
+        stream.read(&mut buffer).await.unwrap();
+        if explicit_stop {
+            handle.stop_isolated_api_quota_gate().await;
+        } else {
+            assert_eq!(handle.wait_for_codex_exit().await.is_err(), wait_error);
+        }
+        // 同一端口仍被保留，旧会话不允许再探测或注入它。
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.read(&mut buffer),)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(550), listener.accept(),)
+                .await
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]
@@ -2209,15 +2396,31 @@ async fn proxy_only_packaged_launch_captures_identity_without_attempting_rendere
     hooks.record_identity_capture = true;
     let handle = launch_and_inject_with_hooks(
         LaunchOptions {
-            app_dir: Some(app_dir), debug_port: 9229, helper_port: 57321,
+            app_dir: Some(app_dir),
+            debug_port: 9229,
+            helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
-        }, &hooks,
-    ).await.unwrap();
+            ..Default::default()
+        },
+        &hooks,
+    )
+    .await
+    .unwrap();
     let current = events.lock().unwrap().clone();
-    assert_eq!(current.iter().filter(|event| *event == "capture-identity:9229").count(), 1);
+    assert_eq!(
+        current
+            .iter()
+            .filter(|event| *event == "capture-identity:9229")
+            .count(),
+        1
+    );
     assert!(!current.iter().any(|event| event.starts_with("inject:")));
     assert!(current.iter().any(|event| event == "start-helper:57321"));
-    assert!(!current.iter().any(|event| event.starts_with("shutdown-helper:")));
+    assert!(
+        !current
+            .iter()
+            .any(|event| event.starts_with("shutdown-helper:"))
+    );
     handle.wait_for_codex_exit().await.unwrap();
 }
 
@@ -2373,6 +2576,7 @@ async fn launch_exit_saves_failed_terminal_state_with_complete_error_chain() {
             debug_port: 9229,
             helper_port: 57321,
             status_store: StatusStore::new(temp.path().join("latest-status.json")),
+            ..Default::default()
         },
         &hooks,
     )
@@ -2613,6 +2817,7 @@ impl LaunchHooks for FakeHooks {
         debug_port: u16,
         _settings: &BackendSettings,
         extra_args: &[String],
+        _instance: &codex_plus_core::launcher::LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
         assert!(app_dir.ends_with("Codex.app"));
         let launch_detail = if extra_args.is_empty() {
@@ -2666,14 +2871,18 @@ impl LaunchHooks for FakeHooks {
     ) -> anyhow::Result<()> {
         self.event("wait-codex");
         if self.record_identity_capture {
-            assert!(*self.captured_launch_identity.lock().unwrap(), "monitoring must use the launch identity even after injection failure");
+            assert!(
+                *self.captured_launch_identity.lock().unwrap(),
+                "monitoring must use the launch identity even after injection failure"
+            );
         }
         if let Some(exit) = &self.wait_until_exit {
             exit.notified().await;
         }
         if self.wait_error {
-            return Err(anyhow::anyhow!("native process handle failed")
-                .context("monitoring Codex process"));
+            return Err(
+                anyhow::anyhow!("native process handle failed").context("monitoring Codex process")
+            );
         }
         Ok(())
     }

@@ -370,7 +370,7 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
         "displayName": metadata
             .get("display_name")
             .and_then(Value::as_str)
-            .unwrap_or(slug),
+            .unwrap_or(normalized_slug.as_str()),
         "description": metadata
             .get("description")
             .and_then(Value::as_str)
@@ -389,6 +389,25 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             .cloned()
             .unwrap_or_else(|| json!([]))
     });
+    // 供应商分组身份（模型聚合在 catalog 条目上写的 `codex_plus_group` /
+    // `codex_plus_group_id`）：这份 UI 元数据是白名单结构，不在这里显式转发就流不到
+    // 前端。只在值是非空字符串时写——单供应商直连的目录没有这两个键，因此不会凭空
+    // 多出一个空分组；空串同样忽略，避免前端渲染出无名表头。
+    for key in ["codex_plus_group", "codex_plus_group_id"] {
+        if let Some(value) = metadata
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            ui[key] = json!(value);
+        }
+    }
+    // `codex_plus_default` 标的是"这个模型属于默认成员"，用于在选择器里给默认供应商
+    // 那一组打标志。只有显式 true 才转发，缺键/false 都不写，保持既有响应形态不变。
+    if metadata.get("codex_plus_default").and_then(Value::as_bool) == Some(true) {
+        ui["codex_plus_default"] = json!(true);
+    }
     if !has_builtin {
         if metadata.get("supported_reasoning_levels").is_none() {
             ui.as_object_mut().unwrap().remove("supportedReasoningEfforts");
@@ -712,6 +731,19 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             if !has_model_metadata {
                 model["additional_speed_tiers"] = json!([]);
                 model["service_tiers"] = json!([]);
+            }
+            // Codex Beta 26.727 起每个 model entry 都必须带 base_instructions，
+            // 否则整份 model_catalog_json 解析失败并连带 config.toml 拒载（#2492）。
+            // bundled 模板首条（gpt-5.5）没有该字段，clone 后按 Codex 自身的
+            // legacy 序列化规则补齐：镜像条目里的 instructions_template。
+            if model.get("base_instructions").is_none_or(Value::is_null) {
+                let mirrored = model
+                    .get("model_messages")
+                    .and_then(|messages| messages.get("instructions_template"))
+                    .filter(|value| value.is_string())
+                    .cloned()
+                    .unwrap_or_else(|| json!(""));
+                model["base_instructions"] = mirrored;
             }
             model["availability_nux"] = Value::Null;
             model["upgrade"] = Value::Null;

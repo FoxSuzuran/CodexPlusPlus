@@ -120,7 +120,6 @@
       return mutation.target.closest?.(selector) || changed.some((node) =>
         node.matches?.(selector) || node.querySelector?.(selector));
     })) scheduleCodexFastSlashMenu();
-    if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     if (!shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;

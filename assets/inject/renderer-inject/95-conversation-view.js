@@ -3,9 +3,16 @@
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
       const relevant = records.some((record) => {
-        if (record.type !== "attributes") return true;
         const target = record.target;
-        if (target.closest?.("[data-codex-plus-ext]")) return false;
+        if (target?.closest?.("[data-codex-plus-ext]")) return false;
+        if ([conversationViewState.contentEl, conversationViewState.composerEl]
+          .some((el) => el && el !== target && el.contains(target))) return false;
+        if (record.type === "childList") {
+          const nodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+          return !nodes.length || nodes.some((node) => node.nodeType === 1
+            && !node.matches?.("[data-codex-plus-ext]"));
+        }
+        if (record.type !== "attributes") return false;
         return record.oldValue !== target.getAttribute(record.attributeName);
       });
       if (relevant) scheduleConversationViewAlign();
@@ -20,6 +27,14 @@
       });
       conversationViewState.moObserved = true;
     }
+    conversationViewState.onVisibilityChange = () => {
+      if (document.hidden) {
+        cancelAnimationFrame(conversationViewState.rafId);
+        conversationViewState.rafId = 0;
+        conversationViewState.settleFramesLeft = 0;
+      } else scheduleConversationViewAlign();
+    };
+    document.addEventListener("visibilitychange", conversationViewState.onVisibilityChange);
     conversationViewState.runtimeStarted = true;
   }
 

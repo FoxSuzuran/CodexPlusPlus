@@ -2911,8 +2911,9 @@ fn injection_script_conversation_view_engine_drops_background_poll() {
     assert!(script.contains("runtimeStarted"));
     // 批量两阶段对齐：先统一应用宽度/复位，再批量读取几何。
     assert!(script.contains("conversationViewHasRoomForHtmlCenterAt"));
-    // 事件驱动的 16 帧 settle 保留。
-    assert!(script.contains("function scheduleConversationViewAlign"));
+    // 事件驱动的短批次合并重复触发，不观察自己改宽度的节点。
+    assert!(script.contains("function scheduleConversationViewAlign(frames = 2)"));
+    assert!(script.contains("Math.min(Math.max(frames, 1), 4)"));
 }
 
 #[test]

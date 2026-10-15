@@ -875,7 +875,15 @@
       // Find the rare landmarks first. Running an unanchored :has() query over
       // every element repeats subtree searches, even when the landmark is absent.
       const candidates = new Set();
+      const visitedAncestors = new Set();
       for (const branch of branches) {
+        if (branch.selector === "*" && branch.relation !== "sibling" && branch.relation !== "adjacent") {
+          // :has(*) needs non-leaf elements, not every leaf's ancestor chain.
+          for (const node of document.querySelectorAll("*")) {
+            if (node.firstElementChild) candidates.add(node);
+          }
+          continue;
+        }
         for (const leaf of document.querySelectorAll(branch.selector)) {
           if (branch.relation === "sibling" || branch.relation === "adjacent") {
             for (let ancestor = leaf; ancestor; ancestor = ancestor.parentElement) {
@@ -884,7 +892,11 @@
               }
             }
           } else {
-            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) candidates.add(ancestor);
+            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) {
+              if (visitedAncestors.has(ancestor)) break;
+              visitedAncestors.add(ancestor);
+              candidates.add(ancestor);
+            }
           }
         }
       }

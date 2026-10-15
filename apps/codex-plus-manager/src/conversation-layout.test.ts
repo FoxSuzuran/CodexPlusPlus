@@ -26,6 +26,7 @@ function fixture(originalLeft = "", originalTransform = "") {
   const geometry = { baseLeft: 100, width: 900, center: 800, boundsLeft: 0, boundsRight: 1600 };
   const el = {
     dataset, style, isConnected: true,
+    contains: () => false,
     getBoundingClientRect: () => ({
       left: geometry.baseLeft + (parseFloat(style.left) || 0),
       width: geometry.width,
@@ -35,7 +36,7 @@ function fixture(originalLeft = "", originalTransform = "") {
   const stats = { schedules: 0, disconnects: 0 };
   const state = {
     contentEl: el, composerEl: null, elements: new Set(),
-    observed: new WeakSet(), runtimeStarted: false, moObserved: false,
+    observed: new Set(), runtimeStarted: false, moObserved: false,
     rafId: 0, pollId: 0, targetsReported: false,
   };
   const context = vm.createContext({
@@ -56,7 +57,7 @@ function fixture(originalLeft = "", originalTransform = "") {
       observe() {}
       disconnect() { stats.disconnects++; }
     },
-    document: { body: {} },
+    document: { body: {}, addEventListener() {}, removeEventListener() {} },
     window: {},
   });
   vm.runInContext(`
@@ -141,12 +142,13 @@ test("conversation targets resolve from the rebuilt DOM and restore replaced ele
   const restored: unknown[] = [];
   const state = {
     contentEl: stale, composerEl: composer,
-    elements: new Set([stale, composer]), observed: new WeakSet([stale, composer]),
+    elements: new Set([stale, composer]), observed: new Set([stale, composer]),
   };
   const context = vm.createContext({
     conversationViewState: state,
     conversationViewFindContentEl: () => replacement,
     conversationViewFindComposerEl: () => composer,
+    conversationViewScrollContainer: () => host,
     conversationViewRestoreElement: (node: unknown) => restored.push(node),
     conversationViewObserveIfNeeded: (node: unknown) => { if (node) observed.push(node); },
     document: { documentElement: {}, body: {} },
@@ -155,7 +157,8 @@ test("conversation targets resolve from the rebuilt DOM and restore replaced ele
     conversationViewResolveTargets();`, context);
   assert.equal(state.contentEl, replacement);
   assert.equal(state.composerEl, composer);
-  assert.ok(observed.includes(replacement));
+  assert.ok(!observed.includes(replacement), "never observe nodes whose width we write");
+  assert.ok(!observed.includes(composer));
   assert.ok(observed.includes(host));
   assert.deepEqual(restored, [stale]);
   context.conversationViewFindComposerEl = () => null;
@@ -163,4 +166,56 @@ test("conversation targets resolve from the rebuilt DOM and restore replaced ele
   assert.equal(state.composerEl, null, "connected elements must be rechecked against the current DOM");
   assert.deepEqual(restored, [stale, composer]);
   assert.equal(state.elements.has(composer), false);
+});
+
+test("streaming text and extension insertions do not trigger alignment", () => {
+  const f = fixture();
+  f.api.start();
+  const native = { closest: () => null };
+  f.mutation([{ type: "childList", target: native, addedNodes: [{ nodeType: 3 }], removedNodes: [] }]);
+  f.mutation([{ type: "childList", target: native, addedNodes: [{ nodeType: 1, matches: () => true }], removedNodes: [] }]);
+  assert.equal(f.stats.schedules, 0);
+  f.mutation([{ type: "childList", target: native, addedNodes: [{ nodeType: 1, matches: () => false }], removedNodes: [] }]);
+  assert.equal(f.stats.schedules, 1);
+});
+
+test("alignment bursts are bounded, hidden pages suspend, exceptions can recover", () => {
+  const frames = new Map<number, () => void>();
+  let id = 0, aligns = 0, diagnostics = 0, fail = false;
+  const state = { rafId: 0, settleFramesLeft: 0 };
+  const document = { hidden: false };
+  const context = vm.createContext({
+    conversationViewState: state, document,
+    codexPlusSettings: () => ({ conversationView: true }),
+    conversationViewAlignNow: () => {
+      aligns++;
+      if (fail) throw Error("fixture");
+      for (let i = 0; i < 100; i++) context.scheduleConversationViewAlign();
+    },
+    sendCodexPlusDiagnostic: () => { diagnostics++; },
+    requestAnimationFrame: (fn: () => void) => { frames.set(++id, fn); return id; },
+  });
+  vm.runInContext(block("  function scheduleConversationViewAlign(", "  function cleanupConversationView("), context);
+  for (let i = 0; i < 100; i++) context.scheduleConversationViewAlign();
+  while (frames.size) {
+    const [key, fn] = [...frames][0];
+    frames.delete(key);
+    fn();
+  }
+  assert.equal(aligns, 2);
+  assert.equal(frames.size, 0);
+  // The next distinct change may schedule another burst.
+  frames.clear(); state.rafId = 0;
+  document.hidden = true;
+  context.scheduleConversationViewAlign();
+  assert.equal(frames.size, 0);
+  document.hidden = false; fail = true;
+  context.scheduleConversationViewAlign();
+  const fn = [...frames.values()][0]; frames.clear(); fn();
+  assert.equal(state.rafId, 0);
+  assert.equal(frames.size, 0);
+  assert.equal(diagnostics, 1);
+  fail = false;
+  context.scheduleConversationViewAlign();
+  assert.equal(frames.size, 1);
 });

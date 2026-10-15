@@ -20,6 +20,7 @@ const timers = new Map(), frames = new Map(), listeners = new Set();
 let nextId = 0;
 const document = {
   hidden: false,
+  querySelector: () => null,
   addEventListener(name, handler) { if (name === "visibilitychange") listeners.add(handler); },
   removeEventListener(name, handler) { if (name === "visibilitychange") listeners.delete(handler); },
 };

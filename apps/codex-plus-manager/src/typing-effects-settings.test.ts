@@ -67,7 +67,38 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   await context.syncBackendSettingsFromHeartbeat();
   assert.equal(syncs, 1);
   assert.equal(renders, 1);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.equal(syncs, 1, "unchanged heartbeats do not reapply effects");
+  assert.equal(renders, 1, "unchanged heartbeats do not rebuild controls");
+  context.codexPlusBackendSettings = { codexAppTypingEffect: "stars" };
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.equal(syncs, 2);
+  assert.equal(renders, 2);
   loads = false;
   await context.syncBackendSettingsFromHeartbeat();
-  assert.equal(syncs, 1, "failed reads retain the current effect");
+  assert.equal(syncs, 2, "failed reads retain the current effect");
+});
+
+test("backend heartbeat refreshes speed controls only on effective health transitions", () => {
+  let refreshes = 0;
+  const context = vm.createContext({
+    codexPlusBackendStatus: { status: "ok", version: "1.9.0" },
+    codexPlusBridgeFailureCount: 0, CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD: 3,
+    codexPlusVersion: "", codexPlusSidebarNavId: "nav",
+    document: { querySelector: () => null, querySelectorAll: () => [] },
+    refreshCodexServiceTierControls: () => { refreshes++; },
+  });
+  const source = fragment("40-backend-settings.js");
+  const start = source.indexOf("  let renderedBackendStatus = ");
+  const end = source.indexOf("  function withBackendTimeout(", start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(source.slice(start, end), context);
+  for (let i = 0; i < 100; i++) context.renderBackendStatus();
+  assert.equal(refreshes, 1);
+  context.codexPlusBridgeFailureCount = 3;
+  context.renderBackendStatus();
+  assert.equal(refreshes, 2, "bridge degradation must refresh controls");
+  context.codexPlusBridgeFailureCount = 0;
+  context.renderBackendStatus();
+  assert.equal(refreshes, 3, "recovery must refresh controls");
 });

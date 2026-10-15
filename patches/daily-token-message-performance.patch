@@ -1,0 +1,75 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index e99ed049..0b57ea2b 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -2018,15 +2018,16 @@
+     return isLikelyUsageUrl(url) && (mime === "" || mime === "text/plain");
+   }
+ 
++  let captureJsonCache = null;
+   function safeParseJson(text) {
+     if (typeof text !== "string") return null;
+     const trimmed = text.trim();
+-    if (!trimmed) return null;
+-    try {
+-      return JSON.parse(trimmed);
+-    } catch {
+-      return null;
+-    }
++    if (!trimmed || !/^[{["]/.test(trimmed)) return null;
++    if (captureJsonCache?.has(trimmed)) return captureJsonCache.get(trimmed);
++    let result = null;
++    try { result = JSON.parse(trimmed); } catch {}
++    captureJsonCache?.set(trimmed, result);
++    return result;
+   }
+ 
+   function parseTextPayloads(text) {
+@@ -2647,23 +2648,31 @@
+ 
+   function processCapturePayload(payload, source, url = "") {
+     if (destroyed) return false;
+-    if (typeof payload === "string") payload = parseTextPayloads(payload);
+-    if (!payload || (Array.isArray(payload) && !payload.length)) return false;
+-    const toolChanged = processToolCallPayload(payload, source);
+-    if (sourceMode === "external") return toolChanged;
+-    processModelPayload(payload, false);
+-    const candidates = findUsageCandidates(payload);
+-    if (!candidates.length) return toolChanged;
+-    let changed = false;
+-    for (const candidate of candidates) {
+-      changed = rememberCapturedUsage(candidate, source, url) || changed;
+-    }
+-    if (changed) {
+-      pruneState();
+-      saveState();
+-      render({ animate: true });
++    const previousCache = captureJsonCache;
++    captureJsonCache = new Map();
++    try {
++      if (typeof payload === "string") payload = parseTextPayloads(payload);
++      if (!payload || (Array.isArray(payload) && !payload.length)) return false;
++      if (Array.isArray(payload) && payload.length === 1) payload = payload[0];
++      const nativeUsage = payload.method === "thread/tokenUsage/updated" || payload.type === "thread/tokenUsage/updated";
++      const toolChanged = nativeUsage ? false : processToolCallPayload(payload, source);
++      if (sourceMode === "external") return toolChanged;
++      processModelPayload(payload, false);
++      const candidates = findUsageCandidates(payload);
++      if (!candidates.length) return toolChanged;
++      let changed = false;
++      for (const candidate of candidates) {
++        changed = rememberCapturedUsage(candidate, source, url) || changed;
++      }
++      if (changed) {
++        pruneState();
++        saveState();
++        render({ animate: true });
++      }
++      return changed || toolChanged;
++    } finally {
++      captureJsonCache = previousCache;
+     }
+-    return changed || toolChanged;
+   }
+ 
+   function shouldProcessStandalonePayload() {

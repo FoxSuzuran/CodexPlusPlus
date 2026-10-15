@@ -433,7 +433,7 @@
     runtimeStarted: false,
     moObserved: false,
     targetsReported: false,
-    observed: new WeakSet(),
+    observed: new Set(),
     elements: new Set(),
   };
 
@@ -546,8 +546,8 @@
    *
    * 候选链刻意从「最精确」排到「最宽松」：
    * 所有候选都必须在唯一的会话滚动区内，并排除布局祖先：
-   *   1. 旧版类名全等（老版本 Codex 上仍然最准）；
-   *   2. Codex 自己的 data-* 锚点（当前版本）；
+   *   1. Codex 自己的 data-* 锚点（避免先遍历整段消息）；
+   *   2. 旧版类名全等；
    *   3. 结构判定（滚动容器内、居中满宽、带 thread 宽度工具类）；
    *   4. #2085 报告里提到的兜底：两处类名都没命中时，按 CSS 变量反查宿主节点。
    *
@@ -558,10 +558,10 @@
     if (!scroller) return null;
     const accept = (el) => conversationViewSafeWidthTarget(el, scroller) && !conversationViewIsInsideFooter(el)
       && !el.querySelector?.(conversationViewFooterSelector);
-    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
-    if (legacy) return legacy;
     const anchored = Array.from(scroller.querySelectorAll(conversationViewContentAnchorSelector)).find(accept);
     if (anchored) return anchored;
+    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
+    if (legacy) return legacy;
     const structural = conversationViewCollectThreadWidthBoxes(scroller)
       // 页脚包裹层（data-thread-scroll-footer）也带同样的宽度工具类，必须排掉。
       .find(accept);
@@ -1080,24 +1080,22 @@
       if (previous && previous !== next) {
         conversationViewRestoreElement(previous);
         conversationViewState.elements.delete(previous);
-        [previous, previous.parentElement, previous.parentElement?.parentElement].forEach((el) => {
-          if (!el) return;
-          conversationViewState.ro?.unobserve?.(el);
-          conversationViewState.observed.delete(el);
-        });
       }
       conversationViewState[key] = next;
     }
-    [
+    // 只观察布局宿主，避免观察自己改写宽度的节点形成反馈循环。
+    const hosts = new Set([
       document.documentElement,
       document.body,
-      conversationViewState.contentEl,
-      conversationViewState.contentEl?.parentElement,
-      conversationViewState.contentEl?.parentElement?.parentElement,
-      conversationViewState.composerEl,
+      conversationViewScrollContainer(),
       conversationViewState.composerEl?.parentElement,
-      conversationViewState.composerEl?.parentElement?.parentElement,
-    ].forEach(conversationViewObserveIfNeeded);
+    ].filter((el) => el && el !== conversationViewState.contentEl && el !== conversationViewState.composerEl));
+    for (const el of conversationViewState.observed) {
+      if (hosts.has(el)) continue;
+      conversationViewState.ro?.unobserve?.(el);
+      conversationViewState.observed.delete(el);
+    }
+    hosts.forEach(conversationViewObserveIfNeeded);
   }
 
   function conversationViewAlignNow() {
@@ -1167,13 +1165,18 @@
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
   }
 
-  function scheduleConversationViewAlign(frames = 16) {
-    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
-    if (conversationViewState.rafId) return;
+  function scheduleConversationViewAlign(frames = 2) {
+    if (document.hidden || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
+    conversationViewState.settleFramesLeft = Math.min(Math.max(frames, 1), 4);
     const tick = () => {
-      conversationViewState.rafId = 0;
-      conversationViewAlignNow();
+      try {
+        conversationViewAlignNow();
+      } catch (error) {
+        conversationViewState.settleFramesLeft = 0;
+        sendCodexPlusDiagnostic("conversation_view_align_failed", { message: String(error) });
+      }
       conversationViewState.settleFramesLeft -= 1;
+      conversationViewState.rafId = 0;
       if (conversationViewState.settleFramesLeft > 0) {
         conversationViewState.rafId = requestAnimationFrame(tick);
       }
@@ -1185,6 +1188,7 @@
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
     if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;
+    conversationViewState.settleFramesLeft = 0;
     conversationViewState.pollId = 0;
     conversationViewState.mo?.disconnect();
     conversationViewState.ro?.disconnect();
@@ -1192,7 +1196,11 @@
     conversationViewState.ro = null;
     conversationViewState.moObserved = false;
     conversationViewState.runtimeStarted = false;
-    conversationViewState.observed = new WeakSet();
+    conversationViewState.observed = new Set();
+    if (conversationViewState.onVisibilityChange) {
+      document.removeEventListener("visibilitychange", conversationViewState.onVisibilityChange);
+      conversationViewState.onVisibilityChange = null;
+    }
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
     conversationViewState.contentEl = null;

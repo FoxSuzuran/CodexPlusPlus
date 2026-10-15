@@ -28,6 +28,7 @@
   }
 
   let syncBackendSettingsInFlight = false;
+  let heartbeatSettingsSignature = null;
   async function syncBackendSettingsFromHeartbeat() {
     if (syncBackendSettingsInFlight) return;
     syncBackendSettingsInFlight = true;
@@ -37,6 +38,8 @@
       const previousProfile = codexPlusBackendSettings.activeRelayId;
       const loaded = await loadBackendSettingsState();
       if (loaded) {
+        const signature = JSON.stringify([codexPlusBackendSettings, codexPlusSettings()]);
+        if (signature === heartbeatSettingsSignature) return;
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -49,6 +52,7 @@
         if (codexPlusSettings().serviceTierControls && (!previousFast || previousProfile !== codexPlusBackendSettings.activeRelayId)) {
           void loadCodexServiceTierState();
         }
+        heartbeatSettingsSignature = signature;
       }
     } finally {
       syncBackendSettingsInFlight = false;
@@ -133,6 +137,7 @@
     codexPlusBridgeFailureCount += 1;
   }
 
+  let renderedBackendStatus = null;
   function renderBackendStatus() {
     const bridgeDegraded = codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD;
     const rawStatus = codexPlusBackendStatus.status || "failed";
@@ -158,7 +163,10 @@
       sidebarStatus.dataset.status = status;
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
-    refreshCodexServiceTierControls();
+    if (renderedBackendStatus !== status) {
+      renderedBackendStatus = status;
+      refreshCodexServiceTierControls();
+    }
   }
 
   function withBackendTimeout(request) {

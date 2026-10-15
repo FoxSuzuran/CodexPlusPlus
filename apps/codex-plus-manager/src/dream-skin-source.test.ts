@@ -76,3 +76,44 @@ test("both skin observers ignore text-only replacements and retain structural ch
     }
   }
 });
+
+test("universal skin predicates visit elements once and remove stale marks without repeated writes", async () => {
+  const renderer = await readFile(new URL(
+    "../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url,
+  ), "utf8");
+  const from = renderer.indexOf("  const predicateNodes = ");
+  const to = renderer.indexOf("\n  const removePredicates = ", from);
+  assert.ok(from >= 0 && to > from);
+  let ancestorReads = 0;
+  const nodes: any[] = [];
+  for (let i = 0; i < 2000; i++) {
+    const attributes = new Map<string, string>();
+    const parent = nodes[Math.floor((i - 1) / 4)] || null;
+    const node: any = {
+      firstElementChild: null,
+      get parentElement() { ancestorReads++; return parent; },
+      closest: () => null,
+      matches: () => !!node.firstElementChild,
+      getAttribute: (key: string) => attributes.get(key),
+      setAttribute: (key: string, value: string) => attributes.set(key, value),
+      removeAttribute: (key: string) => attributes.delete(key),
+    };
+    if (parent && !parent.firstElementChild) parent.firstElementChild = node;
+    nodes.push(node);
+  }
+  const metrics = { predicatePasses: 0, predicateWrites: 0, predicateMs: 0 };
+  const refresh = new Function("CSS_PREDICATES", "document", "metrics", "now",
+    `${renderer.slice(from, to)};return refreshPredicates;`)(
+    [{ selector: ":has(*)", attribute: "data-test-has", branches: [{ selector: "*", relation: "descendant" }] }],
+    { querySelectorAll: () => nodes }, metrics, () => 0,
+  );
+  refresh();
+  for (const node of nodes) assert.equal(node.getAttribute("data-test-has"), node.firstElementChild ? "true" : undefined);
+  assert.equal(ancestorReads, 0, "universal selectors must not walk each leaf's ancestors");
+  const writes = metrics.predicateWrites;
+  refresh();
+  assert.equal(metrics.predicateWrites, writes, "unchanged predicates must not write attributes");
+  nodes[0].firstElementChild = null;
+  refresh();
+  assert.equal(nodes[0].getAttribute("data-test-has"), undefined, "stale marks must be removed");
+});

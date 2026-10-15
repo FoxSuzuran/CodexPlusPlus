@@ -342,9 +342,31 @@ test("SSE and NDJSON preserve every usage frame without three decoding passes", 
   ]) {
     const f = fixture(body, mime);
     await f.window.fetch("https://relay.example/rpc"); await f.flush();
-    assert.equal(f.stats.parses, 3); // One whole-body attempt and two frame decodes.
+    assert.equal(f.stats.parses, mime === "text/event-stream" ? 2 : 3);
     assert.equal(turns(f.api).length, 2);
   }
+});
+
+test("ordinary streaming text does not throw JSON parse errors", () => {
+  const f = fixture();
+  for (let i = 0; i < 100; i++) {
+    f.emit("message", { type: "mcp-notification", method: "item/agentMessage/delta",
+      params: { threadId: "fixture", delta: "ordinary prose without JSON\nmore text" } });
+  }
+  assert.equal(f.stats.parses, 0);
+  assert.equal(turns(f.api).length, 0);
+});
+
+test("nested JSON bodies decode once per message and never reuse another message's cache", () => {
+  const f = fixture();
+  const payload = { body: JSON.stringify(usage("cached-body")) };
+  f.api.__test.processCapturePayload(payload, "test");
+  assert.equal(f.stats.parses, 1);
+  assert.equal(turns(f.api).length, 1);
+  const before = f.stats.parses;
+  f.api.__test.processCapturePayload(payload, "test");
+  assert.equal(f.stats.parses, before + 1);
+  assert.equal(turns(f.api).length, 1);
 });
 
 test("XHR uses the same filter; native socket delivery and usage parsing remain intact", () => {

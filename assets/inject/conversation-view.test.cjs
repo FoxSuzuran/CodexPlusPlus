@@ -68,6 +68,19 @@ function fixture() {
   return { root, api: context.api };
 }
 
+// 当前原生锚点存在时，不再先遍历所有消息 div 匹配旧版类名。
+{
+  const { root, api } = fixture();
+  const scroll = root.append(new Element("div", "thread-scroll-container"));
+  const content = scroll.append(new Element("div", "", { "data-thread-user-message-navigation-content": "" }));
+  const originalQuery = scroll.querySelectorAll.bind(scroll);
+  scroll.querySelectorAll = selector => {
+    assert.notEqual(selector, "div", "anchored content must bypass the legacy full div scan");
+    return originalQuery(selector);
+  };
+  assert.equal(api.content(), content);
+}
+
 // 历史宽度变量在整个布局树上继承，不能把它当作节点自己的 max-width 声明。
 {
   const { root, api } = fixture();

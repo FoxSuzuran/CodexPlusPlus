@@ -1,0 +1,269 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+index 07bc2266..e0db213a 100644
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -3393,12 +3393,6 @@ const FEATURES = {
+       return text.length <= 28 && /\bmobile\b|\bphone\b|\bdevice\b|手机|移动|设备|连接/.test(text);
+     };
+ 
+-    const isDownloadStatusNode = (node) => {
+-      const text = controlText(node);
+-      if (!text || text.length > 80) return false;
+-      return /\bdownloading\b|\bdownload\b|\bupdating\b|\binstalling\b|正在下载|下载中|更新中|正在更新|安装中/.test(text);
+-    };
+-
+     const isSettingsButton = (button) => {
+       const text = controlText(button);
+       return /\bsettings?\b|preferences?|设置|偏好/.test(text);
+@@ -3420,16 +3414,21 @@ const FEATURES = {
+       );
+     };
+ 
+-    const isCompactIconControl = (control) => {
+-      const rect = control.getBoundingClientRect();
+-      const text = controlText(control);
+-      return rect.width > 0 && rect.width <= 56 && rect.height > 0 && rect.height <= 56 && text.length <= 32;
+-    };
+-
+     const isUsageControlNode = (node) =>
+       node.closest?.('[data-codexpp="usage-slot"], [data-codexpp="usage-box"], [data-codexpp="usage-boxes"]');
+ 
++    const unsafeUsageHost = '[data-app-action-sidebar-project-row], [data-app-action-sidebar-thread-row], [data-codex-delete-row], [role="menu"], [role="dialog"], [contenteditable="true"]';
++    const isStableUsageControl = (sidebar, button) => {
++      if (button.closest(unsafeUsageHost) || isUsageControlNode(button)) return false;
++      for (let node = button.parentElement; node && node !== sidebar; node = node.parentElement) {
++        if (/auto|scroll/.test(window.getComputedStyle(node).overflowY)) return false;
++      }
++      return isVisibleElement(button) && isNearSidebarBottom(sidebar, button)
++        && (isSettingsButton(button) || isDeviceButton(button));
++    };
++
+     const nearestControlRow = (sidebar, button) => {
++      if (!isStableUsageControl(sidebar, button)) return null;
+       const sidebarRect = sidebar.getBoundingClientRect();
+       let row = button.parentElement;
+       while (row && row !== document.body && row !== sidebar.parentElement) {
+@@ -3444,6 +3443,8 @@ const FEATURES = {
+         const looksLikeControlLayer =
+           insideSidebar &&
+           nearBottom &&
++          rect.width >= button.getBoundingClientRect().width + 84 &&
++          !row.closest(unsafeUsageHost) &&
+           rect.height > 0 &&
+           rect.height <= 128 &&
+           (style.display === "flex" || style.display === "grid" || buttonCount >= 2);
+@@ -3453,29 +3454,6 @@ const FEATURES = {
+       return null;
+     };
+ 
+-    const nearestBottomStatusRow = (sidebar, node) => {
+-      const sidebarRect = sidebar.getBoundingClientRect();
+-      let row = node.parentElement;
+-      while (row && row !== document.body && row !== sidebar.parentElement) {
+-        if (!(row instanceof HTMLElement)) break;
+-        const rect = row.getBoundingClientRect();
+-        const style = window.getComputedStyle(row);
+-        const insideSidebar =
+-          rect.left >= sidebarRect.left - 8 &&
+-          rect.right <= sidebarRect.right + 8;
+-        const nearBottom = isNearSidebarBottom(sidebar, row);
+-        const compactStatusLayer =
+-          insideSidebar &&
+-          nearBottom &&
+-          rect.height > 0 &&
+-          rect.height <= 96 &&
+-          (style.display === "flex" || style.display === "grid" || isDownloadStatusNode(row));
+-        if (compactStatusLayer) return row;
+-        row = row.parentElement;
+-      }
+-      return null;
+-    };
+-
+     const createInlineSlot = (row, anchor) => {
+       const existing = row.querySelector(':scope > [data-codexpp="usage-slot"]');
+       if (existing instanceof HTMLElement) return existing;
+@@ -3491,102 +3469,43 @@ const FEATURES = {
+       return slot;
+     };
+ 
+-    const createFallbackSlot = (sidebar) => {
+-      const existing = sidebar.querySelector(':scope > [data-codexpp="usage-slot"]');
+-      if (existing instanceof HTMLElement) return existing;
+-      const slot = document.createElement("div");
+-      slot.dataset.codexpp = "usage-slot";
+-      slot.dataset.codexPlusExt = "bennett-ui-improvements";
+-      slot.dataset.codexppUsageSlot = "sidebar-floating-fallback";
+-      slot.className = "flex items-center";
+-      slot.style.position = "absolute";
+-      slot.style.right = "0.75rem";
+-      slot.style.bottom = "0.75rem";
+-      slot.style.zIndex = "30";
+-      sidebar.appendChild(slot);
+-      return slot;
+-    };
+-
+     const findSidebarSlot = () => {
+-      // Re-query the current DOM; a mounted slot avoids global sidebar discovery.
+-      for (const slot of document.querySelectorAll('[data-codexpp="usage-slot"]')) {
+-        if (!(slot instanceof HTMLElement) || !slot.isConnected || !isVisibleElement(slot)) continue;
+-        let host = slot.parentElement;
+-        while (host instanceof HTMLElement && host !== document.body) {
+-          if (isSidebarGeometry(host)) {
+-            if (!looksLikeSettingsSidebar(host)) return slot;
+-            break;
+-          }
+-          host = host.parentElement;
++      const rail = Array.from(document.querySelectorAll("nav[data-app-navigation-rail]"))
++        .find(isVisibleElement);
++      let row = null, anchor = null, mode = "controls-inline";
++      if (rail) {
++        const footer = rail.querySelector(":scope > .relative.shrink-0");
++        if (footer && !footer.closest(unsafeUsageHost)) {
++          row = rail;
++          anchor = footer;
++          mode = "navigation-rail";
+         }
+-      }
+-      const sidebar = findUsageSidebar();
+-      if (!sidebar) return null;
+-      for (const slot of sidebar.querySelectorAll('[data-codexpp="usage-slot"]')) {
+-        if (
+-          !(slot instanceof HTMLElement) ||
+-          !(slot.parentElement instanceof HTMLElement) ||
+-          !slot.isConnected
+-        ) {
+-          slot.remove();
++      } else {
++        const sidebar = findUsageSidebar();
++        if (sidebar) {
++          for (const button of sidebar.querySelectorAll('button, a, [role="button"]')) {
++            if (!isStableUsageControl(sidebar, button)) continue;
++            row = nearestControlRow(sidebar, button);
++            if (row) { anchor = button; break; }
++          }
+         }
+       }
+-      const existingSlot = Array.from(sidebar.querySelectorAll('[data-codexpp="usage-slot"]'))
+-        .find((slot) =>
+-          slot instanceof HTMLElement &&
+-          slot.parentElement instanceof HTMLElement &&
+-          slot.isConnected,
+-        );
+-      if (existingSlot instanceof HTMLElement) return existingSlot;
+-
+-      const controls = Array.from(sidebar.querySelectorAll('button, a, [role="button"]'))
+-        .filter((button) =>
+-          button instanceof HTMLElement &&
+-          isVisibleElement(button) &&
+-          isNearSidebarBottom(sidebar, button) &&
+-          !isUsageControlNode(button),
+-        );
+-      const deviceControls = controls.filter(isDeviceButton);
+-      const settingsControls = controls.filter(isSettingsButton);
+-      const compactControls = controls.filter(isCompactIconControl);
+-      const preferredControls = deviceControls.length
+-        ? deviceControls
+-        : compactControls.length
+-          ? compactControls
+-          : settingsControls;
+-      const ordered = (preferredControls.length ? preferredControls : controls).sort((a, b) => {
+-        const ar = a.getBoundingClientRect();
+-        const br = b.getBoundingClientRect();
+-        return br.right - ar.right || br.bottom - ar.bottom;
+-      });
+-
+-      for (const button of ordered) {
+-        const row = nearestControlRow(sidebar, button);
+-        if (row) return createInlineSlot(row, button);
+-      }
+-
+-      const statusAnchors = Array.from(
+-        sidebar.querySelectorAll('[role="status"], [aria-live], [aria-label], [title], span, div'),
+-      )
+-        .filter((node) =>
+-          node instanceof HTMLElement &&
+-          isVisibleElement(node) &&
+-          isNearSidebarBottom(sidebar, node) &&
+-          !isUsageControlNode(node) &&
+-          isDownloadStatusNode(node),
+-        )
+-        .sort((a, b) => {
+-          const ar = a.getBoundingClientRect();
+-          const br = b.getBoundingClientRect();
+-          return br.bottom - ar.bottom || br.right - ar.right;
+-        });
+-
+-      for (const anchor of statusAnchors) {
+-        const row = nearestBottomStatusRow(sidebar, anchor);
+-        if (row) return createInlineSlot(row, anchor);
++      let existing = null;
++      for (const slot of document.querySelectorAll('[data-codexpp="usage-slot"]')) {
++        if (row && slot.parentElement === row && !existing
++            && slot.dataset.codexppUsageSlot === mode) existing = slot;
++        else slot.remove();
++      }
++      if (existing) return existing;
++      if (!row) return null;
++      const slot = createInlineSlot(row, mode === "navigation-rail" ? null : anchor);
++      slot.dataset.codexppUsageSlot = mode;
++      if (mode === "navigation-rail") {
++        slot.style.width = "36px";
++        slot.style.justifyContent = "center";
++        row.insertBefore(slot, anchor);
+       }
+-
+-      return createFallbackSlot(sidebar);
++      return slot;
+     };
+ 
+     const displaySnapshot = () =>
+@@ -3648,15 +3567,15 @@ const FEATURES = {
+         return;
+       }
+       if (mounted) mounted.remove();
+-      mounted = renderUsageBox(api, visibleSnapshot);
++      mounted = renderUsageBox(api, visibleSnapshot, slot.dataset.codexppUsageSlot === "navigation-rail");
+       mounted.dataset.codexpp = "usage-box";
+       mounted.dataset.codexPlusExt = "bennett-ui-improvements";
+       slot.appendChild(mounted);
+       lastMountedMode = slot.dataset.codexppUsageSlot || "unknown";
+       mounted.style.flex = "0 1 auto";
+-      mounted.style.width = "auto";
+-      mounted.style.minWidth = "4.75rem";
+-      mounted.style.maxWidth = "8.5rem";
++      mounted.style.width = slot.dataset.codexppUsageSlot === "navigation-rail" ? "36px" : "auto";
++      mounted.style.minWidth = slot.dataset.codexppUsageSlot === "navigation-rail" ? "36px" : "4.75rem";
++      mounted.style.maxWidth = slot.dataset.codexppUsageSlot === "navigation-rail" ? "36px" : "8.5rem";
+       if (slot.dataset.codexppUsageSlot === "settings-inline-windows" || slot.dataset.codexppUsageSlot === "controls-inline") {
+         mounted.style.width = "auto";
+         mounted.style.minWidth = "4.75rem";
+@@ -8571,7 +8490,7 @@ function writeSnapshot(api, snap) {
+  * The returned element exposes `_refresh(snapshot)` so callers can update
+  * values in place without unmount/remount.
+  */
+-function renderUsageBox(api, snapshot) {
++function renderUsageBox(api, snapshot, compact = false) {
+   const BASE_ORDER = ["5h", "weekly"];
+   let order = [...BASE_ORDER];
+   let kind = api.storage.get("usage:visible-kind", "5h");
+@@ -8603,6 +8522,11 @@ function renderUsageBox(api, snapshot) {
+   right.className = "shrink-0 tabular-nums flex items-center gap-1";
+ 
+   btn.append(left, right);
++  if (compact) {
++    Object.assign(btn.style, { width: "36px", maxWidth: "36px", flexDirection: "column", gap: "0", padding: "3px 1px", fontSize: "10px", lineHeight: "13px" });
++    Object.assign(left.style, { maxWidth: "100%" });
++    Object.assign(right.style, { maxWidth: "100%", overflow: "hidden" });
++  }
+ 
+   const setText = (node, text) => {
+     if (node.textContent !== text) node.textContent = text;
+@@ -8631,6 +8555,8 @@ function renderUsageBox(api, snapshot) {
+ 
+   /** Apply colors + text for the *value* state (i.e. not hover). */
+   const applyValueState = (snap) => {
++    const current = entryFor(snap, kind);
++    btn.title = isApiSnapshot(snap) ? "API" : [current?.label, current?.value ?? (current?.pct == null ? "—" : current.pct + "%"), current?.resetAt && "Resets: " + current.resetAt].filter(Boolean).join(" · ");
+     if (isApiSnapshot(snap)) {
+       btn.classList.remove("bg-token-charts-red/10", "text-token-charts-red");
+       btn.classList.add("bg-token-foreground/5", "text-token-text-primary");

@@ -28,7 +28,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1766
+      "lines": 1774
     },
     {
       "name": "50-navigation.js",
@@ -83,7 +83,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1202
+      "lines": 1210
     },
     {
       "name": "91-extension-api.js",
@@ -108,7 +108,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 934
+      "lines": 949
     },
     {
       "name": "96-whale-compat.js",
@@ -123,7 +123,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 190
+      "lines": 189
     },
     {
       "name": "98-avatar-overlay-layout.js",

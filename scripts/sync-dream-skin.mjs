@@ -31,8 +31,12 @@ for (const platform of ["windows", "macos"]) {
   }
   const declaration = /^  const CSS_PREDICATES = .+;?$/gm;
   const mutationAnchor = '        if (record.type !== "attributes") return true;';
+  const ancestorAnchor = "            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) candidates.add(ancestor);";
+  const branchAnchor = "      for (const branch of branches) {";
   if ([...baseRenderer.matchAll(declaration)].length !== 1 ||
       baseRenderer.split(mutationAnchor).length !== 2 ||
+      baseRenderer.split(ancestorAnchor).length !== 2 ||
+      baseRenderer.split(branchAnchor).length !== 2 ||
       !baseRenderer.includes("refreshPredicates();") ||
       !baseRenderer.includes("removePredicates();")) {
     throw new Error(`${platform}: upstream predicate contract changed; review the adapter`);
@@ -40,6 +44,20 @@ for (const platform of ["windows", "macos"]) {
   // Include local compatibility CSS in the upstream manifest, never parse CSS in the renderer.
   const renderer = baseRenderer
     .replace(declaration, () => `  const CSS_PREDICATES = ${JSON.stringify(predicates)}`)
+    .replace(branchAnchor, `      const visitedAncestors = new Set();
+${branchAnchor}
+        if (branch.selector === "*" && branch.relation !== "sibling" && branch.relation !== "adjacent") {
+          // :has(*) needs non-leaf elements, not every leaf's ancestor chain.
+          for (const node of document.querySelectorAll("*")) {
+            if (node.firstElementChild) candidates.add(node);
+          }
+          continue;
+        }`)
+    .replace(ancestorAnchor, `            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) {
+              if (visitedAncestors.has(ancestor)) break;
+              visitedAncestors.add(ancestor);
+              candidates.add(ancestor);
+            }`)
     .replace(mutationAnchor, `        if (record.type === "childList" && record.addedNodes && record.removedNodes
             && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
 ${mutationAnchor}`);

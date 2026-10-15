@@ -1268,6 +1268,7 @@ export function App() {
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
   const overviewRequestSequence = useRef(0);
+  const overviewRequestRef = useRef<Promise<OverviewResult | null> | null>(null);
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
   const [multiLaunchPending, setMultiLaunchPending] = useState<string | null>(null);
@@ -1368,7 +1369,10 @@ export function App() {
 
   const refreshOverview = async (silent = false) => {
     const requestSequence = ++overviewRequestSequence.current;
-    const result = await run(() => call<OverviewResult>("load_overview"));
+    const pending = overviewRequestRef.current ?? run(() => call<OverviewResult>("load_overview"));
+    overviewRequestRef.current = pending;
+    const result = await pending;
+    if (overviewRequestRef.current === pending) overviewRequestRef.current = null;
     if (result && requestSequence === overviewRequestSequence.current) {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
@@ -2339,6 +2343,7 @@ export function App() {
     if (launchPendingRef.current) return;
     launchPendingRef.current = true;
     setLaunchPending(true);
+    showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
     try {
       const result = await launchCommand("launch_codex_plus");
       if (!result) return;
@@ -2359,6 +2364,7 @@ export function App() {
     if (launchPendingRef.current) return false;
     launchPendingRef.current = true;
     setLaunchPending(true);
+    showNotice(t("重启 Codex"), t("正在等待 Codex 重新启动…"), "accepted");
     try {
       const result = await launchCommand("restart_codex_plus", syncActiveRelay);
       if (!result) return false;
@@ -3166,11 +3172,10 @@ export function App() {
       } else {
         void checkUpdate(true);
       }
-      await refreshOverview(true);
-      // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
-      // 不要等到用户点进「推荐内容」才加载。
-      await refreshAds(true);
-      await refreshTools(true);
+      // 远程推荐和健康探测独立更新，不能挡住本地设置与供应商初始化。
+      void refreshOverview(true);
+      void refreshAds(true);
+      void refreshTools(true);
       if (!handledNavigation) await refreshSettings(true);
       await refreshRelay(true);
       await refreshEnvConflicts(true);
@@ -3700,8 +3705,8 @@ export function App() {
                   onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
                   title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
                 >
-                  <Rocket className="h-4 w-4" />
-                  {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                  {launchPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                  {launchPending ? t("正在启动") : codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
                 </Button>
               </>
             ) : null}
@@ -11305,7 +11310,9 @@ function NoticeDialog({
       <div className={`toast-card ${notice.status === "failed" ? "failed" : ""}`}>
         <div className="toast-progress" />
         <div className="toast-icon">
-          {notice.status === "failed" ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+          {notice.status === "failed" ? <Bell className="h-5 w-5" /> : notice.status === "accepted"
+            ? <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin" />
+            : <CheckCircle2 className="h-5 w-5" />}
         </div>
         <div className="toast-body">
           <h2>{notice.title}</h2>

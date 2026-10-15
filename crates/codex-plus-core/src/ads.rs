@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const VOLCENGINE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-volcengine.png");
 const PACKYCODE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-packycode.png");
@@ -40,9 +40,7 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
     fill_known_remote_logos(&mut ads);
     // `topAd` 是独立的置顶赞助位，**不参与** `ads` 列表的排序与过期过滤语义。
     // 同时兼容单条对象和多条数组，数组用于管理工具的横幅轮播。
-    let raw_top_ads = payload
-        .get("top_ad")
-        .or_else(|| payload.get("topAd"));
+    let raw_top_ads = payload.get("top_ad").or_else(|| payload.get("topAd"));
     let mut top_ads = match raw_top_ads {
         Some(Value::Array(items)) => items
             .iter()
@@ -164,7 +162,12 @@ where
     for url in urls {
         let url = cache_busted_ad_url(url.as_ref(), cache_bust);
         let result = async {
-            let response = client.get(url).send().await?.error_for_status()?;
+            let response = client
+                .get(url)
+                .timeout(Duration::from_secs(4))
+                .send()
+                .await?
+                .error_for_status()?;
             let payload = response.json::<Value>().await?;
             Ok::<_, anyhow::Error>(normalize_ad_payload(payload))
         }
@@ -180,6 +183,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn sponsored(id: &str) -> Value {
         json!({
@@ -248,5 +252,49 @@ mod tests {
             let normalized = normalize_ad_payload(payload);
             assert!(normalized.get("topAd").is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn stalled_ad_body_times_out_and_uses_the_next_source() {
+        let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fallback = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let urls = [
+            format!("http://{}/ads", stalled.local_addr().unwrap()),
+            format!("http://{}/ads", fallback.local_addr().unwrap()),
+        ];
+        let stalled_task = tokio::spawn(async move {
+            let (mut stream, _) = stalled.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let fallback_task = tokio::spawn(async move {
+            let (mut stream, _) = fallback.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            let body = r#"{"version":7,"ads":[]}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let result =
+            tokio::time::timeout(Duration::from_secs(7), fetch_ad_list_from_urls(&urls)).await;
+        stalled_task.abort();
+        fallback_task.abort();
+        assert_eq!(
+            result.expect("ad request must have a deadline").unwrap()["version"],
+            7
+        );
     }
 }

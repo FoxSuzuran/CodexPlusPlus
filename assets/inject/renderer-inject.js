@@ -6120,12 +6120,18 @@
     return false;
   }
 
-  function codexFastComposerEditors() {
-    return Array.from(document.querySelectorAll(
-      "[data-codex-composer][contenteditable='true'], [data-composer-markdown][contenteditable='true'], .ProseMirror[contenteditable='true'], textarea"
-    )).filter((editor) => editor.isConnected && editor.getClientRects().length
+  const codexFastComposerEditorSelector =
+    "[data-codex-composer][contenteditable='true'], [data-composer-markdown][contenteditable='true'], .ProseMirror[contenteditable='true'], textarea";
+
+  function isCodexFastComposerEditor(editor) {
+    return !!(editor?.isConnected && editor.matches?.(codexFastComposerEditorSelector)
       && !editor.closest("[data-codex-plus-ext], .codex-plus-modal-overlay, [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']")
-      && !!codexFastComposerRoot(editor));
+      && codexFastComposerRoot(editor));
+  }
+
+  function codexFastComposerEditors() {
+    return Array.from(document.querySelectorAll(codexFastComposerEditorSelector))
+      .filter((editor) => isCodexFastComposerEditor(editor) && editor.getClientRects().length);
   }
 
   function codexFastComposerRoot(editor) {
@@ -6337,17 +6343,25 @@
     window.__codexPlusFastControlsCleanup?.(true);
     const handlers = {
       input(event) {
-        if (!codexFastComposerEditors().includes(event.target)) return;
+        const editor = event.target;
+        // 输入同步链只检查当前焦点与节点归属；可见性和布局读取留给菜单的下一帧。
+        if (editor !== document.activeElement || !isCodexFastComposerEditor(editor)) return;
         if (event.isComposing === false) codexFastSlashComposing = false;
-        codexFastComposerEditors().forEach((editor) => {
-          if (editor !== event.target) editor.removeAttribute("data-codex-fast-editor");
-        });
-        setCodexServiceTierAttribute(event.target, "data-codex-fast-editor", "active");
         codexFastSlashDismissed = "";
+        if (!String(editor.value ?? editor.textContent ?? "").trimStart().startsWith("/")) {
+          editor.removeAttribute("data-codex-fast-editor");
+          clearCodexFastSlashMenu();
+          return;
+        }
+        document.querySelectorAll("[data-codex-fast-editor]").forEach((other) => {
+          if (other !== editor) other.removeAttribute("data-codex-fast-editor");
+        });
+        setCodexServiceTierAttribute(editor, "data-codex-fast-editor", "active");
         scheduleCodexFastSlashMenu();
       },
       keydown(event) {
         if (event.isComposing || event.keyCode === 229 || codexFastSlashComposing) return;
+        if (!["Escape", "ArrowUp", "ArrowDown", "Enter", "Tab"].includes(event.key)) return;
         const editor = codexFastComposerEditor();
         if (!editor || (event.target !== editor && !event.target?.closest?.("[data-codex-fast-slash-menu]"))) return;
         if (event.key === "Escape") {
@@ -6424,16 +6438,19 @@
         consumeCodexFastComposerCommand(editor, action);
       },
       compositionstart(event) {
-        if (!codexFastComposerEditors().includes(event.target)) return;
+        if (event.target !== document.activeElement || !isCodexFastComposerEditor(event.target)) return;
         codexFastSlashComposing = true;
         clearCodexFastSlashMenu();
       },
       compositionend(event) {
-        if (!codexFastComposerEditors().includes(event.target)) return;
+        if (!isCodexFastComposerEditor(event.target)) return;
         codexFastSlashComposing = false;
-        scheduleCodexFastSlashMenu();
+        if (event.target === document.activeElement
+            && String(event.target.value ?? event.target.textContent ?? "").trimStart().startsWith("/")) scheduleCodexFastSlashMenu();
       },
-      focusout() { scheduleCodexFastSlashMenu(); },
+      focusout(event) {
+        if (event.target?.hasAttribute?.("data-codex-fast-editor") || document.querySelector("[data-codex-fast-slash-menu]")) scheduleCodexFastSlashMenu();
+      },
     };
     Object.entries(handlers).forEach(([type, handler]) => {
       if (type !== "keydown") document.addEventListener(type, handler, true);

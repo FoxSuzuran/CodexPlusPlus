@@ -713,3 +713,90 @@ test("integrated Fast navigation runs before native commands and keeps its order
   f.context.window.__codexPlusFastControlsCleanup();
   assert.equal(listeners.length, 1, "full cleanup removes Fast keyboard handling");
 });
+
+function inputControlsFixture() {
+  const f = fixture();
+  const handlers = new Map<string, (event: any) => void>();
+  const frames: Array<() => void> = [];
+  const root = {};
+  let layoutReads = 0, editorScans = 0, panel: any = null;
+  const editor = {
+    isConnected: true, textContent: "hello", excluded: false, composer: true,
+    dataset: {} as Record<string, string>,
+    matches: () => true,
+    closest(selector: string) {
+      return selector.includes("[data-ds-part=") ? (this.composer ? root : null)
+        : this.excluded ? {} : null;
+    },
+    getClientRects() { layoutReads++; return [{}]; },
+    getAttribute() { return this.dataset.codexFastEditor ?? null; },
+    setAttribute(_name: string, value: string) { this.dataset.codexFastEditor = value; },
+    removeAttribute() { delete this.dataset.codexFastEditor; },
+    hasAttribute() { return Boolean(this.dataset.codexFastEditor); },
+  };
+  f.context.document.activeElement = editor;
+  f.context.document.querySelectorAll = (selector: string) => {
+    if (selector.includes("contenteditable")) { editorScans++; return [editor]; }
+    return selector === "[data-codex-fast-editor]" && editor.dataset.codexFastEditor ? [editor] : [];
+  };
+  f.context.document.querySelector = () => panel;
+  f.context.document.addEventListener = (type: string, handler: (event: any) => void) => handlers.set(type, handler);
+  f.context.document.removeEventListener = () => {};
+  f.context.window.addEventListener = (type: string, handler: (event: any) => void) => {
+    if (type === "keydown") handlers.set(type, handler);
+  };
+  f.context.window.removeEventListener = () => {};
+  f.context.requestAnimationFrame = (callback: () => void) => { frames.push(callback); return frames.length; };
+  f.context.cancelAnimationFrame = () => {};
+  f.api.install();
+  return { f, editor, frames, handlers, panel: (value: any) => { panel = value; },
+    layoutReads: () => layoutReads, editorScans: () => editorScans };
+}
+
+test("ordinary typing, IME and focus changes do not scan editors or synchronously measure layout", () => {
+  const f = inputControlsFixture();
+  const event = { target: f.editor, isComposing: false };
+  for (const key of ["a", " ", "Backspace", "Delete", "ArrowLeft", "ArrowRight"]) {
+    f.handlers.get("keydown")!({ ...event, key });
+    f.handlers.get("input")!(event);
+  }
+  f.handlers.get("compositionstart")!(event);
+  f.editor.textContent = "hello中文";
+  f.handlers.get("input")!({ ...event, isComposing: true });
+  f.handlers.get("compositionend")!(event);
+  f.handlers.get("focusout")!(event);
+  f.handlers.get("compositionstart")!(event);
+  f.f.context.document.activeElement = {};
+  f.handlers.get("compositionend")!(event);
+  assert.equal(vm.runInContext("codexFastSlashComposing", f.f.context), false, "blur before IME end does not latch composing");
+  assert.equal(f.layoutReads(), 0);
+  assert.equal(f.editorScans(), 0);
+  assert.equal(f.frames.length, 0);
+});
+
+test("slash input is scheduled once, ignores foreign editors and removes stale commands on ordinary input", () => {
+  const f = inputControlsFixture(), event = { target: f.editor, isComposing: false };
+  f.editor.textContent = "/fast";
+  f.editor.excluded = true;
+  f.handlers.get("input")!(event);
+  f.editor.excluded = false;
+  f.editor.composer = false;
+  f.handlers.get("input")!(event);
+  f.editor.composer = true;
+  f.f.context.document.activeElement = {};
+  f.handlers.get("input")!(event);
+  assert.equal(f.frames.length, 0);
+  f.f.context.document.activeElement = f.editor;
+  f.handlers.get("input")!(event);
+  f.handlers.get("input")!(event);
+  assert.equal(f.editor.dataset.codexFastEditor, "active");
+  assert.equal(f.frames.length, 1);
+  assert.equal(f.layoutReads(), 0);
+  assert.equal(f.editorScans(), 0);
+  let removed = false;
+  f.panel({ remove() { removed = true; } });
+  f.editor.textContent = "ordinary text";
+  f.handlers.get("input")!(event);
+  assert.equal(removed, true);
+  assert.equal(f.editor.dataset.codexFastEditor, undefined);
+});

@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1792
+      "lines": 1809
     },
     {
       "name": "40-backend-settings.js",

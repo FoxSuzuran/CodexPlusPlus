@@ -132,6 +132,35 @@ test("daemon waits for the manager startup sequence before probing", () => {
   );
 });
 
+test("takeover rechecks session ownership under the launch guard before exit or restart accounting", () => {
+  const source = payloadSource();
+  const body = source.slice(source.indexOf("fn spawn_takeover("));
+  const worker = body.indexOf("std::thread::spawn(move ||");
+  const guard = body.indexOf("try_acquire_launch_guard_for_takeover()", worker);
+  const ownership = body.indexOf("codex_plus_launcher::session_snapshot().owned", guard);
+  const recheck = body.indexOf("let restarting =", ownership);
+  const budget = body.indexOf("push_restart(", worker);
+  const exit = body.indexOf("quiesce_desktop_app(", worker);
+  assert.ok(worker >= 0 && guard > worker && ownership > guard,
+    "探针快照可能过期，执行线程必须拿锁后重读会话归属");
+  assert.match(body.slice(ownership, recheck), /return;/,
+    "已归属会话必须在计算重启和退出之前返回");
+  assert.ok(recheck > ownership && budget > recheck && exit > budget,
+    "CDP 重查、重启预算和退出必须在归属复核之后");
+  assert.ok(!body.slice(0, worker).includes("push_restart("),
+    "拿锁前不能消耗重启预算");
+});
+
+test("startup restoration shares the launch guard with manual launch and takeover", () => {
+  const start = commandsSource.indexOf("pub fn resume_existing_codex_background(");
+  const end = commandsSource.indexOf("pub fn start_weixin_connect_from_saved_settings", start);
+  const body = commandsSource.slice(start, end);
+  const guard = body.indexOf("try_acquire_launch_guard()");
+  const restore = body.indexOf("codex_plus_launcher::resume_if_running(");
+  assert.ok(guard >= 0 && restore > guard,
+    "恢复慢于启动静默期时，仍必须通过同一把锁阻止重复接管");
+});
+
 test("supervisor lifecycle hooks survive refactors", () => {
   // 这两个钩子被并发编辑覆盖过一次：功能编译通过、命令也在，但守护线程从不启动，
   // 表现为「开关打开了却什么都不发生」。静态断言是最便宜的兜底。

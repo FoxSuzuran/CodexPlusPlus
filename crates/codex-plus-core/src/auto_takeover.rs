@@ -555,9 +555,13 @@ pub fn decide(inputs: &TakeoverInputs) -> TakeoverDecision {
     if matches!(inputs.app, AppProbe::NotRunning) {
         return TakeoverDecision::Wait("app_not_running");
     }
-    // 已接管：会话 running 才算，光有端口不算（降级态已在前面拦掉）。
-    if inputs.cdp_ready && inputs.session.is_running() {
-        return TakeoverDecision::Wait("already_attached");
+    // 自有会话的恢复和退出由 launcher 管理，CDP 短暂失联不能触发另一套重启。
+    if inputs.session.owned {
+        return TakeoverDecision::Wait(if inputs.cdp_ready && inputs.session.is_running() {
+            "already_attached"
+        } else {
+            "owned_session_recovering"
+        });
     }
     // 唤醒后的 CDP 恢复宽限：睡眠/唤醒后端口常短暂不可连，等它自己恢复。
     if matches!(inputs.ms_since_wake, Some(elapsed) if elapsed < WAKE_GRACE_MS) {
@@ -654,6 +658,27 @@ mod tests {
             started_at_ms: Some(1),
         };
         assert_eq!(decide(&inputs), TakeoverDecision::Wait("already_attached"));
+    }
+
+    #[test]
+    fn owned_session_survives_missing_cdp_until_its_runtime_releases_it() {
+        let mut inputs = base_inputs();
+        inputs.session = SessionSnapshot {
+            owned: true,
+            ready: true,
+            status: Some("running".to_string()),
+            debug_port: Some(9229),
+            started_at_ms: Some(1),
+        };
+        assert_eq!(
+            decide(&inputs),
+            TakeoverDecision::Wait("owned_session_recovering")
+        );
+        inputs.cdp_ready = true;
+        assert_eq!(decide(&inputs), TakeoverDecision::Wait("already_attached"));
+        inputs.cdp_ready = false;
+        inputs.session = SessionSnapshot::default();
+        assert!(decide(&inputs).is_takeover());
     }
 
     /// 端口在、会话却降级：不能显示「已接管」，也不能重启 App。

@@ -2682,6 +2682,9 @@ pub fn resume_existing_codex_background(app: tauri::AppHandle) {
         if crate::app_is_exiting() {
             return;
         }
+        let Ok(_launch_guard) = try_acquire_launch_guard() else {
+            return;
+        };
         let settings = SettingsStore::default().load().unwrap_or_default();
         let latest = StatusStore::default().load_latest().unwrap_or(None);
         let options = codex_plus_launcher::LaunchOptions {

@@ -46,10 +46,12 @@ struct StartupReply {
 impl StartupReply {
     fn send(self, result: Result<()>) -> std::result::Result<(), mpsc::SendError<Result<()>>> {
         if result.is_ok() {
-            self.state
+            let mut state = self
+                .state
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .ready = true;
+                .unwrap_or_else(|error| error.into_inner());
+            state.ready = true;
+            record_session_probe(&state.options, state.status_started_at_ms);
         }
         self.reply.send(result)
     }
@@ -2084,6 +2086,39 @@ mod tests {
 
     fn test_start_command(options: LaunchOptions, reply: SessionReply) -> RuntimeCommand {
         RuntimeCommand::Start(options, 100, false, reply)
+    }
+
+    #[test]
+    fn first_start_publishes_session_before_reply_and_stop_clears_it() {
+        clear_session_probe();
+        let worker = RuntimeWorker::spawn(
+            Arc::new(|_, stop, ready| {
+                Box::pin(async move {
+                    {
+                        let mut state = ready.state.lock().unwrap();
+                        state.options.debug_port = 9333;
+                        state.options.helper_port = 57322;
+                        state.status_started_at_ms = 200;
+                    }
+                    ready.send(Ok(())).unwrap();
+                    let _ = stop.await;
+                })
+            }),
+            Arc::new(|_, _| panic!("first start must not need a second activation")),
+        )
+        .unwrap();
+        send_test_command(&worker, |reply| {
+            test_start_command(LaunchOptions::default(), reply)
+        })
+        .unwrap();
+        let snapshot = session_snapshot();
+        send_test_command(&worker, RuntimeCommand::Stop).unwrap();
+        let stopped = session_snapshot();
+        shutdown_worker(worker).unwrap();
+        assert!(snapshot.owned && snapshot.ready);
+        assert_eq!(snapshot.debug_port, Some(9333));
+        assert_eq!(snapshot.started_at_ms, Some(200));
+        assert!(!stopped.owned && !stopped.ready);
     }
 
     #[tokio::test]

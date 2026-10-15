@@ -668,33 +668,6 @@ fn wait_for_instance_exit(app_dir: &Path, instance: &InstanceKey, budget: Durati
 /// 发起一次接管。宽限期**在这里**打点（早于 `start()`），否则启动失败时下一轮
 /// 探针会立刻二次接管。
 fn spawn_takeover(actual_port: u16) {
-    let started_at = Instant::now();
-    // 这次到底是「重启官方 App」还是「附着到已带端口的实例」？
-    // 后者不动用户窗口，不能算进重启额度，也不能记成重启（否则日志与预算都会失真）。
-    let restarting = !codex_plus_core::cdp::endpoint_available(actual_port);
-    with_inner(|state| {
-        state.our_launch_at = Some(started_at);
-        state.last_attempt = Some(started_at);
-        state.state = "taking_over";
-        state.last_reason = Some("takeover".to_string());
-    });
-    let now = now_ms();
-    with_inner(|state| {
-        if restarting {
-            push_restart(&mut state.restart_history_ms, now);
-            state.restarts_total = state.restarts_total.saturating_add(1);
-        }
-        state.last_takeover_at_ms = Some(now);
-    });
-    log_event(
-        if restarting {
-            "takeover.restart_requested"
-        } else {
-            "takeover.attach_requested"
-        },
-        json!({ "debugPort": actual_port, "restarting": restarting }),
-    );
-
     // 实际启动放到独立线程：`launcher::start` 会阻塞到注入完成（冷启动可达百秒），
     // 探针线程不能卡在那里；串行锁交给启动线程持有，避免与用户点「启动」抢跑。
     std::thread::spawn(move || {
@@ -708,6 +681,35 @@ fn spawn_takeover(actual_port: u16) {
                 return;
             }
         };
+        // 探针采集期间启动可能已完成，必须在拿锁后复核，再决定是否退出。
+        if codex_plus_launcher::session_snapshot().owned {
+            log_event("takeover.skipped", json!({ "reason": "owned_session" }));
+            return;
+        }
+        let started_at = Instant::now();
+        with_inner(|state| {
+            state.our_launch_at = Some(started_at);
+            state.last_attempt = Some(started_at);
+            state.state = "taking_over";
+            state.last_reason = Some("takeover".to_string());
+        });
+        let restarting = !codex_plus_core::cdp::endpoint_available(actual_port);
+        let now = now_ms();
+        with_inner(|state| {
+            if restarting {
+                push_restart(&mut state.restart_history_ms, now);
+                state.restarts_total = state.restarts_total.saturating_add(1);
+            }
+            state.last_takeover_at_ms = Some(now);
+        });
+        log_event(
+            if restarting {
+                "takeover.restart_requested"
+            } else {
+                "takeover.attach_requested"
+            },
+            json!({ "debugPort": actual_port, "restarting": restarting }),
+        );
         let latest = StatusStore::default().load_latest().ok().flatten();
         let app_dir = resolve_app_dir(latest.as_ref());
         // 需要重启时先请官方 App 退出：macOS 走 AppleEvent quit，Windows 走 taskkill。

@@ -1,7 +1,7 @@
 //! 按模型聚合：发布带供应商身份的模型目录，并精确解析到成员与真实模型。
 //! 模型聚合和供应商池策略互斥；未带绑定身份的请求不能进入轮转池。
 //!
-//! 解析规则对齐 opencodex / cc-switch 的聚合模式：
+//! 聚合解析规则：
 //! - `cpx-<成员>/<模型>` 按成员前缀精确归因；解析不出来（成员被移除、模型被移出列表、
 //!   成员 id 变过）一律报错，不按模型名改派、不落到默认供应商；
 //! - 不带 `cpx-` 前缀的请求（旧会话裸名、别的目录写下的 `<前缀>/<模型>`、回合前自动压缩
@@ -92,8 +92,8 @@ pub fn resolve_active_model(
     };
     if !is_aggregate_model(catalog_model) {
         // 不带前缀的请求一律交给「默认供应商」，且按请求里的 id 原样转发。
-        // 对齐 opencodex / cc-switch 的聚合规则：解析不出来就硬报错，不做按模型名的静默改派
-        // ——改派会把请求花到用户没选的那家，用户看不出来（cc-switch `mode/stack.rs` 同款理由）。
+        // 解析不出来就硬报错，不做按模型名的静默改派
+        // ——改派会把请求花到用户没选的那家，用户看不出来。
         if let Some(binding) = resolve_by_default_provider(settings, &aggregate, catalog_model)? {
             return Ok(Some(binding));
         }
@@ -129,7 +129,7 @@ pub fn resolve_active_model(
                 relay: relay.clone(),
             }));
         }
-        // 成员还在、但已经不提供这个模型（模型被移出列表）：按 cc-switch 的规则硬报错，
+        // 成员还在、但已经不提供这个模型（模型被移出列表）：硬报错，
         // 不改派给别的成员、也不落到默认供应商——那等于替用户换了供应商。
         anyhow::bail!("聚合模型不存在、已被移除或按模型聚合未开启：{catalog_model}");
     }
@@ -175,7 +175,7 @@ fn resolve_by_default_provider(
             relay.name
         );
     }
-    // 原样转发请求里的 id（对齐 opencodex：走 `defaultProvider` 时保留请求的 model id）。
+    // 原样转发请求里的 id（走默认供应商时保留请求的 model id）。
     // 不去前缀、不剥窗口后缀：静默改名会让用户看不出请求被换成了别家的哪个模型。
     let upstream_model = requested.trim().to_string();
     let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -306,7 +306,7 @@ pub(crate) fn profile_catalog_entries(
 /// 每个成员只构建一次目录，然后修改身份字段；先按真实模型应用元数据，
 /// 避免前缀让 GPT/DeepSeek 的能力匹配失效。
 ///
-/// 发布形态对齐 opencodex / cc-switch：**默认成员的模型用裸名发布**（不带前缀的请求本来就
+/// 发布形态：**默认成员的模型用裸名发布**（不带前缀的请求本来就
 /// 归它，客户端列表里"选到哪家"一目了然），其他成员仍用 `cpx-<成员id>/<模型>` 绑定身份。
 pub fn build_catalog_json(
     settings: &BackendSettings,
@@ -445,6 +445,13 @@ fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
     let catalog_json =
         crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
+    // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉；
+    // 放在元数据覆盖之后，已保存的整份元数据不能把它重新打开。
+    let catalog_json = if crate::relay_config::upstream_rejects_tool_search(profile) {
+        crate::relay_config::disable_search_tool_in_catalog(&catalog_json)?
+    } else {
+        catalog_json
+    };
     Ok(serde_json::from_str(&catalog_json)?)
 }
 
@@ -565,6 +572,7 @@ mod tests {
             name: "模型聚合".to_string(),
             session_provider: crate::settings::RelaySessionProvider::Custom,
             model_aggregation_enabled: true,
+            sync_default_member_login: false,
             strategy: AggregateRelayStrategy::Failover,
             members: vec![
                 AggregateRelayMember {
@@ -614,6 +622,49 @@ mod tests {
             .any(|model| model["slug"] == "cpx-openai/gpt-5.6-sol"));
     }
 
+    /// Kimi 官方成员按原生 Responses 转发时上游不认 tool_search，目录里要关掉，
+    /// 已保存的元数据覆盖也不能重新打开；其他成员保持模板原值。
+    #[test]
+    fn kimi_official_responses_member_disables_search_tool() {
+        let mut settings = settings();
+        settings.relay_profiles.insert(
+            0,
+            RelayProfile {
+                id: "kimi".to_string(),
+                name: "Kimi 官方".to_string(),
+                model: "kimi-k3".to_string(),
+                upstream_base_url: "https://api.moonshot.cn/v1".to_string(),
+                base_url: "https://api.moonshot.cn/v1".to_string(),
+                api_key: "sk-kimi".to_string(),
+                protocol: crate::settings::RelayProtocol::Responses,
+                relay_mode: RelayMode::PureApi,
+                // 管理器「保存此模型」存下的整份元数据会带着模板里的 true。
+                model_metadata: r#"{"kimi-k3":{"supports_search_tool":true}}"#.to_string(),
+                ..RelayProfile::default()
+            },
+        );
+        settings.aggregate_relay_profiles[0]
+            .members
+            .push(AggregateRelayMember {
+                relay_id: "kimi".to_string(),
+                weight: 1,
+            });
+        let aggregate = settings.active_aggregate_relay_profile().unwrap();
+        let catalog: Value =
+            serde_json::from_str(&build_catalog_json(&settings, &aggregate).unwrap()).unwrap();
+        let models = catalog["models"].as_array().unwrap();
+        let kimi = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-kimi/kimi-k3")
+            .unwrap();
+        assert_eq!(kimi["supports_search_tool"], false);
+        let openai = models
+            .iter()
+            .find(|model| model["slug"] == "cpx-openai/gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(openai["supports_search_tool"], true);
+    }
+
     #[test]
     fn stale_prefixed_model_is_rejected_instead_of_falling_back() {
         let settings = settings();
@@ -635,8 +686,8 @@ mod tests {
         assert!(error.to_string().contains("deepseek-chat"), "{error}");
     }
 
-    /// 不带前缀的请求全部交给默认供应商，且**原样**转发请求里的 id（opencodex 语义）。
-    /// 带 `cpx-` 前缀的残留 ID 不走默认供应商，硬报错（cc-switch 语义）。
+    /// 不带前缀的请求全部交给默认供应商，且**原样**转发请求里的 id。
+    /// 带 `cpx-` 前缀的残留 ID 不走默认供应商，硬报错。
     #[test]
     fn default_provider_serves_unbound_models_verbatim() {
         let mut settings = settings();
@@ -648,7 +699,7 @@ mod tests {
         assert_eq!(bare.relay_id, "openai");
         assert_eq!(bare.upstream_model, "gpt-9.9-unknown");
 
-        // 别的目录（cc-switch 的 `ccs-xxx/model`）留下的名字也原样转发，不改名成 deepseek-flash。
+        // 别的管理器（`ccs-xxx/model` 这种）留下的名字也原样转发，不改名成 deepseek-flash。
         let prefixed = resolve_active_model(&settings, "ccs-ghost/deepseek-flash[1M]")
             .unwrap()
             .expect("不带 cpx- 前缀 → 交给默认供应商");
@@ -715,7 +766,7 @@ mod tests {
     }
 
 
-    /// 默认成员的模型用裸名发布（对齐 opencodex / cc-switch），其他成员仍带 `cpx-` 前缀；
+    /// 默认成员的模型用裸名发布，其他成员仍带 `cpx-` 前缀；
     /// 裸名请求因此天然落回默认成员，且按原样转发。
     #[test]
     fn default_member_publishes_bare_model_names() {

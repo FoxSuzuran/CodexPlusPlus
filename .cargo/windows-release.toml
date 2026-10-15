@@ -1,0 +1,5 @@
+# 由仓库根目录的 cargo xrelease 加载，仅配置 Windows 发布子进程。
+[env]
+TEMP = { value = "target/temp", relative = true, force = true }
+TMP = { value = "target/temp", relative = true, force = true }
+SHERPA_ONNX_LIB_DIR = { value = "target/sherpa-onnx-prebuilt/sherpa-onnx-v1.13.8-win-x64-static-MT-Release-lib/lib", relative = true, force = true }

@@ -1,3 +1,16 @@
 [alias]
 xtest = "test --workspace --all-targets"
 xcheck = "check --workspace --all-targets"
+xrelease = "build --release --locked --offline -p codex-plus-manager --bin codex-plus-plus --config .cargo/windows-release.toml"
+
+[build]
+# 本机 8 核 / 32 GB，保留内存给正在运行的桌面应用。
+jobs = 4
+target-dir = "target"
+rustflags = []
+
+# 固定发布配置，避免临时参数变化留下多套依赖缓存。
+[profile.release]
+opt-level = 3
+debug = 0
+incremental = false

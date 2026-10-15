@@ -28,7 +28,11 @@ const DICTATION_FILE = path.join(DIR, 'page-dictation.js');
  * Codex++ launcher 写的听写凭据：helper 端口 + 能力令牌。
  * 路径必须与 crates/codex-plus-core/src/launcher.rs 的 DICTATION_HELPER_RECEIPT 一致。
  */
-const RECEIPT = path.join(os.homedir(), '.codex-session-delete', 'dictation-helper.json');
+const STATE_DIR = (process.env.CODEX_PLUS_STATE_DIR || '').trim();
+const RECEIPT = path.join(
+  STATE_DIR && path.isAbsolute(STATE_DIR) ? STATE_DIR : path.join(os.homedir(), '.codex-session-delete'),
+  'dictation-helper.json',
+);
 /** 页面调用主进程的 binding 名（page-dictation.js 按同名字面量调用）。 */
 const BINDING = '__claudeCnDictationCall';
 

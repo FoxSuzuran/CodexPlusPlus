@@ -6,9 +6,11 @@
 //   claude_localization.rs 的 ASSETS（脚本没登记就不会被装进副本）
 // 所以这里逐条钉住，而不是只测有没有这段代码。
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const read = (relative: string) => readFileSync(path.join(root, relative), "utf8");
@@ -152,4 +154,47 @@ test("界面汉化是独立开关，不跟副本准备绑定", () => {
     settings.includes('"claudeAppLocalization"'),
     "汉化开关必须持久化在自己的设置字段里",
   );
+});
+
+test("Windows Claude 脚本经 Git 检出后仍可由 PowerShell 解析", () => {
+  for (const name of ["build-copy.ps1", "inject-cn.ps1"]) {
+    const bytes = readFileSync(path.join(root, "assets/claude-localization", name));
+    assert.equal(bytes.subarray(0, 3).toString("hex"), "efbbbf", `${name} 必须使用 UTF-8 BOM`);
+  }
+  if (process.platform !== "win32") return;
+  execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+    foreach ($file in @('assets/claude-localization/build-copy.ps1', 'assets/claude-localization/inject-cn.ps1')) {
+      $tokens = $null; $errors = $null
+      [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors) | Out-Null
+      if ($errors.Count) { throw ($errors.Message -join '; ') }
+    }
+  `], { cwd: root });
+});
+
+test("Windows 启动器把两个独立增强开关传给同一个 hook", () => {
+  const injector = read("assets/claude-localization/inject-cn.ps1");
+  for (const [environment, global] of [
+    ["CODEX_PLUS_CLAUDE_VOICE_INPUT", "__claudeCnVoiceInput"],
+    ["CODEX_PLUS_CLAUDE_LOCALIZATION", "__claudeCnLocalization"],
+  ]) {
+    assert.ok(injector.includes(`$env:${environment} -eq '0'`), `${environment} 必须尊重显式关闭`);
+    assert.ok(injector.includes(`globalThis.${global}=`), `${global} 必须在 hook 加载前传入`);
+  }
+});
+
+test("Claude 听写沿用启动器的绝对状态目录覆盖", () => {
+  const source = hook.match(/const (?:STATE_DIR|RECEIPT) =[^;]+;/g)?.join("\n");
+  assert.ok(source);
+  for (const [override, expected] of [
+    [" D:\\isolated\\state ", "D:\\isolated\\state"],
+    ["relative-state", "C:\\Users\\fixture\\.codex-session-delete"],
+    ["", "C:\\Users\\fixture\\.codex-session-delete"],
+  ]) {
+    const receipt = runInNewContext(`${source}; RECEIPT`, {
+      path: path.win32,
+      os: { homedir: () => "C:\\Users\\fixture" },
+      process: { env: { CODEX_PLUS_STATE_DIR: override } },
+    });
+    assert.equal(receipt, path.win32.join(expected, "dictation-helper.json"));
+  }
 });

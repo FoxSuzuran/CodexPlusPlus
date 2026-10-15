@@ -340,8 +340,8 @@ describe("renderer injection header compatibility", () => {
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 左面板只有「拓展」需要（它是脚本列表）；主页与推荐内容是单栏内容页，
-    // 页面切换交给图标栏那三个入口，所以导航容器要在条件分支里创建。
+    // 左面板只有「拓展」需要（它是脚本列表）；主页是单栏内容页，
+    // 页面切换交给图标栏入口，所以导航容器要在条件分支里创建。
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
@@ -351,17 +351,8 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /selectCodexPlusTab\(pageNav\.getAttribute\("data-codex-plus-page-nav"\)\)/);
   });
 
-  it("把三个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
+  it("把两个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-
-    // 推荐内容从弹窗二级 tab 提成图标栏上的一级入口。
-    assert.match(renderer, /const codexPlusRailSponsorId = "codex-plus-rail-sponsor"/);
-    assert.match(renderer, /const codexPlusSponsorTab = "sponsor"/);
-    assert.match(renderer, /function openCodexPlusSponsor\(\)/);
-    assert.match(renderer, /id: codexPlusRailSponsorId, label: "推荐内容"/);
-    // 三个入口都要参与选中态映射，否则「推荐内容」亮不起来。
-    assert.match(renderer, /\[codexPlusRailSponsorId, "sponsor"\],/);
-    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) return "sponsor";/);
 
     // 弹窗里的 tab 条已随入口外移删除，不该再有残留。
     assert.doesNotMatch(renderer, /codex-plus-tab-button/);
@@ -817,7 +808,7 @@ function mutation(addedNodes: unknown[] = [], removedNodes: unknown[] = []) {
   return { target: codexContainer, addedNodes, removedNodes };
 }
 
-describe("native-style extension and sponsor discovery", () => {
+describe("native-style extension discovery", () => {
   const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
   function segment(source: string, from: string, to: string) {
     const start = source.indexOf(from);
@@ -836,7 +827,7 @@ let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
 let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
 let codexPlusExtensionsQuery = "", codexPlusExtensionsFilter = "market", codexPlusExtensionsSelected = null;
 ${segment(renderer, "  function userScriptStatusLabel(", "  async function uninstallUserScript(")}
-${segment(renderer, "  function codexPlusExtensionsEntries()", "  const codexPlusAdsUrl =")}
+${segment(renderer, "  function codexPlusExtensionsEntries()", "  function selectCodexPlusTab(tab)")}
 return {
   nav: renderCodexPlusExtensionsNav, overview: renderCodexPlusExtensionsOverview, detail: renderCodexPlusExtensionsDetail,
   configure(scripts, market, options = {}) {
@@ -955,33 +946,6 @@ return { refresh: refreshCodexPlusExtensionsView, selection: () => codexPlusExte
     assert.deepEqual(requested, ["[data-codex-plus-page-nav-body]", "[data-codex-plus-extensions-detail]"]);
   });
 
-  it("preserves sponsor logos, destinations and highlights in the native recommendation list", async () => {
-    const renderer = await readFile(rendererPath, "utf8");
-    const logo = await readFile(new URL("../../../docs/images/sponsor-volcengine.png", import.meta.url));
-    const image = `data:image/png;base64,${logo.toString("base64")}`;
-    const runtime = new Function(`${escapeSource(renderer)}\n${segment(renderer, "  const codexPlusAdsUrl =", "  function cacheBustCodexPlusAdUrl(")}
-return {
-  render: renderCodexPlusAds,
-  set(payload, loaded = true) { codexPlusAds = normalizeCodexPlusAds(payload); codexPlusAdsLoaded = loaded; return codexPlusAds; }
-};`)() as { render: () => string; set: (payload: unknown, loaded?: boolean) => Array<Record<string, unknown>> };
-    const ad = { id: "volcengine", type: "sponsor", title: "火山方舟｜套餐", description: "原始 <描述>", url: "https://example.test/partner?plan=pro&source=codex", image, highlights: ['原始 "优惠" & 说明', "保留第二条亮点"] };
-    const normalized = runtime.set({ ads: [ad, { ...ad, id: "normal", type: "normal" }, { ...ad, id: "expired", expires_at: "2000-01-01" }] });
-    assert.equal(normalized.length, 1);
-    assert.equal(normalized[0].image, image);
-    assert.equal(normalized[0].url, ad.url);
-    assert.deepEqual(normalized[0].highlights, ad.highlights);
-    const html = runtime.render();
-    assert.ok(html.includes(`src="${image}"`));
-    assert.ok(html.includes('data-codex-plus-ad-url="https://example.test/partner?plan=pro&amp;source=codex"'));
-    assert.ok(html.includes('href="https://example.test/partner?plan=pro&amp;source=codex"'));
-    assert.ok(html.includes("原始 &lt;描述&gt;"));
-    assert.ok(html.includes("原始 &quot;优惠&quot; &amp; 说明"));
-    assert.doesNotMatch(html, /codex-plus-ad-icon-fallback|<描述>/);
-    runtime.set({ ads: [ad] }, false);
-    assert.match(runtime.render(), /推荐内容加载中…/);
-    runtime.set({ ads: [] });
-    assert.match(runtime.render(), /暂无推荐内容。/);
-  });
 });
 
 describe("renderer injection scan scheduling", () => {

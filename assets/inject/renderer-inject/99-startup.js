@@ -1,4 +1,5 @@
   retireSessionSharing();
+  retireCodexPlusAdvertising();
   /**
    * 多开实例身份提示。
    *

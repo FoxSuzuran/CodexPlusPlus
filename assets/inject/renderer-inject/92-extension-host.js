@@ -84,7 +84,7 @@
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}`)) return;
       if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
@@ -163,7 +163,7 @@
   /**
    * 图标栏上的拓展入口。
    *
-   * 与内置的三个入口并列插在 primary 锚点之后。内置项由
+   * 与内置入口并列插在 primary 锚点之后。内置项由
    * installCodexPlusRailNavigation 负责，这里只补第三方项，靠 id 幂等。
    */
   function refreshCodexPlusRailNavigation() {
@@ -184,8 +184,8 @@
     const host = anchor?.parentElement || rail;
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
-    // 内置三项先占位，第三方从它们之后开始排。
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+    // 内置项先占位，第三方从它们之后开始排。
+    [codexPlusRailNavId, codexPlusRailExtensionsId].forEach((id) => {
       const node = document.getElementById(id);
       if (node) cursor = node;
     });

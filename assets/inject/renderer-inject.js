@@ -348,24 +348,21 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "35";
+  const codexDeleteStyleVersion = "36";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
   const codexPlusPageClass = "codex-plus-page-overlay";
   // 新版 Codex 在最左侧多出一条导航图标栏（navigation rail）。
-  // 三个入口分别挂进去：Codex++ 主页、「拓展」（原用户脚本）和「推荐内容」。
-  // 三者各自是一个独立页面，不再作为弹窗里的二级 tab。
+  // Codex++ 主页和「拓展」（原用户脚本）分别挂为独立页面。
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
-  const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
   const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
   const codexPlusPluginMarketTab = "plugin-market";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
-  const codexPlusSponsorTab = "sponsor";
   // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
   // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
   const codexPlusWindowZoomVar = "--codex-window-zoom";
@@ -2318,14 +2315,6 @@
       .codex-plus-plugin-pagination > span { margin-right: auto; }
       .codex-plus-plugin-empty { padding: 40px 16px; text-align: center; color: var(--codex-plus-text-secondary); }
       @media (max-width: 600px) { .codex-plus-plugin-card { flex-direction: column; gap: 10px; } .codex-plus-plugin-install { align-self: flex-end; } }
-      /*
-       * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
-       * 这里对齐它的尺寸。
-       *
-       * 用 [data-codex-plus-rail] 而不是逐个列 id——早先按 id 写，加第三个入口时
-       * 漏掉了对应的选择器，那个图标容器就没有 20px 约束、撑成整个按钮宽，
-       * 表现为图标偏左不居中。
-       */
       [data-codex-plus-rail] {
         position: relative;
         flex: 0 0 auto;
@@ -2992,77 +2981,6 @@
       .codex-plus-backend-label[data-status="ok"] { color: #34d399; }
       .codex-plus-backend-label[data-status="failed"] { color: #f87171; }
       .codex-plus-backend-label[data-status="degraded"] { color: #fbbf24; }
-      .codex-plus-sponsor-text { color: #d1d5db; font-size: 13px; line-height: 1.55; margin: 4px 0 12px; }
-      /*
-       * 推荐内容：网格卡片。
-       *
-       * 一张卡 = 图标 + 名称/简介 + 右上箭头 + 底部优惠条。用 auto-fill + minmax
-       * 让列数随宽度自适应（宽屏 4 列、窄屏递减），卡片等高对齐。
-       */
-      .codex-plus-ad-list {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
-        gap: 12px;
-      }
-      .codex-plus-ad-card {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        border: 1px solid rgba(255,255,255,.08);
-        border-radius: 12px;
-        background: rgba(255,255,255,.02);
-        color: inherit;
-        text-decoration: none;
-        padding: 16px;
-        transition: background .12s ease, border-color .12s ease;
-      }
-      .codex-plus-ad-card:hover,
-      .codex-plus-ad-card:focus-visible {
-        border-color: rgba(255,255,255,.18);
-        background: rgba(255,255,255,.05);
-        outline: none;
-      }
-      .codex-plus-ad-main { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-      .codex-plus-ad-icon {
-        flex: 0 0 auto;
-        width: 36px;
-        height: 36px;
-        border-radius: 9px;
-        object-fit: contain;
-        background: rgba(255,255,255,.06);
-      }
-      /* 清单没给图时用名称首字占位，比空一块整齐。 */
-      .codex-plus-ad-icon-fallback {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        color: #f3f4f6;
-        font-size: 15px;
-        font-weight: 600;
-      }
-      .codex-plus-ad-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-      .codex-plus-ad-title { overflow: hidden; color: #f8fafc; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-      /* 简介不再压成一行：卡片按内容撑高，最多 3 行，超出才省略。
-         nowrap 会让「提供 Claude 与 ...」这类较长简介只露前几个字。 */
-      .codex-plus-ad-description { display: -webkit-box; overflow: hidden; color: #a1a1aa; font-size: 13px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-      .codex-plus-ad-arrow { flex: 0 0 auto; width: 14px; height: 14px; margin-top: 2px; color: #71717a; }
-      .codex-plus-ad-arrow svg { width: 14px; height: 14px; display: block; }
-      .codex-plus-ad-card:hover .codex-plus-ad-arrow,
-      .codex-plus-ad-card:focus-visible .codex-plus-ad-arrow { color: #f3f4f6; }
-      /* 底部优惠条：撑满卡片宽度，长文本截断。 */
-      .codex-plus-ad-promo {
-        display: block;
-        overflow: hidden;
-        border-radius: 8px;
-        background: rgba(255,255,255,.05);
-        color: #f5a97f;
-        font-size: 13px;
-        line-height: 1.35;
-        padding: 7px 10px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
       /*
        * 注入面板的语义色板：前景/背景必须取自同一套 token，且都要能被主题切换带走。
        *
@@ -3147,12 +3065,11 @@
         box-shadow: var(--shadow-400, 0 16px 48px rgba(0,0,0,.2));
       }
       .codex-delete-confirm-message,
-      .codex-plus-row-description,
-      .codex-plus-about,
-      .codex-plus-service-tier-thread-label,
-      .codex-plus-backend-label,
-      .codex-plus-form-message,
-      .codex-plus-sponsor-text { color: var(--codex-plus-text-secondary); }
+.codex-plus-row-description,
+.codex-plus-about,
+.codex-plus-service-tier-thread-label,
+.codex-plus-backend-label,
+.codex-plus-form-message { color: var(--codex-plus-text-secondary); }
       .codex-delete-confirm-actions button,
       .codex-plus-action-button,
       .codex-plus-issue-button,
@@ -3235,16 +3152,6 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"], .${codexServiceTierBadgeClass}[data-tier="ultrafast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
-      .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
-      .codex-plus-ad-card:hover,
-      .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }
-      .codex-plus-ad-icon { background: var(--codex-plus-bg-hover); }
-      .codex-plus-ad-icon-fallback { color: var(--codex-plus-text); }
-      .codex-plus-ad-title { color: var(--codex-plus-text); }
-      .codex-plus-ad-description { color: var(--codex-plus-text-secondary); }
-      .codex-plus-ad-arrow { color: var(--codex-plus-text-tertiary); }
-      .codex-plus-ad-card:hover .codex-plus-ad-arrow,
-      .codex-plus-ad-card:focus-visible .codex-plus-ad-arrow { color: var(--codex-plus-text); }
       /*
        * 优惠条：暗底配橙色文字。
        *
@@ -3252,11 +3159,6 @@
        * 的值），压在深色卡片上非常刺眼。改成用警告色按低透明度混出来，深浅主题
        * 都成立，也和原生「需要注意」的语义色同源。
        */
-      .codex-plus-ad-promo {
-        background: color-mix(in srgb, var(--codex-plus-warning) 14%, transparent);
-        color: var(--codex-plus-warning);
-      }
-      .codex-plus-ad-empty { border-color: var(--codex-plus-border); color: var(--codex-plus-text-tertiary); }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
@@ -3501,16 +3403,6 @@
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
       }
-      /* 拓展与推荐内容使用原生插件页面的导航、标题和轻量列表布局。 */
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) {
-        background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
-        container: codex-plus-discovery-page / inline-size;
-      }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) > .codex-plus-modal-header { display: none; }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body {
-        box-sizing: border-box;
-        padding: 32px 32px 56px;
-      }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
         box-sizing: border-box;
         width: 312px;
@@ -3652,10 +3544,8 @@
         font-weight: 550;
         line-height: 24px;
       }
-      .codex-plus-extensions-grid,
-      .codex-plus-discovery .codex-plus-ad-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 32px; }
-      .codex-plus-extensions-grid > .codex-plus-extensions-detail-empty,
-      .codex-plus-discovery .codex-plus-ad-empty { grid-column: 1 / -1; }
+      .codex-plus-extensions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 32px; }
+      .codex-plus-extensions-grid > .codex-plus-extensions-detail-empty { grid-column: 1 / -1; }
       .codex-plus-extension-card {
         display: flex;
         align-items: center;
@@ -3759,28 +3649,6 @@
       .codex-plus-discovery button:focus-visible,
       .codex-plus-discovery a:focus-visible,
       .codex-plus-extensions-nav-entry:focus-visible { outline: 2px solid var(--codex-plus-switch-on, #3485ff); outline-offset: 3px; }
-      .codex-plus-discovery .codex-plus-ad-card {
-        flex-direction: row;
-        align-items: center;
-        gap: 16px;
-        min-height: 72px;
-        min-width: 0;
-        box-sizing: border-box;
-        border: 0;
-        border-radius: 8px;
-        padding: 8px 0;
-        background: transparent;
-      }
-      .codex-plus-discovery .codex-plus-ad-card:hover,
-      .codex-plus-discovery .codex-plus-ad-card:focus-visible { background: transparent; }
-      .codex-plus-discovery .codex-plus-ad-main { flex: 1 1 auto; align-items: center; gap: 12px; }
-      .codex-plus-discovery .codex-plus-ad-icon { flex: 0 0 36px; border: 1px solid var(--codex-plus-border); border-radius: 10px; background: transparent; box-sizing: border-box; }
-      .codex-plus-discovery .codex-plus-ad-text { gap: 4px; }
-      .codex-plus-discovery .codex-plus-ad-title { font-size: 14px; font-weight: 500; line-height: 20px; }
-      .codex-plus-discovery .codex-plus-ad-description { font-size: 13px; line-height: 18px; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
-      .codex-plus-discovery .codex-plus-ad-promo { border-radius: 0; padding: 0; background: transparent; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 16px; white-space: normal; overflow-wrap: anywhere; }
-      .codex-plus-discovery .codex-plus-ad-arrow { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; margin: 0; color: var(--codex-plus-text-secondary); }
-      .codex-plus-discovery .codex-plus-ad-arrow svg { width: 16px; height: 16px; }
       @container codex-plus-discovery-page (max-width: 900px) {
         .codex-plus-discovery-header { flex-wrap: wrap; gap: 20px; }
         .codex-plus-discovery-toolbar { flex-basis: 100%; }
@@ -3788,12 +3656,10 @@
         .codex-plus-discovery .codex-plus-extensions-detail-actions { flex-basis: 100%; }
       }
       @container codex-plus-discovery (max-width: 600px) {
-        .codex-plus-extensions-grid,
-        .codex-plus-discovery .codex-plus-ad-list { grid-template-columns: minmax(0, 1fr); }
+        .codex-plus-extensions-grid { grid-template-columns: minmax(0, 1fr); }
       }
       @container codex-plus-discovery-page (max-width: 700px) {
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 180px; flex-basis: 180px; }
-        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 20px 40px; }
       }
       @container codex-plus-discovery-page (max-width: 480px) {
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav { width: 56px; flex-basis: 56px; }
@@ -3807,7 +3673,6 @@
         .codex-plus-extensions-nav-entry .codex-plus-extensions-item-state { display: none; }
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-group-head,
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
-        .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
       }
     `;
     document.documentElement.appendChild(style);
@@ -7598,7 +7463,6 @@
     if (tab === codexPlusExtensionsTab) return renderCodexPlusExtensionsNav();
     return [
       { key: "home", label: "主页" },
-      { key: "sponsor", label: "推荐内容" },
     ].map((item) => `
       <button type="button" class="codex-plus-page-nav-item" data-codex-plus-page-nav="${item.key}" data-active="${String(tab === item.key)}">${item.label}</button>
     `).join("");
@@ -7619,8 +7483,7 @@
     layout.className = "codex-plus-page-layout";
     const main = document.createElement("div");
     main.className = "codex-plus-page-main";
-    // 只有「拓展」需要左面板（它是脚本列表）。主页和推荐内容都是单栏内容页，
-    // 页面切换交给图标栏那三个入口，再列一遍就是重复。
+    // 只有「拓展」需要脚本列表左面板，主页保持单栏。
     if (tab === codexPlusExtensionsTab) {
       const nav = document.createElement("div");
       nav.className = "codex-plus-page-nav";
@@ -7643,7 +7506,6 @@
   /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
   function codexPlusPageTitle(tab) {
     if (tab === codexPlusExtensionsTab) return "拓展";
-    if (tab === codexPlusSponsorTab) return "推荐内容";
     return "Codex++";
   }
 
@@ -7794,120 +7656,6 @@
     });
   }
 
-  const codexPlusAdsUrl = "/ads";
-  let codexPlusAds = [];
-  let codexPlusAdsLoaded = false;
-
-  function isCodexPlusAdExpired(ad) {
-    if (!ad.expires_at) return false;
-    const expiresAt = Date.parse(ad.expires_at);
-    return Number.isFinite(expiresAt) && expiresAt < Date.now();
-  }
-
-  function normalizeCodexPlusAds(payload) {
-    if (!payload || !Array.isArray(payload.ads)) return [];
-    // 只留赞助商推荐。上游清单里的 normal 条目不属于合作伙伴分组，
-    // 放进来只会让「有数据但渲染不出东西」的状态变得难以判断。
-    return payload.ads.filter((ad) => {
-      return ad && ad.type === "sponsor" && ad.title && ad.description && ad.url && !isCodexPlusAdExpired(ad);
-    }).map((ad) => ({
-      id: String(ad.id || ad.title),
-      type: ad.type,
-      title: String(ad.title),
-      description: String(ad.description),
-      url: String(ad.url),
-      image: ad.image ? String(ad.image) : "",
-      expires_at: ad.expires_at ? String(ad.expires_at) : "",
-      highlights: Array.isArray(ad.highlights) ? ad.highlights.map((item) => String(item)).filter(Boolean) : [],
-    }));
-  }
-
-  function formatCodexPlusAdTitle(title) {
-    const value = String(title || "");
-    return value.split(/[｜|]/, 1)[0].trim() || value;
-  }
-
-  /** 推荐卡片的右上角外链箭头，跟 VSCode/Codex 的「新窗口打开」同一语义。 */
-  const codexPlusAdArrowIcon = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 10.5 10.5 5.5"/><path d="M6.5 5.5h4v4"/></svg>';
-
-  function renderCodexPlusAdGroup() {
-    const ads = codexPlusAds;
-    if (!ads.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
-    return ads.map((ad) => {
-      const name = formatCodexPlusAdTitle(ad.title);
-      // 底部那条优惠信息：取第一个亮点。没有就不渲染整条，免得留一段空白。
-      const promo = (ad.highlights || []).find(Boolean) || "";
-      // 没有配图时用名称首字当占位，比空一块更整齐。
-      const icon = ad.image
-        ? `<img class="codex-plus-ad-icon" src="${escapeHtml(ad.image)}" alt="" loading="lazy" />`
-        : `<span class="codex-plus-ad-icon codex-plus-ad-icon-fallback" aria-hidden="true">${escapeHtml(name.slice(0, 1))}</span>`;
-      return `
-        <a class="codex-plus-ad-card" data-codex-plus-ad-url="${escapeHtml(ad.url)}" href="${escapeHtml(ad.url)}" rel="noreferrer" title="${escapeHtml(name)}">
-          <span class="codex-plus-ad-main">
-            ${icon}
-            <span class="codex-plus-ad-text">
-              <span class="codex-plus-ad-title">${escapeHtml(name)}</span>
-              <span class="codex-plus-ad-description">${escapeHtml(ad.description)}</span>
-              ${promo ? `<span class="codex-plus-ad-promo">${escapeHtml(promo)}</span>` : ""}
-            </span>
-            <span class="codex-plus-ad-arrow" aria-hidden="true">${codexPlusAdArrowIcon}</span>
-          </span>
-        </a>
-      `;
-    }).join("");
-  }
-
-  function renderCodexPlusAds() {
-    if (!codexPlusAdsLoaded) return `<div class="codex-plus-ad-empty">推荐内容加载中…</div>`;
-    if (!codexPlusAds.length) return `<div class="codex-plus-ad-empty">暂无推荐内容。</div>`;
-    // 合作伙伴用同一套原生列表节奏展示，文案与外链沿用后端数据。
-    return `<div class="codex-plus-ad-list">${renderCodexPlusAdGroup()}</div>`;
-  }
-
-  function cacheBustCodexPlusAdUrl(url, version) {
-    return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
-  }
-
-  async function directFetchCodexPlusAds() {
-    const urls = [
-      "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
-      "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
-    ];
-    let lastError = null;
-    const cacheBust = Date.now();
-    for (const url of urls) {
-      try {
-        const response = await fetch(cacheBustCodexPlusAdUrl(url, cacheBust), {
-          headers: { "Accept": "application/json" },
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return await response.json();
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error("ad list unavailable");
-  }
-
-  async function fetchCodexPlusAds() {
-    try {
-      const localPayload = await postJson(codexPlusAdsUrl, {});
-      codexPlusAds = normalizeCodexPlusAds(localPayload?.ads ? localPayload : localPayload?.payload);
-      if (!codexPlusAds.length) codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());
-    } catch (error) {
-      sendCodexPlusDiagnostic("ads_fetch_failed", {
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-      codexPlusAds = [];
-    } finally {
-      codexPlusAdsLoaded = true;
-      const panel = document.querySelector('[data-codex-plus-panel="sponsor"] .codex-plus-ad-remote');
-      if (panel) panel.innerHTML = renderCodexPlusAds();
-    }
-  }
-
   function selectCodexPlusTab(tab) {
     closeCodexPlusTypingEffectDropdown();
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
@@ -7933,7 +7681,6 @@
     if (!overlay) return null;
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
-    if (tab === codexPlusSponsorTab) return "sponsor";
     if (tab === codexPlusPluginMarketTab) return "plugin-market";
     return "home";
   }
@@ -7950,7 +7697,6 @@
     [
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
-      [codexPlusRailSponsorId, "sponsor"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -8245,7 +7991,6 @@
    */
   function codexPlusModalTab(tab) {
     if (tab === "extensions" || tab === "userScripts") return codexPlusExtensionsTab;
-    if (tab === "sponsor") return "sponsor";
     return "home";
   }
 
@@ -8516,15 +8261,6 @@
               <div class="codex-plus-extensions-detail" data-codex-plus-extensions-detail="true">${renderCodexPlusExtensionsDetail()}</div>
             </div>
           </div>
-          <div class="codex-plus-panel" data-codex-plus-panel="sponsor" hidden>
-            <div class="codex-plus-discovery codex-plus-sponsor-page">
-              <div class="codex-plus-discovery-header">
-                <div><h1 class="codex-plus-discovery-title">推荐内容</h1><p class="codex-plus-discovery-description codex-plus-sponsor-text">以下推荐来自支持 Codex++ 继续维护的合作方。</p></div>
-              </div>
-              <h2 class="codex-plus-discovery-section-title">合作伙伴</h2>
-              <div class="codex-plus-ad-remote">${renderCodexPlusAds()}</div>
-            </div>
-          </div>
         </div>
       </div>
       <div id="codex-plus-typing-effect-menu" class="codex-plus-dropdown-menu" data-codex-plus-typing-effect-menu="true" role="listbox" aria-label="打字特效（彩虹 P）" hidden>
@@ -8629,18 +8365,6 @@
       }
       if (target?.closest("[data-codex-open-manager]")) {
         openManagerFromCodex();
-        return;
-      }
-      // 推荐卡片用 window.open 而非原生 <a target="_blank">：Codex 是 Electron
-      // 应用，原生新窗口跳转在它的 webview 里不会交给系统浏览器（同页的
-      // Discord / Telegram / Issues 按钮也一律走 window.open）。
-      const adCard = target?.closest("[data-codex-plus-ad-url]");
-      if (adCard) {
-        const adUrl = adCard.getAttribute("data-codex-plus-ad-url") || "";
-        if (/^https?:\/\//i.test(adUrl)) {
-          event.preventDefault();
-          window.open(adUrl, "_blank", "noopener,noreferrer");
-        }
         return;
       }
       if (target?.closest("[data-codex-plus-discord]")) {
@@ -8772,7 +8496,6 @@
       // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
       installCodexPlusPageLayout(overlay, initialTab);
     }
-    if (!codexPlusAdsLoaded) fetchCodexPlusAds();
     selectCodexPlusTab(initialTab);
     // 必须在 selectCodexPlusTab 之后：激活态要靠 data-codex-plus-active-tab
     // 判断当前是 Codex++ 还是「拓展」，提前调用会永远落到 home 上。
@@ -8792,11 +8515,6 @@
   function openCodexPlusExtensions() {
     codexPlusExtensionsSelected = null;
     openCodexPlusModal({ page: true, tab: codexPlusExtensionsTab });
-  }
-
-  /** 「推荐内容」页面：从弹窗的二级 tab 提出来，成为图标栏上的一级入口。 */
-  function openCodexPlusSponsor() {
-    openCodexPlusModal({ page: true, tab: codexPlusSponsorTab });
   }
 
   function closeCodexPlusPage() {
@@ -8896,7 +8614,19 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailExtensionsId, "codex-plus-rail-sponsor", codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
+  }
+
+  // Rebuild built-in navigation so its old click callbacks cannot load advertisements.
+  function retireCodexPlusAdvertising() {
+    [codexPlusSidebarNavId, codexPlusRailNavId, codexPlusRailExtensionsId, "codex-plus-rail-sponsor"]
+      .forEach((id) => document.getElementById(id)?.remove());
+    document.querySelectorAll('[data-codex-plus-page-nav="sponsor"]').forEach((node) => node.remove());
+    document.querySelectorAll('[data-codex-plus-panel="sponsor"]').forEach((panel) => {
+      const modal = panel.closest(".codex-plus-modal-content");
+      panel.remove();
+      if (modal?.dataset.codexPlusActiveTab === "sponsor") selectCodexPlusTab("home");
+    });
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -8992,8 +8722,8 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
-        // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}`)) return;
+        // 拓展入口的 id 是动态生成的，不在上面两个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
         if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
@@ -9005,14 +8735,11 @@
       // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
       // 和页面内部保持同一个符号，不再另画一个近似图形。
       extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
-      // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
-      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
     };
 
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
-      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
 
     const anchor = codexPlusRailPrimaryAnchor(rail);
@@ -16940,7 +16667,7 @@
       /**
        * 注册一个整页视图。
        *
-       * 同时自动配一个图标栏入口——内置的三个页面（Codex++ / 拓展 / 推荐内容）
+       * 同时自动配一个图标栏入口——内置页面（Codex++ / 拓展）
        * 都是「rail 入口 + 整页」的形态，第三方页面沿用同一种形态，用户才不会
        * 在弹窗里找入口。`options.navLabel` / `options.icon` 控制入口外观。
        *
@@ -17075,7 +16802,7 @@
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}`)) return;
       if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
@@ -17154,7 +16881,7 @@
   /**
    * 图标栏上的拓展入口。
    *
-   * 与内置的三个入口并列插在 primary 锚点之后。内置项由
+   * 与内置入口并列插在 primary 锚点之后。内置项由
    * installCodexPlusRailNavigation 负责，这里只补第三方项，靠 id 幂等。
    */
   function refreshCodexPlusRailNavigation() {
@@ -17175,8 +16902,8 @@
     const host = anchor?.parentElement || rail;
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
-    // 内置三项先占位，第三方从它们之后开始排。
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+    // 内置项先占位，第三方从它们之后开始排。
+    [codexPlusRailNavId, codexPlusRailExtensionsId].forEach((id) => {
       const node = document.getElementById(id);
       if (node) cursor = node;
     });
@@ -19838,7 +19565,7 @@
    */
   function isExtensionUiNode(node) {
     if (!node?.closest) return false;
-    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
+    if (node.closest(`[data-codex-plus-ext], .codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu, #${capacityAutoRetryChipId}`)) {
       return true;
     }
     return isCodexPlusExtensionNode(node);
@@ -20066,6 +19793,7 @@
     }, 250);
   })();
   retireSessionSharing();
+  retireCodexPlusAdvertising();
   /**
    * 多开实例身份提示。
    *

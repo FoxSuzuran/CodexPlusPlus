@@ -69,23 +69,26 @@ for (const name of ["launch", "restart"]) {
   });
 }
 
-test("a stalled advertisement or overview does not delay settings and provider initialization", async () => {
+test("startup requests no advertisements and a stalled overview does not delay local initialization", async () => {
   const called: string[] = [];
   const never = new Promise(() => {});
   const context: Record<string, unknown> = {
     run: (task: () => unknown) => task(),
-    call: async () => ({ showUpdate: false }),
+    call: async (command: string) => {
+      assert.equal(command, "startup_options");
+      return { showUpdate: false };
+    },
     consumePendingManagerNavigation: async () => false,
     setRoute: () => {},
   };
   for (const name of [
-    "checkUpdate", "refreshOverview", "refreshAds", "refreshTools", "refreshSettings",
+    "checkUpdate", "refreshOverview", "refreshTools", "refreshSettings",
     "refreshRelay", "refreshEnvConflicts", "refreshProviderSyncTargets",
     "refreshPendingProviderImport", "refreshPendingDreamSkinCommunity",
   ]) {
     context[name] = () => {
       called.push(name);
-      return ["refreshAds", "refreshOverview"].includes(name) ? never : Promise.resolve();
+      return name === "refreshOverview" ? never : Promise.resolve();
     };
   }
   const startup = expression((node) =>
@@ -95,10 +98,11 @@ test("a stalled advertisement or overview does not delay settings and provider i
   const code = transformSync(`(${startup})();`, { loader: "tsx" }).code;
   runInNewContext(code, context);
   await setImmediate();
-  for (const name of ["refreshAds", "refreshTools", "refreshSettings", "refreshRelay",
+  for (const name of ["refreshTools", "refreshSettings", "refreshRelay",
     "refreshEnvConflicts", "refreshProviderSyncTargets", "refreshPendingProviderImport"]) {
-    assert.ok(called.includes(name), `${name} must proceed with remote ads and health checks pending`);
+    assert.ok(called.includes(name), `${name} must proceed with health checks pending`);
   }
+  assert.doesNotMatch(source, /load_ads|refreshAds|SponsorBoard|RecommendationsScreen/);
 });
 
 test("concurrent overview requests share one health check", async () => {

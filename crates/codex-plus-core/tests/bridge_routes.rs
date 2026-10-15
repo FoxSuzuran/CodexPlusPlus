@@ -44,7 +44,6 @@ async fn bridge_routes_cover_all_current_paths() {
             "/llm-proxy",
             json!({"url": "http://example.com", "method": "POST"}),
         ),
-        ("/ads", json!({})),
         ("/script-market/list", json!({})),
         (
             "/script-market/install",
@@ -86,9 +85,9 @@ async fn bridge_routes_cover_all_current_paths() {
 }
 
 #[tokio::test]
-async fn retired_sharing_paths_are_not_routed() {
+async fn retired_sharing_and_advertising_paths_are_not_routed() {
     let ctx = test_context();
-    for path in ["/share/create", "/session/export", "/session/import"] {
+    for path in ["/share/create", "/session/export", "/session/import", "/ads"] {
         let result = handle_bridge_request(ctx.clone(), path, json!({})).await;
         assert_eq!(result["message"], "Unknown bridge path", "{path}");
     }
@@ -500,7 +499,7 @@ async fn runtime_routes_keep_user_script_inventory_shape() {
 }
 
 #[tokio::test]
-async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
+async fn runtime_status_and_devtools_repair_routes_are_dispatched() {
     let runtime = Arc::new(FakeRuntime::default());
     let ctx = BridgeContext::new(
         Arc::new(FakeSettings::default()),
@@ -536,7 +535,7 @@ async fn runtime_status_devtools_repair_and_ads_routes_are_dispatched() {
     );
     assert_eq!(
         handle_bridge_request(ctx.clone(), "/ads", json!({})).await,
-        json!({"version": 1, "ads": [{"id": "runtime-ad"}]})
+        json!({"status": "failed", "session_id": "", "message": "Unknown bridge path"})
     );
 }
 
@@ -1328,10 +1327,6 @@ impl BridgeRuntimeService for FakeRuntime {
             "models": ["qwen3-coder"],
             "sources": []
         }))
-    }
-
-    async fn ads(&self) -> anyhow::Result<Value> {
-        Ok(json!({"version": 1, "ads": [{"id": "runtime-ad"}]}))
     }
 }
 

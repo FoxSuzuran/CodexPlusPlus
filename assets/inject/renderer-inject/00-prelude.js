@@ -348,24 +348,21 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "35";
+  const codexDeleteStyleVersion = "36";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
   const codexPlusPageClass = "codex-plus-page-overlay";
   // 新版 Codex 在最左侧多出一条导航图标栏（navigation rail）。
-  // 三个入口分别挂进去：Codex++ 主页、「拓展」（原用户脚本）和「推荐内容」。
-  // 三者各自是一个独立页面，不再作为弹窗里的二级 tab。
+  // Codex++ 主页和「拓展」（原用户脚本）分别挂为独立页面。
   const codexPlusRailNavId = "codex-plus-rail-nav";
   const codexPlusRailExtensionsId = "codex-plus-rail-extensions";
-  const codexPlusRailSponsorId = "codex-plus-rail-sponsor";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
   const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
   const codexPlusPluginMarketTab = "plugin-market";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
-  const codexPlusSponsorTab = "sponsor";
   // Codex 的界面缩放是给内层布局节点设 CSS zoom，不是改 documentElement。
   // 我们的 overlay 挂在 body 下、落在那棵缩放子树之外，只能自己读这个变量跟随。
   const codexPlusWindowZoomVar = "--codex-window-zoom";

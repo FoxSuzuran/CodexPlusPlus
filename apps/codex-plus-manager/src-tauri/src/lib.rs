@@ -172,7 +172,6 @@ pub fn run() {
             commands::preview_provider_sync,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
-            commands::load_ads,
             commands::refresh_script_market,
             commands::refresh_plugin_market,
             commands::install_plugin_market_item,

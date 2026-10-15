@@ -41,14 +41,27 @@ test("DeepSeek preset uses the official Responses integration", () => {
   assert.deepEqual(preset.modelList, ["deepseek-v4-flash", "deepseek-v4-pro"]);
 });
 
-test("GrooRoute preset uses the configured sponsor endpoint", () => {
+test("GrooRoute preset keeps its API configuration and uses a neutral registration link", () => {
   const preset = PRESETS.find((candidate) => candidate.id === "grooroute");
   assert.ok(preset);
   assert.equal(preset.name, "GrooRoute");
   assert.equal(preset.baseUrl, "https://grooroute.com");
   assert.equal(preset.protocol, "responses");
   assert.equal(preset.model, "gpt-5.5");
-  assert.equal(preset.apiKeyUrl, "https://grooroute.com/register?aff=2B3KJR5SRNTX");
+  assert.equal(preset.apiKeyUrl, "https://grooroute.com/register");
+});
+
+test("built-in provider links contain no referral parameters or invitation paths", () => {
+  for (const preset of PRESETS) {
+    for (const link of [preset.websiteUrl, preset.apiKeyUrl].filter(Boolean)) {
+      const url = new URL(link!);
+      for (const key of url.searchParams.keys()) {
+        assert.ok(!/^(aff|affiliate|ic|ref|referral|invite|invite_code|invitation_code|utm_.+)$/i.test(key), `${preset.id}: ${key}`);
+      }
+      assert.ok(!/^\/i\//.test(url.pathname), `${preset.id}: invitation path`);
+    }
+  }
+  assert.equal(PRESETS.find(preset => preset.id === "siliconflow")?.apiKeyUrl, "https://cloud.siliconflow.cn/");
 });
 
 test("RunAPI preset uses the current v1 Base URL", () => {

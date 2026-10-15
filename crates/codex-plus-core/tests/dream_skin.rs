@@ -23,7 +23,9 @@ fn backend_settings_defaults_to_upstream_platform_theme_config() {
         assert_eq!(theme.name, "Dream Skin");
         assert_eq!(theme.tagline, "把喜欢的画面变成可交互的 Codex 工作台。");
         assert_eq!(theme.colors.as_ref().unwrap().accent, "#E25563");
-        assert_eq!(theme.extra_fields["promoSub"], "passion8.cc");
+    }
+    for key in ["promoTitle", "promoSub", "promoUrl"] {
+        assert!(!theme.extra_fields.contains_key(key));
     }
     assert!(!settings.codex_app_dream_skin_paused);
 }
@@ -72,6 +74,50 @@ fn target_theme_fields_survive_deserialize_and_serialize() {
     }
     assert!(saved.get("colors").is_none());
     assert!(saved.get("stylePreset").is_none());
+}
+
+#[test]
+fn legacy_promotion_is_preserved_in_storage_and_excluded_from_all_runtime_payloads() {
+    let mut settings = BackendSettings::default();
+    settings.codex_app_dream_skin_enabled = true;
+    settings
+        .codex_app_dream_skin_theme_config
+        .extra_fields
+        .extend(
+            serde_json::json!({
+                "promoTitle": "Legacy promotion",
+                "promoSub": "legacy-promotion.example",
+                "promoUrl": "https://legacy-promotion.example/?aff=old",
+                "customTargetField": {"nested": true}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+    let saved = serde_json::to_value(&settings).unwrap();
+    let signature = codex_plus_core::assets::dream_skin_runtime_content_signature(&settings);
+    let cold = codex_plus_core::assets::injection_script_with_settings(57321, &settings);
+    let live = codex_plus_core::assets::dream_skin_live_update_script(&settings, false);
+    for script in [&cold, &live] {
+        assert!(!script.contains("Legacy promotion"));
+        assert!(!script.contains("legacy-promotion.example"));
+        assert!(!script.contains("\\\"promoUrl\\\""));
+        assert!(script.contains("customTargetField"));
+    }
+    for key in ["promoTitle", "promoSub", "promoUrl"] {
+        settings
+            .codex_app_dream_skin_theme_config
+            .extra_fields
+            .remove(key);
+    }
+    assert_eq!(
+        signature,
+        codex_plus_core::assets::dream_skin_runtime_content_signature(&settings)
+    );
+    assert_eq!(
+        saved["codexAppDreamSkinThemeConfig"]["promoTitle"],
+        "Legacy promotion"
+    );
 }
 
 #[test]

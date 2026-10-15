@@ -633,18 +633,6 @@ pub struct WatcherPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AdsPayload {
-    pub version: u64,
-    pub ads: Vec<Value>,
-    /// 单条兼容字段，保留给仍使用旧格式的管理端消费者。
-    #[serde(rename = "topAd", skip_serializing_if = "Option::is_none")]
-    pub top_ad: Option<Value>,
-    /// 独立于推荐池的置顶赞助位，支持概览横幅轮播。
-    #[serde(rename = "topAds", skip_serializing_if = "Vec::is_empty")]
-    pub top_ads: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct ScriptMarketPayload {
     pub market: Value,
     pub user_scripts: Value,
@@ -5025,22 +5013,6 @@ fn persist_provider_sync_selection(provider: &str) {
 }
 
 #[tauri::command]
-pub async fn load_ads() -> CommandResult<AdsPayload> {
-    match codex_plus_core::ads::fetch_ad_list().await {
-        Ok(payload) => ok("推荐内容已加载。", ads_payload(payload)),
-        Err(error) => failed(
-            &format!("推荐内容加载失败：{error}"),
-            AdsPayload {
-                version: 1,
-                ads: Vec::new(),
-                top_ad: None,
-                top_ads: Vec::new(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
     match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
         Ok(manifest) => ok(
@@ -7461,23 +7433,6 @@ fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
         Ok(contents) => Ok(contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(error) => Err(error.into()),
-    }
-}
-
-fn ads_payload(payload: Value) -> AdsPayload {
-    AdsPayload {
-        version: payload.get("version").and_then(Value::as_u64).unwrap_or(1),
-        ads: payload
-            .get("ads")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        top_ad: payload.get("topAd").cloned(),
-        top_ads: payload
-            .get("topAds")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
     }
 }
 
@@ -10027,26 +9982,6 @@ model_reasoning_effort = "high"
                 .relay_context_config_contents
                 .contains("[mcp_servers.context7]")
         );
-    }
-
-    #[test]
-    fn ads_payload_keeps_version_and_ad_items() {
-        let payload = ads_payload(json!({
-            "version": 1,
-            "ads": [{"id": "ad-1", "type": "normal", "title": "Ad"}],
-            "topAd": {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
-            "topAds": [
-                {"id": "banner-1", "type": "sponsor", "title": "Banner 1"},
-                {"id": "banner-2", "type": "sponsor", "title": "Banner 2"}
-            ]
-        }));
-
-        assert_eq!(payload.version, 1);
-        assert_eq!(payload.ads.len(), 1);
-        assert_eq!(payload.ads[0]["id"], json!("ad-1"));
-        assert_eq!(payload.top_ad.as_ref().unwrap()["id"], json!("banner-1"));
-        assert_eq!(payload.top_ads.len(), 2);
-        assert_eq!(payload.top_ads[1]["id"], json!("banner-2"));
     }
 
     #[test]

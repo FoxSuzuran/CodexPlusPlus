@@ -161,15 +161,7 @@ const translations = {
   "一起把「++」做得更好": "Make ++ better together",
   "欢迎反馈问题、分享拓展、主题和使用经验。提交 Issue 时，请附上系统、Codex++ 版本、复现步骤与已脱敏的日志。": "Report issues and share extensions, themes, and tips. Include your operating system, Codex++ version, steps to reproduce, and redacted logs when opening an issue.",
   "QQ 交流 4 群 · 1127858981 ↗": "QQ community group 4 · 1127858981 ↗",
-  "感谢赞助商": "Thanks to our sponsors",
-  "感谢以下赞助商对项目的支持。服务范围、价格与活动以各平台官网说明为准。": "Thanks to these sponsors for supporting the project. Refer to each provider's official website for services, prices, and offers.",
-  "赞助商列表自动更新 · 查看来源 ↗": "Sponsors update automatically · View source ↗",
-  "赞助商列表加载中…": "Loading sponsors…",
-  "赞助商列表暂时无法加载，请稍后重试或查看来源。": "Sponsors could not be loaded. Try again later or view the source.",
-  "暂无有效赞助商。": "No active sponsors.",
   "重新加载": "Retry",
-  "请启用 JavaScript 加载最新赞助商列表，或通过上方链接查看来源。": "Enable JavaScript to load the latest sponsors, or use the source link above.",
-  "想支持项目或展示品牌？": "Want to support the project or showcase your brand?",
   "联系维护者 ↗": "Contact the maintainer ↗",
   "给 Codex 桌面应用加一点「++」": "Add a little ++ to the Codex desktop app",
   "从供应商配置到界面增强，先从管理工具开始。": "From provider settings to interface enhancements, start with the manager.",
@@ -216,9 +208,6 @@ let detectedPlatform = "windows";
 let releaseAssets = new Map();
 let releaseVersion = null;
 let repositoryStars = null;
-let sponsorState = "loading";
-let sponsorCount = 0;
-let sponsorsLoading = false;
 
 const translate = (text) => currentLanguage === "en" ? (translations[text] || text) : text;
 
@@ -288,7 +277,6 @@ const updateDynamicLabels = () => {
     element.textContent = releaseVersion || translate("GitHub 最新发布");
   });
   releaseAssets.forEach(({ asset, legacyMacBuilds }, platform) => setPlatformAsset(platform, asset, legacyMacBuilds));
-  updateSponsorStatus();
 
   if (Number.isFinite(repositoryStars)) {
     const compact = new Intl.NumberFormat(currentLanguage === "zh" ? "zh-CN" : "en-US", {
@@ -386,166 +374,6 @@ const updateRepositoryStats = async () => {
   } catch (error) {
     console.info("Using bundled repository stats", error);
   }
-};
-
-// 与管理工具共用远端清单，不保留需要单独维护的品牌名单或图片映射。
-const sponsorSources = [
-  "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
-  "https://cdn.jsdelivr.net/gh/BigPizzaV3/Ad-List@main/ads.json",
-];
-
-const sponsorUrl = (value, sourceUrl) => {
-  if (typeof value !== "string" || !value.trim()) return "";
-  try {
-    const url = new URL(value.trim(), sourceUrl);
-    return ["https:", "http:"].includes(url.protocol) ? url.href : "";
-  } catch {
-    return "";
-  }
-};
-
-const normalizeSponsors = (payload, sourceUrl, now = Date.now()) => {
-  const normalize = (ad) => {
-    if (!ad || ad.type !== "sponsor") return null;
-    if (![ad.title, ad.description, ad.url].every((value) => typeof value === "string" && value.trim())) return null;
-    const url = sponsorUrl(ad.url);
-    const expiresAt = typeof ad.expires_at === "string" ? Date.parse(ad.expires_at) : NaN;
-    if (!url || (Number.isFinite(expiresAt) && expiresAt < now)) return null;
-    return {
-      title: ad.title.trim(),
-      description: ad.description.trim(),
-      url,
-      image: sponsorUrl(ad.image, sourceUrl),
-      highlights: Array.isArray(ad.highlights)
-        ? ad.highlights.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim())
-        : [],
-    };
-  };
-  const seen = new Set();
-  const collect = (items) => items.map(normalize).filter((ad) => {
-    if (!ad) return false;
-    const url = new URL(ad.url);
-    const identity = `${url.host}${url.pathname}`.replace(/\/+$/, "").toLowerCase();
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return true;
-  });
-  const rawFeatured = payload?.top_ad ?? (Array.isArray(payload?.topAds) && payload.topAds.length ? payload.topAds : payload?.topAd);
-  const featured = collect(Array.isArray(rawFeatured) ? rawFeatured : rawFeatured ? [rawFeatured] : []);
-  const ads = collect(Array.isArray(payload?.ads) ? payload.ads : []);
-  return { featured, ads };
-};
-
-const fetchSponsorList = async () => {
-  const cacheBust = Date.now();
-  let lastError;
-  for (const sourceUrl of sponsorSources) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    try {
-      const response = await fetch(`${sourceUrl}?v=${cacheBust}`, {
-        cache: "no-store",
-        credentials: "omit",
-        signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(`Sponsor source returned ${response.status}`);
-      const payload = await response.json();
-      if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
-          (!Array.isArray(payload.ads) && ![payload.top_ad, payload.topAds, payload.topAd].some((value) => value && typeof value === "object"))) {
-        throw new Error("Invalid sponsor list");
-      }
-      return { payload, sourceUrl };
-    } catch (error) {
-      lastError = error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError || new Error("Sponsor list unavailable");
-};
-
-const updateSponsorStatus = () => {
-  const status = document.querySelector("[data-sponsor-status]");
-  if (!status) return;
-  const message = sponsorState === "loading" ? "赞助商列表加载中…"
-    : sponsorState === "error" ? "赞助商列表暂时无法加载，请稍后重试或查看来源。"
-    : sponsorCount === 0 ? "暂无有效赞助商。" : "";
-  status.textContent = translate(message);
-  status.hidden = !message;
-  const retry = document.querySelector("[data-sponsor-retry]");
-  if (retry) retry.hidden = sponsorState !== "error";
-};
-
-const createSponsorCard = (ad, featured) => {
-  const card = document.createElement("a");
-  card.className = featured ? "sponsor-banner" : "sponsor-card";
-  card.href = ad.url;
-  card.target = "_blank";
-  card.rel = "noreferrer";
-  const placeholder = document.createElement("span");
-  placeholder.className = "sponsor-mark";
-  placeholder.textContent = ad.title.slice(0, 1);
-  placeholder.setAttribute("aria-hidden", "true");
-  if (ad.image) {
-    const image = document.createElement("img");
-    image.src = ad.image;
-    image.alt = "";
-    image.loading = "lazy";
-    image.addEventListener("error", () => image.replaceWith(placeholder), { once: true });
-    card.append(image);
-  } else {
-    card.append(placeholder);
-  }
-  const copy = document.createElement("div");
-  copy.className = "sponsor-copy";
-  const title = document.createElement("h4");
-  title.textContent = `${ad.title} ↗`;
-  const description = document.createElement("p");
-  description.textContent = ad.description;
-  copy.append(title, description);
-  if (ad.highlights.length) {
-    const highlights = document.createElement("ul");
-    highlights.className = "sponsor-highlights";
-    ad.highlights.forEach((value) => {
-      const item = document.createElement("li");
-      item.textContent = value;
-      highlights.append(item);
-    });
-    copy.append(highlights);
-  }
-  card.append(copy);
-  return card;
-};
-
-const updateSponsors = async () => {
-  const featured = document.querySelector("[data-sponsor-featured]");
-  const grid = document.querySelector("[data-sponsor-grid]");
-  if (!featured || !grid || sponsorsLoading) return;
-  sponsorsLoading = true;
-  sponsorState = "loading";
-  updateSponsorStatus();
-  try {
-    const { payload, sourceUrl } = await fetchSponsorList();
-    const sponsors = normalizeSponsors(payload, sourceUrl);
-    featured.replaceChildren(...sponsors.featured.map((ad) => createSponsorCard(ad, true)));
-    grid.replaceChildren(...sponsors.ads.map((ad) => createSponsorCard(ad, false)));
-    sponsorCount = sponsors.featured.length + sponsors.ads.length;
-    sponsorState = "loaded";
-  } catch (error) {
-    featured.replaceChildren();
-    grid.replaceChildren();
-    sponsorCount = 0;
-    sponsorState = "error";
-    console.info("Sponsor list unavailable", error);
-  } finally {
-    sponsorsLoading = false;
-    updateSponsorStatus();
-  }
-};
-
-const setupSponsors = () => {
-  document.querySelector("[data-sponsor-retry]")?.addEventListener("click", updateSponsors);
-  updateSponsors();
 };
 
 const platformFromDevice = () => {
@@ -763,7 +591,6 @@ setupPlatformPicker();
 setupLanguageSwitcher();
 setupHeroNetwork();
 setupReveal();
-setupSponsors();
 updateRelease();
 updateRepositoryStats();
 

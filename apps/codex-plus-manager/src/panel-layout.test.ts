@@ -173,13 +173,13 @@ it("cleans up the previous extension before opening another extension page", () 
 });
 
 it("keeps only the current rail entry selected and removes inactive aria-current attributes", () => {
-  const buttons = Array.from({ length: 4 }, () => ({
+  const buttons = Array.from({ length: 3 }, () => ({
     dataset: {} as Record<string, string>,
     attributes: new Map<string, string>(),
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
     removeAttribute(name: string) { this.attributes.delete(name); },
   }));
-  const ids = ["home", "extensions", "sponsor"];
+  const ids = ["home", "extensions"];
   const document = {
     getElementById: (id: string) => {
       assert.equal(id, "sidebar", "retired plugin navigation must not be queried");
@@ -191,7 +191,6 @@ it("keeps only the current rail entry selected and removes inactive aria-current
     const codexPlusSidebarNavId = "sidebar";
     const codexPlusRailNavId = "home";
     const codexPlusRailExtensionsId = "extensions";
-    const codexPlusRailSponsorId = "sponsor";
     function syncCodexPlusRailNativeSelection() {}
     ${functionSource("setCodexPlusSidebarNavActive")}
     return setCodexPlusSidebarNavActive;
@@ -208,7 +207,7 @@ it("keeps only the current rail entry selected and removes inactive aria-current
   for (const button of buttons) assert.equal(button.attributes.has("aria-current"), false);
 });
 
-it("replaces version 31 styles with bounded panel geometry and keeps version 35 reinjection idempotent", () => {
+it("replaces version 35 styles with bounded panel geometry and keeps version 36 reinjection idempotent", () => {
   const styleSource = functionSource("installStyle");
   const names = new Set([
     "styleId", "codexDeleteStyleVersion",
@@ -221,7 +220,7 @@ it("replaces version 31 styles with bounded panel geometry and keeps version 35 
     return match[0];
   }).join("\n");
   let existing: { dataset: Record<string, string>; textContent?: string; remove(): void } | null = {
-    dataset: { codexDeleteStyleVersion: "31" },
+    dataset: { codexDeleteStyleVersion: "35" },
     remove() { existing = null; },
   };
   let appended = 0;
@@ -232,7 +231,7 @@ it("replaces version 31 styles with bounded panel geometry and keeps version 35 
   };
   const install = new Function("document", `${declarations}\n${styleSource}\nreturn installStyle;`)(document);
   install();
-  assert.equal(existing?.dataset.codexDeleteStyleVersion, "35");
+  assert.equal(existing?.dataset.codexDeleteStyleVersion, "36");
   const pageRules = existing!.textContent!.match(/\.codex-plus-page-overlay\s*\{([^}]+)\}/)![1];
   assert.match(pageRules, /right: var\(--codex-plus-page-right, 0px\)/);
   assert.match(pageRules, /bottom: var\(--codex-plus-page-bottom, 0px\)/);

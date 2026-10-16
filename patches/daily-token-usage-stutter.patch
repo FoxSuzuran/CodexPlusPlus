@@ -1,0 +1,46 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index 0b57ea2b..73312c98 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -5152,18 +5152,18 @@
+     return nativeHeaders[0]?.node || null;
+   }
+ 
+-  function isTopChromeObstacleNode(node, style) {
++  function isTopChromeObstacleNode(node, style, header) {
+     if (!node) return false;
+     if (node.id === CODEX_PLUS_MENU_ID || node.closest?.(`#${CODEX_PLUS_MENU_ID}`)) return true;
+     if (node.matches?.(APP_HEADER_SURFACE_SELECTOR)) return false;
+     if (!isPrimaryTopObstacleNode(node) && style?.pointerEvents === "none") return false;
+-    const header = findAppHeaderElement();
+     if (header?.contains?.(node)) return true;
+     return style?.position === "fixed" || style?.position === "sticky";
+   }
+ 
+   function collectTopObstacleEntries() {
+     if (!document.body?.querySelectorAll) return [];
++    const header = findAppHeaderElement();
+     const entries = Array.from(document.body.querySelectorAll(TOP_OBSTACLE_SELECTOR))
+       .filter((node) => !root?.contains(node) && !panel?.contains(node))
+       .map((node) => {
+@@ -5173,7 +5173,7 @@
+         if (rect.width > innerWidth * 0.85 || rect.height > FLOATING_SCAN_TOP) return null;
+         const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+         if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;
+-        if (!isTopChromeObstacleNode(node, style)) return null;
++        if (!isTopChromeObstacleNode(node, style, header)) return null;
+         return { node, rect };
+       })
+       .filter(Boolean);
+@@ -5731,8 +5731,9 @@
+     refresh();
+ 
+     observer = new MutationObserver((records) => {
+-      if (!records.some((record) => !root?.contains(record.target) && !panel?.contains(record.target))) return;
+-      scheduleMountRoot();
++      const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target));
++      if (!external.length) return;
++      if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose'))) scheduleMountRoot();
+       scheduleDomToolScan();
+     });
+     observer.observe(document.documentElement, {

@@ -19720,6 +19720,7 @@
       "[data-codex-archive-delete-all]",
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
+      '[data-content-search-turn-key]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
@@ -19750,9 +19751,12 @@
 
   function isChatContentMutation(mutation) {
     const target = mutation.target;
-    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], main .prose')) return false;
-    return !Array.from(mutation.addedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node)) &&
-      !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
+    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose')) return false;
+    const selector = scanRelevantSelector();
+    // A streamed child inherits its turn's relevance; only new scan targets need a full pass.
+    return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) =>
+      node.nodeType === 1 && !isExtensionUiNode(node) &&
+      (node.matches?.(selector) || node.querySelector?.(selector) || nodeLooksLikeCodexUserBubble(node)));
   }
 
   function shouldScheduleScan(mutations) {

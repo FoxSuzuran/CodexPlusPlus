@@ -1,0 +1,178 @@
+diff --git a/market-codex-context-used-meter.js b/market-codex-context-used-meter.js
+index f523e5b5..0ce1a2a9 100644
+--- a/market-codex-context-used-meter.js
++++ b/market-codex-context-used-meter.js
+@@ -972,11 +972,12 @@
+     const portal = state.historyPortal || document.getElementById(HISTORY_PORTAL_ID);
+     if (!root || !portal) return;
+ 
+-    portal.dataset.theme = root.dataset.theme === "light" ? "light" : "dark";
++    const theme = root.dataset.theme === "light" ? "light" : "dark";
++    if (portal.dataset.theme !== theme) portal.dataset.theme = theme;
+     const computed = getComputedStyle(root);
+     for (const name of HISTORY_PORTAL_THEME_VARIABLES) {
+       const value = computed.getPropertyValue(name);
+-      if (value) portal.style.setProperty(name, value.trim());
++      if (value && portal.style.getPropertyValue(name) !== value.trim()) portal.style.setProperty(name, value.trim());
+     }
+   }
+ 
+@@ -987,6 +988,7 @@
+     if (!portal) {
+       portal = document.createElement("div");
+       portal.id = HISTORY_PORTAL_ID;
++      portal.setAttribute("data-codex-plus-ext", "codex-context-used-meter");
+       portal.dataset.historyOpen = "false";
+       document.body.appendChild(portal);
+     } else if (portal.parentNode !== document.body) {
+@@ -1000,14 +1002,12 @@
+ 
+     state.historyPortal = portal;
+     state.historyPanel = portal.querySelector(".ccm-history-panel");
+-    if (root && portal.dataset.historyOpen !== root.dataset.historyOpen) {
++    if (root && (portal.dataset.historyOpen === "true") !== (root.dataset.historyOpen === "true")) {
+       portal.dataset.historyOpen = root.dataset.historyOpen === "true" ? "true" : "false";
+     }
+-    if (state.historyPanel) {
+-      state.historyPanel.setAttribute(
+-        "aria-hidden",
+-        portal.dataset.historyOpen === "true" ? "false" : "true",
+-      );
++    const ariaHidden = portal.dataset.historyOpen === "true" ? "false" : "true";
++    if (state.historyPanel && state.historyPanel.getAttribute("aria-hidden") !== ariaHidden) {
++      state.historyPanel.setAttribute("aria-hidden", ariaHidden);
+     }
+     syncHistoryPortalTheme(root);
+     return portal;
+@@ -1051,6 +1051,7 @@
+ 
+     root = document.createElement("div");
+     root.id = ROOT_ID;
++    root.setAttribute("data-codex-plus-ext", "codex-context-used-meter");
+     root.innerHTML = `
+       <div class="ccm-card ccm-context-card" data-known="false" data-level="normal" hidden>
+         <div class="ccm-row">
+@@ -1088,6 +1089,7 @@
+     ) {
+       return state.inlineMountCache;
+     }
++    if (!state.inlineMountCache && state.inlineMountLookupAt && now - state.inlineMountLookupAt < SWITCH_RETRY_INTERVAL_MS) return null;
+     state.inlineMountLookupAt = now;
+ 
+     const visibleDirectChildren = (node) =>
+@@ -1225,7 +1227,7 @@
+       state.inlineMountPending = false;
+       if (root.parentNode !== document.body) document.body.appendChild(root);
+       state.inlineHost = null;
+-      root.dataset.placement = "floating";
++      if (root.dataset.placement !== "floating") root.dataset.placement = "floating";
+       applyFloatingUiState(root);
+       refreshOpenSpendHistory(root);
+       return;
+@@ -1238,8 +1240,8 @@
+       state.inlineMountCache = null;
+       state.inlineMountPending = true;
+       if (root.parentNode !== document.body) document.body.appendChild(root);
+-      root.dataset.placement = "inline";
+-      root.hidden = true;
++      if (root.dataset.placement !== "inline") root.dataset.placement = "inline";
++      if (!root.hidden) root.hidden = true;
+       applyFloatingUiState(root);
+       closeSpendHistory();
+       scheduleUpdate(SWITCH_RETRY_INTERVAL_MS);
+@@ -1254,18 +1256,20 @@
+     state.inlineBefore = before;
+     state.inlineMountCache = mount;
+     state.inlineMountPending = false;
+-    root.dataset.placement = "inline";
++    if (root.dataset.placement !== "inline") root.dataset.placement = "inline";
+     applyFloatingUiState(root);
+     refreshOpenSpendHistory(root);
+   }
+ 
+   function applyFloatingUiState(root) {
+     const uiState = state.uiState || DEFAULT_FLOATING_UI;
+-    root.style.setProperty("--ccm-float-x", `${Math.round(uiState.x)}px`);
+-    root.style.setProperty("--ccm-float-y", `${Math.round(uiState.y)}px`);
+-    root.style.setProperty("--ccm-float-scale", String(uiState.scale));
+-    root.dataset.floatingLayout = uiState.floatingLayout === "vertical" ? "vertical" : "horizontal";
+-    root.dataset.theme = uiState.theme === "light" ? "light" : "dark";
++    if (root.style.getPropertyValue("--ccm-float-x") !== `${Math.round(uiState.x)}px`) root.style.setProperty("--ccm-float-x", `${Math.round(uiState.x)}px`);
++    if (root.style.getPropertyValue("--ccm-float-y") !== `${Math.round(uiState.y)}px`) root.style.setProperty("--ccm-float-y", `${Math.round(uiState.y)}px`);
++    if (root.style.getPropertyValue("--ccm-float-scale") !== String(uiState.scale)) root.style.setProperty("--ccm-float-scale", String(uiState.scale));
++    const layout = uiState.floatingLayout === "vertical" ? "vertical" : "horizontal";
++    if (root.dataset.floatingLayout !== layout) root.dataset.floatingLayout = layout;
++    const theme = uiState.theme === "light" ? "light" : "dark";
++    if (root.dataset.theme !== theme) root.dataset.theme = theme;
+     syncHistoryPortalTheme(root);
+   }
+ 
+@@ -2072,8 +2076,8 @@
+       state.historyCloseTimer = 0;
+     }
+     if (root.dataset.historyOpen !== "false") root.dataset.historyOpen = "false";
+-    if (state.historyPortal) state.historyPortal.dataset.historyOpen = "false";
+-    if (state.historyPanel) {
++    if (state.historyPortal && state.historyPortal.dataset.historyOpen !== "false") state.historyPortal.dataset.historyOpen = "false";
++    if (state.historyPanel && state.historyPanel.getAttribute("aria-hidden") !== "true") {
+       state.historyPanel.setAttribute("aria-hidden", "true");
+     }
+   }
+@@ -2289,14 +2293,15 @@
+     const contextVisible = state.contextCard && !state.contextCard.hidden;
+     const providerVisible = state.providerCard && !state.providerCard.hidden;
+     if (state.inlineMountPending && (state.uiState || readUiState()).mode !== "floating") {
+-      root.hidden = true;
++      if (!root.hidden) root.hidden = true;
+       closeSpendHistory();
+       return;
+     }
+ 
+     const hidden = !contextVisible && !providerVisible;
+     const keepVisibleForSpend = hidden && hasPendingSpendEffects();
+-    root.hidden = hidden && !keepVisibleForSpend;
++    const nextHidden = hidden && !keepVisibleForSpend;
++    if (root.hidden !== nextHidden) root.hidden = nextHidden;
+     if (hidden) {
+       closeSpendHistory();
+       if (!keepVisibleForSpend) clearSpendEffects();
+@@ -2316,8 +2321,8 @@
+     if (fill.style.width !== "0%") fill.style.width = "0%";
+     const ring = state.contextRing || card.querySelector(".ccm-ring");
+     if (ring && !state.contextRing) state.contextRing = ring;
+-    if (ring) ring.style.setProperty("--ccm-ring-angle", "0deg");
+-    card.hidden = true;
++    if (ring && ring.style.getPropertyValue("--ccm-ring-angle") !== "0deg") ring.style.setProperty("--ccm-ring-angle", "0deg");
++    if (!card.hidden) card.hidden = true;
+     updateDockVisibility(root);
+   }
+ 
+@@ -2330,8 +2335,8 @@
+     if (state.providerFill && state.providerFill.style.width !== "0%") state.providerFill.style.width = "0%";
+     const ring = state.providerRing || card.querySelector(".ccm-ring");
+     if (ring && !state.providerRing) state.providerRing = ring;
+-    if (ring) ring.style.setProperty("--ccm-ring-angle", "0deg");
+-    card.hidden = true;
++    if (ring && ring.style.getPropertyValue("--ccm-ring-angle") !== "0deg") ring.style.setProperty("--ccm-ring-angle", "0deg");
++    if (!card.hidden) card.hidden = true;
+     updateDockVisibility(root);
+   }
+ 
+@@ -2391,7 +2396,7 @@
+     if (state.providerFill.style.width !== width) state.providerFill.style.width = width;
+     const providerRing = state.providerRing || card.querySelector(".ccm-ring");
+     if (providerRing && !state.providerRing) state.providerRing = providerRing;
+-    if (providerRing) providerRing.style.setProperty("--ccm-ring-angle", `${leftPercent * 3.6}deg`);
++    if (providerRing && providerRing.style.getPropertyValue("--ccm-ring-angle") !== `${leftPercent * 3.6}deg`) providerRing.style.setProperty("--ccm-ring-angle", `${leftPercent * 3.6}deg`);
+     if (card.hidden) card.hidden = false;
+     updateDockVisibility(root);
+   }
+@@ -3631,7 +3636,7 @@
+     if (value.textContent !== text) value.textContent = text;
+     if (fill.style.width !== width) fill.style.width = width;
+     const contextRing = state.contextRing;
+-    if (contextRing) contextRing.style.setProperty("--ccm-ring-angle", `${displayPercent * 3.6}deg`);
++    if (contextRing && contextRing.style.getPropertyValue("--ccm-ring-angle") !== `${displayPercent * 3.6}deg`) contextRing.style.setProperty("--ccm-ring-angle", `${displayPercent * 3.6}deg`);
+     if (compressionZone && compressionZone.style.width !== compressionZoneWidth) {
+       compressionZone.style.width = compressionZoneWidth;
+     }

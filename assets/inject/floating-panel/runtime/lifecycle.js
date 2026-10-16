@@ -4,6 +4,7 @@
     if (!isCurrentRuntime(generation)) return;
     if (timerId && state.timer !== timerId) return;
     if (timerId) state.timer = 0;
+    if (document.hidden) return;
     state.scans += 1;
     installStyle();
     installFloat();
@@ -138,7 +139,7 @@
   }
 
   function scheduleScan(delay = SCAN_DELAY_MS) {
-    if (!isCurrentRuntime()) return;
+    if (!isCurrentRuntime() || document.hidden) return;
     if (state.timer) window.clearTimeout(state.timer);
     const generation = state.runtimeGeneration;
     const timer = window.setTimeout(() => scan(generation, timer), delay);
@@ -151,11 +152,19 @@
     if (!root) return false;
 
     const generation = state.runtimeGeneration;
+    const conversationSelector = `${CONVERSATION_TURN_SELECTOR}, .thread-scroll-container, [data-message-author-role], .ProseMirror, textarea, [role="textbox"], .prose, .markdown`;
+    const relevantNode = (node) => {
+      const element = node instanceof Element ? node : node.parentElement;
+      if (!element || state.root?.contains(element) || element.closest("[data-codex-plus-ext]")) return false;
+      return Boolean(element.closest(conversationSelector) || element.querySelector(conversationSelector));
+    };
     state.observer = new MutationObserver((mutations) => {
-      if (!isCurrentRuntime(generation)) return;
+      if (!isCurrentRuntime(generation) || document.hidden) return;
       const relevant = mutations.some((mutation) => {
-        if (state.root?.contains(mutation.target)) return false;
-        return mutation.addedNodes.length || mutation.type === "characterData";
+        const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+        if (state.root?.contains(target) || target?.closest("[data-codex-plus-ext]")) return false;
+        if (mutation.type === "characterData") return relevantNode(mutation.target);
+        return [...mutation.addedNodes, ...mutation.removedNodes].some(relevantNode);
       });
       if (relevant) scheduleScan();
     });
@@ -164,6 +173,16 @@
       subtree: true,
       characterData: true,
     });
+    state.visibilityHandler = () => {
+      if (!isCurrentRuntime(generation)) return;
+      if (document.hidden) {
+        window.clearTimeout(state.timer);
+        state.timer = 0;
+      } else {
+        scheduleScan(0);
+      }
+    };
+    document.addEventListener("visibilitychange", state.visibilityHandler);
     return true;
   }
 
@@ -172,6 +191,8 @@
     state.runtimeActive = false;
     state.runtimeGeneration += 1;
     state.latestTurnAnchor = null;
+    if (state.visibilityHandler) document.removeEventListener("visibilitychange", state.visibilityHandler);
+    state.visibilityHandler = null;
     if (state.domReadyHandler) document.removeEventListener("DOMContentLoaded", state.domReadyHandler);
     state.domReadyHandler = null;
     if (state.timer) window.clearTimeout(state.timer);

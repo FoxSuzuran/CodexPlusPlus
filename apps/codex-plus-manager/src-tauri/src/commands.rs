@@ -4258,7 +4258,32 @@ pub fn list_local_sessions(
 }
 
 #[tauri::command]
-pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+pub async fn delete_local_session(
+    request: DeleteLocalSessionRequest,
+) -> CommandResult<DeleteResult> {
+    let session_id = request.session_id.clone();
+    match tauri::async_runtime::spawn_blocking(move || delete_local_session_blocking(request)).await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let message = format!("删除本地会话失败：{error}");
+            failed(
+                &message,
+                DeleteResult {
+                    status: codex_plus_core::models::DeleteStatus::Failed,
+                    session_id,
+                    message: message.clone(),
+                    undo_token: None,
+                    backup_path: None,
+                },
+            )
+        }
+    }
+}
+
+fn delete_local_session_blocking(
+    request: DeleteLocalSessionRequest,
+) -> CommandResult<DeleteResult> {
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
         return failed(
@@ -9200,11 +9225,11 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = delete_local_session(DeleteLocalSessionRequest {
+        let result = tauri::async_runtime::block_on(delete_local_session(DeleteLocalSessionRequest {
             session_id: "t1".to_string(),
             title: "Active Thread".to_string(),
             db_path: Some(stale_db.to_string_lossy().to_string()),
-        });
+        }));
         unsafe {
             if let Some(value) = previous_codex_home {
                 std::env::set_var("CODEX_HOME", value);
@@ -9339,11 +9364,11 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = delete_local_session(DeleteLocalSessionRequest {
+        let result = tauri::async_runtime::block_on(delete_local_session(DeleteLocalSessionRequest {
             session_id: "t1".to_string(),
             title: "Legacy Copy".to_string(),
             db_path: Some(legacy_db.to_string_lossy().to_string()),
-        });
+        }));
         restore_codex_home(previous_codex_home);
 
         assert_eq!(result.status, "ok");

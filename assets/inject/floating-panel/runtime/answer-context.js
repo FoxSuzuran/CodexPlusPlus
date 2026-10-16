@@ -717,9 +717,16 @@
   function conversationTurns() {
     const root = chatRoot();
     if (!root) return [];
-    return Array.from(root.querySelectorAll(CONVERSATION_TURN_SELECTOR))
-      .map(conversationTurn)
-      .filter(Boolean);
+    let latest = null;
+    let latestKey = "";
+    for (const turn of root.querySelectorAll(CONVERSATION_TURN_SELECTOR)) {
+      const key = normalizeText(turn.getAttribute("data-content-search-turn-key") || "");
+      if (key && (!latest || compareConversationTurnKeys(latestKey, key) < 0)) {
+        latest = turn;
+        latestKey = key;
+      }
+    }
+    return latest ? [conversationTurn(latest)].filter(Boolean) : [];
   }
 
   function compareConversationTurnKeys(left, right) {

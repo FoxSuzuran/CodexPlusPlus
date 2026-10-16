@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2812
+      "lines": 2699
     },
     {
       "name": "20-menu.js",
@@ -28,7 +28,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1944
+      "lines": 1827
     },
     {
       "name": "50-navigation.js",
@@ -78,7 +78,7 @@
     {
       "name": "83-usage-statusline.js",
       "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
-      "lines": 416
+      "lines": 423
     },
     {
       "name": "90-action-groups.js",

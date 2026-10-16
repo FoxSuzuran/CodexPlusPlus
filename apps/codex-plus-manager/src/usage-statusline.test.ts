@@ -78,6 +78,67 @@ function event(secondsFromStart: number, turnOutputTokens: number, extra: Record
   };
 }
 
+function placementHarness() {
+  let thread = "thread-a";
+  const renders: Array<{ thread: string; context: number | null }> = [];
+  const requests: Array<{ thread: string; resolve: (value: unknown) => void }> = [];
+  const names = [
+    "codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageFailureLimit",
+    "codexPlusUsageIdleIntervalMs", "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs",
+    "codexPlusUsagePercent", "codexPlusUsageRate", "codexPlusUsageSnapshot",
+    "codexPlusUsageEnabled", "codexPlusUsageSyncPlacement", "codexPlusUsageRefresh", "codexPlusUsageTick",
+  ];
+  const factory = new Function("document", "codexPlusUsageComposerCard", "codexPlusUsageThreadId",
+    "codexPlusUsageInstallStyle", "codexPlusUsageEnsureNode", "codexPlusUsageShow", "codexPlusUsageHide",
+    "codexPlusUsageRender", "codexPlusUsageSchedule", "postJson", "sendCodexPlusDiagnostic",
+    `${names.map(declaration).join("\n")}
+    const codexPlusBackendSettingsLoaded = true;
+    const codexPlusSettings = () => ({ usageStatusLine: true });
+    return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, refresh: codexPlusUsageRefresh };`);
+  const api = factory({ hidden: false }, () => ({ thread }), (card: { thread: string }) => card.thread,
+    () => {}, () => ({}), () => {}, () => {},
+    (snapshot: { context: number } | null) => renders.push({ thread, context: snapshot?.context ?? null }),
+    () => {}, (_: string, body: { session_id: string }) => new Promise((resolve) => requests.push({ thread: body.session_id, resolve })),
+    () => {});
+  return { ...api, renders, requests, setThread: (next: string) => { thread = next; } };
+}
+
+test("usage switches immediately show cached data and late requests cannot paint another thread", async () => {
+  const h = placementHarness();
+  h.state.cache.set("thread-a", [event(0, 10, { total_tokens: 10, context_window: 100 })]);
+  h.state.cache.set("thread-b", [event(0, 20, { total_tokens: 20, context_window: 100 })]);
+  const pending = h.tick();
+  assert.equal(h.renders.at(-1)?.context, 10, "cached data displays before the bridge responds");
+  h.setThread("thread-b");
+  h.sync();
+  assert.equal(h.renders.at(-1)?.context, 20);
+  h.requests[0].resolve({ status: "ok", events: [event(0, 30, { total_tokens: 30, context_window: 100 })] });
+  await pending;
+  assert.deepEqual(h.renders.at(-1), { thread: "thread-b", context: 20 });
+  assert.equal(h.state.cache.get("thread-a")[0].total_tokens, 30);
+  h.setThread("thread-c");
+  h.sync();
+  assert.equal(h.renders.at(-1)?.context, null, "uncached threads cannot inherit previous numbers");
+  h.setThread("thread-a");
+  h.sync();
+  assert.equal(h.renders.at(-1)?.context, 30);
+});
+
+test("usage data cache stays bounded and placement reacquires its node on every sync", async () => {
+  const h = placementHarness();
+  for (let index = 0; index < 33; index++) {
+    const pending = h.refresh(`thread-${index}`);
+    h.requests.at(-1)!.resolve({ status: "ok", events: [event(0, index)] });
+    await pending;
+  }
+  assert.equal(h.state.cache.size, 32);
+  assert.equal(h.state.cache.has("thread-0"), false);
+  h.setThread("thread-32");
+  h.sync(); h.sync();
+  assert.equal(h.renders.length, 2);
+  assert.doesNotMatch(declaration("codexPlusUsageState"), /\b(node|card|parts)\s*:/, "persistent state contains data only");
+});
+
 test("生成速度按同一轮内相邻事件差计算，换轮时切段", () => {
   const { codexPlusUsageRate } = sandbox(Date.UTC(2026, 5, 2, 5, 1, 0));
   const events = [

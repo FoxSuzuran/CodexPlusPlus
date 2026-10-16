@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "设置有未保存修改": "Settings have unsaved changes",
+  "搜索本页标题、目录或会话 ID": "Search this page by title, directory or session ID",
+  "取消全选": "Deselect all",
   "本地服务器状态": "Local server status",
   "调试连接状态": "Debug connection status",
   "当前配置无需本地服务器": "The current configuration does not require a local server",
@@ -1441,6 +1444,9 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "本页已选 {0} 项": "{0} selected on this page",
+  "第 {0} 页 · 共 {1} 个会话": "Page {0} · {1} sessions total",
+  "选择会话：{0}": "Select session: {0}",
   "{0} 个插件": "{0} plugins",
   "{0} / {1} 个插件": "{0} / {1} plugins",
   "查看插件 {0} 的详情": "View details for plugin {0}",

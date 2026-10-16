@@ -1226,6 +1226,7 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const localSessionsRequestSequence = useRef(0);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -1245,6 +1246,8 @@ export function App() {
   const [pendingDreamSkinRestart, setPendingDreamSkinRestart] = useState<PendingDreamSkinRestart | null>(null);
   const [dreamSkinUnsavedDialog, setDreamSkinUnsavedDialog] = useState(false);
   const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
+  const [settingsUnsavedDialog, setSettingsUnsavedDialog] = useState(false);
+  const settingsPendingActionRef = useRef<(() => void) | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
     active: false,
@@ -1296,6 +1299,17 @@ export function App() {
     () => Boolean(settings && !backendSettingsEqual(settingsForm, settings.settings)),
     [settings, settingsForm],
   );
+  const settingsDraftRef = useRef({ dirty: settingsDirty, form: settingsForm, saved: settings?.settings });
+  settingsDraftRef.current = { dirty: settingsDirty, form: settingsForm, saved: settings?.settings };
+
+  const runAfterSettingsDraftGuard = (action: () => void) => {
+    if (!settingsDraftRef.current.dirty) {
+      action();
+      return;
+    }
+    settingsPendingActionRef.current = action;
+    setSettingsUnsavedDialog(true);
+  };
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -1324,7 +1338,7 @@ export function App() {
 
   /// 切换侧栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
   /// 不触发任何供应商配置写入 —— 切工具 ≠ 切供应商。
-  const switchTool = async (toolId: ToolId) => {
+  const switchTool = async (toolId: ToolId, skipDraftGuard = false, skipDreamSkinDraftGuard = false) => {
     if (toolId === activeTool) {
       // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
       if (globalNavigationRoutes.includes(route)) await navigate("overview");
@@ -1335,9 +1349,18 @@ export function App() {
       showNotice(t("该工具暂不可切换"), tf("{0} 的供应商配置还没接入，切过去只会显示空列表。", [target.name]), "failed");
       return;
     }
+    if (!skipDraftGuard && settingsDraftRef.current.dirty) {
+      runAfterSettingsDraftGuard(() => void switchTool(toolId, true, skipDreamSkinDraftGuard));
+      return;
+    }
+    if (!skipDreamSkinDraftGuard && route === "dreamSkin" && dreamSkinDraftDirty) {
+      runAfterDreamSkinDraftGuard(() => void switchTool(toolId, skipDraftGuard, true));
+      return;
+    }
+    const next = { ...settingsDraftRef.current.form, activeTool: toolId };
+    const saved = await saveSettingsValue(next, true);
+    if (!saved) return;
     setActiveTool(toolId);
-    const next = { ...settingsForm, activeTool: toolId };
-    setSettingsForm(next);
     // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
     const currentRoute = routes.find((candidate) => candidate.id === route);
     if (toolId === "claude") {
@@ -1345,17 +1368,7 @@ export function App() {
     } else if (currentRoute?.tool && currentRoute.tool !== toolId) {
       setRoute(toolId === "grok" ? "grok" : "relay");
     }
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
-      if (globalNavigationRoutes.includes(route)) await navigate("overview");
-    } else {
-      // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
-      setActiveTool(activeTool);
-      void refreshSettings(true);
-    }
+    if (globalNavigationRoutes.includes(route)) await navigate("overview");
   };
 
   const refreshOverview = async (silent = false) => {
@@ -1378,11 +1391,17 @@ export function App() {
   };
 
   const refreshSettings = async (silent = false) => {
+    const originalForm = settingsDraftRef.current.form;
     const result = await run(() => call<SettingsResult>("load_settings"));
-    if (result) {
+    if (result && isSuccessStatus(result.status)) {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
-      setSettingsForm(normalized);
+      if (!settingsDraftRef.current.dirty && settingsDraftRef.current.form === originalForm) {
+        settingsDraftRef.current.form = normalized;
+        setSettingsForm(normalized);
+      }
+      settingsDraftRef.current.saved = normalized;
+      settingsDraftRef.current.dirty = !backendSettingsEqual(settingsDraftRef.current.form, normalized);
       // 侧栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
       setActiveTool(normalized.activeTool || "codex");
       setLaunchForm((current) => ({
@@ -1569,13 +1588,18 @@ export function App() {
     return result;
   };
 
-  const confirmPendingProviderImport = async () => {
+  const confirmPendingProviderImport = async (skipDraftGuard = false) => {
+    if (!skipDraftGuard && settingsDraftRef.current.dirty) {
+      runAfterSettingsDraftGuard(() => void confirmPendingProviderImport(true));
+      return;
+    }
     const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
     if (result) {
+      showResultNotice(t("Codex++ 导入"), result);
+      if (!isSuccessStatus(result.status)) return;
       setPendingProviderImport(null);
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice(t("Codex++ 导入"), result);
       await refreshCcsProviders(true);
     }
   };
@@ -1589,12 +1613,13 @@ export function App() {
   };
 
   const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
+    const requestSequence = ++localSessionsRequestSequence.current;
     const result = await run(() =>
       call<LocalSessionsResult>("list_local_sessions", {
         request: { offset, limit: 50 },
       }),
     );
-    if (result) {
+    if (result && requestSequence === localSessionsRequestSequence.current) {
       if (!result.sessions.length && result.offset > 0) {
         return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
       }
@@ -1708,7 +1733,11 @@ export function App() {
     return result;
   };
 
-  const confirmPendingDreamSkinCommunity = async () => {
+  const confirmPendingDreamSkinCommunity = async (skipDraftGuard = false) => {
+    if (!skipDraftGuard && settingsDraftRef.current.dirty) {
+      runAfterSettingsDraftGuard(() => void confirmPendingDreamSkinCommunity(true));
+      return;
+    }
     const result = await run(() => call<DreamSkinCommunityResult>("confirm_pending_dream_skin_community"));
     if (!result) return;
     setDreamSkinCommunity(result);
@@ -2150,7 +2179,11 @@ export function App() {
     }
   };
 
-  const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
+  const navigate = async (next: Route, skipDreamSkinDraftGuard = false, skipSettingsDraftGuard = false) => {
+    if (!skipSettingsDraftGuard && settingsDraftRef.current.dirty) {
+      runAfterSettingsDraftGuard(() => void navigate(next, skipDreamSkinDraftGuard, true));
+      return;
+    }
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
@@ -2215,15 +2248,17 @@ export function App() {
       const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
       if (!navigation) return false;
       const destination = managerNavigationDestination(navigation);
-      await refreshSettings(true);
-      if (destination.route === "enhance" || destination.route === "pluginMarket") {
-        setActiveTool("codex");
-      }
-      if (destination.route === "enhance") {
-        setEnhancementTab(destination.section ?? "general");
-      }
-      setPendingEnhancementSection(destination.section);
-      setRoute(destination.route);
+      runAfterSettingsDraftGuard(() => void (async () => {
+        await refreshSettings(true);
+        if (destination.route === "enhance" || destination.route === "pluginMarket") {
+          setActiveTool("codex");
+        }
+        if (destination.route === "enhance") {
+          setEnhancementTab(destination.section ?? "general");
+        }
+        setPendingEnhancementSection(destination.section);
+        setRoute(destination.route);
+      })());
       return true;
     } catch (error) {
       logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
@@ -2506,6 +2541,14 @@ export function App() {
           message: t("安装包更新失败，请查看错误提示后重试。"),
         });
       }
+    } catch (error) {
+      setUpdateInstallProgress({
+        active: false,
+        percent: 0,
+        indeterminate: false,
+        message: t("安装包更新失败，请查看错误提示后重试。"),
+      });
+      showNotice(t("更新安装"), stringifyError(error), "failed");
     } finally {
       window.clearTimeout(fallbackTimer);
       unlisten?.();
@@ -2513,26 +2556,11 @@ export function App() {
   };
 
   const saveSettings = async () => {
-    const next = normalizeSettings(settingsForm);
-    const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(next));
-    if (whaleIssue) {
-      showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
-      return;
-    }
-    const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(next.dictation));
-    if (dictationIssue) {
-      showNotice(t("语音输入"), dictationIssue, "failed");
-      return;
-    }
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("设置保存"), result.message, result.status);
-    }
+    return Boolean(await saveSettingsValue(settingsDraftRef.current.form, false));
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
+    const originalForm = settingsDraftRef.current.form;
     const normalized = normalizeSettings(next);
     const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalized));
     if (whaleIssue) {
@@ -2548,12 +2576,16 @@ export function App() {
     if (result && isSuccessStatus(result.status)) {
       const saved = normalizeSettings(result.settings);
       setSettings(result);
-      setSettingsForm(saved);
+      if (settingsDraftRef.current.form === originalForm) {
+        settingsDraftRef.current.form = saved;
+        setSettingsForm(saved);
+      }
+      settingsDraftRef.current.saved = saved;
+      settingsDraftRef.current.dirty = !backendSettingsEqual(settingsDraftRef.current.form, saved);
       if (!silent) showNotice(t("设置保存"), result.message, result.status);
       return saved;
     }
     if (result) showNotice(t("设置保存"), result.message, result.status);
-    await refreshSettings(true);
     return null;
   };
 
@@ -3131,7 +3163,7 @@ export function App() {
   };
 
   const exitManagerApp = async () => {
-    await call<void>("manager_exit_app");
+    runAfterSettingsDraftGuard(() => runAfterDreamSkinDraftGuard(() => void call<void>("manager_exit_app")));
   };
 
   const hideManagerToTray = async () => {
@@ -3259,11 +3291,33 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refreshPendingProviderImport(true);
-      void refreshPendingDreamSkinCommunity();
-    }, 1200);
-    return () => window.clearInterval(timer);
+    let disposed = false;
+    let pending = false;
+    let timer: number;
+    const schedule = (delay = document.hidden ? 30_000 : 1200) => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void poll(), delay);
+    };
+    const poll = async () => {
+      if (disposed || pending) return;
+      pending = true;
+      try {
+        await Promise.all([refreshPendingProviderImport(true), refreshPendingDreamSkinCommunity()]);
+      } finally {
+        pending = false;
+        if (!disposed) schedule();
+      }
+    };
+    const resume = () => schedule(document.hidden ? 30_000 : 0);
+    schedule();
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("focus", resume);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("focus", resume);
+    };
   }, []);
 
   useEffect(() => {
@@ -3880,6 +3934,33 @@ export function App() {
           }}
         />
       ) : null}
+      {settingsUnsavedDialog ? (
+        <DreamSkinUnsavedDialog
+          title={t("设置有未保存修改")}
+          onCancel={() => {
+            settingsPendingActionRef.current = null;
+            setSettingsUnsavedDialog(false);
+          }}
+          onDiscard={() => {
+            const saved = settingsDraftRef.current.saved;
+            if (!saved) return;
+            const pending = settingsPendingActionRef.current;
+            settingsPendingActionRef.current = null;
+            const form = normalizeSettings(saved);
+            settingsDraftRef.current = { dirty: false, form, saved };
+            setSettingsForm(form);
+            setSettingsUnsavedDialog(false);
+            pending?.();
+          }}
+          onSave={() => void (async () => {
+            if (!await saveSettings() || settingsDraftRef.current.dirty) return;
+            const pending = settingsPendingActionRef.current;
+            settingsPendingActionRef.current = null;
+            setSettingsUnsavedDialog(false);
+            pending?.();
+          })()}
+        />
+      ) : null}
       {dreamSkinUnsavedDialog ? (
         <DreamSkinUnsavedDialog
           onCancel={() => {
@@ -3903,14 +3984,14 @@ export function App() {
           })()}
         />
       ) : null}
-      {pendingProviderImport ? (
+      {pendingProviderImport && !settingsUnsavedDialog && !dreamSkinUnsavedDialog ? (
         <PendingProviderImportDialog
           request={pendingProviderImport}
           onConfirm={() => void confirmPendingProviderImport()}
           onDismiss={() => void dismissPendingProviderImport()}
         />
       ) : null}
-      {pendingDreamSkinCommunity ? (
+      {pendingDreamSkinCommunity && !settingsUnsavedDialog && !dreamSkinUnsavedDialog ? (
         <DreamSkinCommunityLinkDialog
           versionId={pendingDreamSkinCommunity}
           onConfirm={() => void confirmPendingDreamSkinCommunity()}
@@ -4046,7 +4127,7 @@ type Actions = {
   repairShortcuts: () => Promise<void>;
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
-  saveSettings: () => Promise<void>;
+  saveSettings: () => Promise<boolean>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
@@ -11094,24 +11175,61 @@ function GuideList({ items }: { items: string[] }) {
   );
 }
 
+function useModalFocus(onCancel: () => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("[data-modal-cancel]")?.focus();
+    const keyboard = (event: KeyboardEvent) => {
+      const root = ref.current;
+      if (!root) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cancelRef.current();
+      } else if (event.key === "Tab") {
+        const nodes = [...root.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]')]
+          .filter((node) => !node.hidden && node.getClientRects().length > 0);
+        const first = nodes[0];
+        const last = nodes.at(-1);
+        if (!root.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first)?.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", keyboard, true);
+    return () => {
+      document.removeEventListener("keydown", keyboard, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+  return ref;
+}
+
 function DreamSkinUnsavedDialog({
+  title = t("主题有未保存修改"),
   onSave,
   onDiscard,
   onCancel,
 }: {
+  title?: string;
   onSave: () => void;
   onDiscard: () => void;
   onCancel: () => void;
 }) {
+  const ref = useModalFocus(onCancel);
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
       <div className="modal-card">
         <div className="modal-head">
           <div>
-            <h2>{t("主题有未保存修改")}</h2>
+            <h2>{title}</h2>
             <p className="modal-message">{t("保存修改后继续，或放弃修改。")}</p>
           </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
+          <button className="toast-close" onClick={onCancel} type="button" aria-label={t("关闭窗口")}>×</button>
         </div>
         <Toolbar>
           <Button onClick={onSave}>
@@ -11119,7 +11237,7 @@ function DreamSkinUnsavedDialog({
             {t("保存并继续")}
           </Button>
           <Button onClick={onDiscard} variant="secondary">{t("放弃修改")}</Button>
-          <Button onClick={onCancel} variant="outline">{t("取消")}</Button>
+          <Button onClick={onCancel} variant="outline" data-modal-cancel>{t("取消")}</Button>
         </Toolbar>
       </div>
     </div>
@@ -11166,14 +11284,15 @@ function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const ref = useModalFocus(onCancel);
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={confirm.title} ref={ref}>
       <div className="modal-card confirm-modal">
         <div className="modal-head">
           <div>
             <h2>{confirm.title}</h2>
           </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
+          <button className="toast-close" onClick={onCancel} type="button" aria-label={t("关闭窗口")}>×</button>
         </div>
         <div className="confirm-modal-body">
           <p className="modal-message">{confirm.message}</p>
@@ -11183,7 +11302,7 @@ function ConfirmDialog({
             <Trash2 className="h-4 w-4" />
             {confirm.confirmText}
           </Button>
-          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
+          <Button onClick={onCancel} variant="secondary" data-modal-cancel>{confirm.cancelText}</Button>
         </Toolbar>
       </div>
     </div>

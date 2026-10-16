@@ -1539,13 +1539,15 @@
         labels.has(String(button.getAttribute("aria-label") || button.title || "").trim().toLowerCase())) || null;
   }
 
-  function restoreCodexPlusPageBackButton() {
-    const state = window.__codexPlusPageBackButtonState;
-    window.__codexPlusPageBackButtonState = null;
-    if (!state) return;
-    for (const [name, value] of state.attributes) {
-      if (value === null) state.button.removeAttribute(name);
-      else state.button.setAttribute(name, value);
+  function restoreCodexPlusPageBackButton(except = null) {
+    for (const button of document.querySelectorAll("[data-codex-plus-back-attributes]")) {
+      if (button === except) continue;
+      const attributes = JSON.parse(button.getAttribute("data-codex-plus-back-attributes"));
+      button.removeAttribute("data-codex-plus-back-attributes");
+      for (const [name, value] of attributes) {
+        if (value === null) button.removeAttribute(name);
+        else button.setAttribute(name, value);
+      }
     }
   }
 
@@ -1555,14 +1557,13 @@
       return;
     }
     const button = codexPlusNativeBackButton();
+    restoreCodexPlusPageBackButton(button);
     if (!button) return;
-    if (window.__codexPlusPageBackButtonState?.button !== button) {
-      restoreCodexPlusPageBackButton();
-      window.__codexPlusPageBackButtonState = {
-        button,
-        attributes: ["disabled", "aria-disabled", "tabindex", "data-disabled"]
+    if (!button.hasAttribute("data-codex-plus-back-attributes")) {
+      button.setAttribute("data-codex-plus-back-attributes", JSON.stringify(
+        ["disabled", "aria-disabled", "tabindex", "data-disabled"]
           .map((name) => [name, button.getAttribute(name)]),
-      };
+      ));
     }
     // 覆盖页自身可返回，即使原生历史尚无上一页也必须能点击。
     button.removeAttribute("disabled");

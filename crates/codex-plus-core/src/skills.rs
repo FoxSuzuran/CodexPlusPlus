@@ -938,7 +938,11 @@ fn raw_file_url(repo: &SkillRepo, path: &str) -> String {
 }
 
 fn github_client() -> anyhow::Result<reqwest::Client> {
-    crate::http_client::proxied_client(&format!("Codex++/{}", crate::version::VERSION))
+    Ok(reqwest::Client::builder()
+        .user_agent(format!("Codex++/{}", crate::version::VERSION))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?)
 }
 
 /// 私有仓库和限流都靠这个救。与 codex 内置 skill-installer 读同样的两个变量。
@@ -964,51 +968,55 @@ pub async fn fetch_repo_skills(
     repo: &SkillRepo,
     cached: &BTreeMap<String, RemoteSkill>,
 ) -> anyhow::Result<Vec<RemoteSkill>> {
-    let client = github_client()?;
-    let response = with_github_auth(client.get(repo_tree_url(repo)))
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .send()
-        .await
-        .with_context(|| format!("请求 {}/{} 的文件树失败", repo.owner, repo.name))?;
-    // 不要用 error_for_status() 一把带过：403 限流、404 仓库/分支不存在、401 令牌
-    // 无效，处理方式完全不同，但用户只会看到「返回错误状态」，没法自助也没法报障
-    // （#1989 里四个仓库全失败，看不出到底是限流还是网络）。
-    let status = response.status();
-    if !status.is_success() {
-        anyhow::bail!(
-            "{}/{} 的文件树请求失败：HTTP {}{}",
-            repo.owner,
-            repo.name,
-            status.as_u16(),
-            github_status_hint(status.as_u16())
-        );
-    }
-    let tree = response
-        .json::<Value>()
-        .await
-        .context("解析 GitHub 文件树响应失败")?;
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let client = github_client()?;
+        let response = with_github_auth(client.get(repo_tree_url(repo)))
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .send()
+            .await
+            .with_context(|| format!("请求 {}/{} 的文件树失败", repo.owner, repo.name))?;
+        // 不要用 error_for_status() 一把带过：403 限流、404 仓库/分支不存在、401 令牌
+        // 无效，处理方式完全不同，但用户只会看到「返回错误状态」，没法自助也没法报障
+        // （#1989 里四个仓库全失败，看不出到底是限流还是网络）。
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!(
+                "{}/{} 的文件树请求失败：HTTP {}{}",
+                repo.owner,
+                repo.name,
+                status.as_u16(),
+                github_status_hint(status.as_u16())
+            );
+        }
+        let tree = response
+            .json::<Value>()
+            .await
+            .context("解析 GitHub 文件树响应失败")?;
 
-    let mut skills = parse_skills_from_tree(repo, &tree);
-    for skill in &mut skills {
-        if let Some(hit) = cached.get(&skill.id) {
-            if hit.content_hash == skill.content_hash && !hit.description.is_empty() {
-                skill.name = hit.name.clone();
-                skill.description = hit.description.clone();
-                continue;
+        let mut skills = parse_skills_from_tree(repo, &tree);
+        for skill in &mut skills {
+            if let Some(hit) = cached.get(&skill.id) {
+                if hit.content_hash == skill.content_hash && !hit.description.is_empty() {
+                    skill.name = hit.name.clone();
+                    skill.description = hit.description.clone();
+                    continue;
+                }
+            }
+            let manifest_url =
+                raw_file_url(repo, &format!("{}/{SKILL_MANIFEST_FILE}", skill.repo_path));
+            if let Ok(response) = with_github_auth(client.get(manifest_url)).send().await
+                && let Ok(response) = response.error_for_status()
+                && let Ok(text) = response.text().await
+            {
+                let (name, description) = parse_skill_frontmatter(&text, &skill.id);
+                skill.name = name;
+                skill.description = description;
             }
         }
-        let manifest_url =
-            raw_file_url(repo, &format!("{}/{SKILL_MANIFEST_FILE}", skill.repo_path));
-        if let Ok(response) = with_github_auth(client.get(manifest_url)).send().await
-            && let Ok(response) = response.error_for_status()
-            && let Ok(text) = response.text().await
-        {
-            let (name, description) = parse_skill_frontmatter(&text, &skill.id);
-            skill.name = name;
-            skill.description = description;
-        }
-    }
-    Ok(skills)
+        Ok(skills)
+    })
+    .await
+    .context("拉取 Skills 仓库超时（60 秒）")?
 }
 
 /// 把 GitHub 的 HTTP 状态翻成可操作的提示。
@@ -1030,6 +1038,7 @@ fn github_status_hint(status: u16) -> &'static str {
 pub async fn download_repo_zip(repo: &SkillRepo) -> anyhow::Result<Vec<u8>> {
     let client = github_client()?;
     let response = with_github_auth(client.get(repo_zip_url(repo)))
+        .timeout(std::time::Duration::from_secs(120))
         .header(reqwest::header::ACCEPT, "application/zip")
         .send()
         .await

@@ -8575,13 +8575,15 @@
         labels.has(String(button.getAttribute("aria-label") || button.title || "").trim().toLowerCase())) || null;
   }
 
-  function restoreCodexPlusPageBackButton() {
-    const state = window.__codexPlusPageBackButtonState;
-    window.__codexPlusPageBackButtonState = null;
-    if (!state) return;
-    for (const [name, value] of state.attributes) {
-      if (value === null) state.button.removeAttribute(name);
-      else state.button.setAttribute(name, value);
+  function restoreCodexPlusPageBackButton(except = null) {
+    for (const button of document.querySelectorAll("[data-codex-plus-back-attributes]")) {
+      if (button === except) continue;
+      const attributes = JSON.parse(button.getAttribute("data-codex-plus-back-attributes"));
+      button.removeAttribute("data-codex-plus-back-attributes");
+      for (const [name, value] of attributes) {
+        if (value === null) button.removeAttribute(name);
+        else button.setAttribute(name, value);
+      }
     }
   }
 
@@ -8591,14 +8593,13 @@
       return;
     }
     const button = codexPlusNativeBackButton();
+    restoreCodexPlusPageBackButton(button);
     if (!button) return;
-    if (window.__codexPlusPageBackButtonState?.button !== button) {
-      restoreCodexPlusPageBackButton();
-      window.__codexPlusPageBackButtonState = {
-        button,
-        attributes: ["disabled", "aria-disabled", "tabindex", "data-disabled"]
+    if (!button.hasAttribute("data-codex-plus-back-attributes")) {
+      button.setAttribute("data-codex-plus-back-attributes", JSON.stringify(
+        ["disabled", "aria-disabled", "tabindex", "data-disabled"]
           .map((name) => [name, button.getAttribute(name)]),
-      };
+      ));
     }
     // 覆盖页自身可返回，即使原生历史尚无上一页也必须能点击。
     button.removeAttribute("disabled");
@@ -14973,6 +14974,7 @@
     failures: 0,
     inFlight: false,
     lastFingerprint: "",
+    cache: new Map(),
   };
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
@@ -15245,6 +15247,31 @@
       && codexPlusSettings().usageStatusLine === true;
   }
 
+  function codexPlusUsageSyncPlacement() {
+    if (!codexPlusUsageEnabled() || document.hidden) {
+      if (!document.hidden) codexPlusUsageHide();
+      return null;
+    }
+    const card = codexPlusUsageComposerCard();
+    const threadId = codexPlusUsageThreadId(card);
+    if (!card || !threadId) {
+      codexPlusUsageHide();
+      codexPlusUsageState.threadId = "";
+      return null;
+    }
+    codexPlusUsageInstallStyle();
+    const node = codexPlusUsageEnsureNode(card);
+    if (!node) return null;
+    if (codexPlusUsageState.threadId !== threadId) {
+      codexPlusUsageState.threadId = threadId;
+      codexPlusUsageState.failures = 0;
+      codexPlusUsageState.lastFingerprint = "";
+    }
+    codexPlusUsageShow(node);
+    codexPlusUsageRender(codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId)));
+    return threadId;
+  }
+
   async function codexPlusUsageRefresh(threadId) {
     if (codexPlusUsageState.inFlight) return null;
     codexPlusUsageState.inFlight = true;
@@ -15252,6 +15279,11 @@
       const result = await postJson("/thread-usage-live", { session_id: threadId });
       codexPlusUsageState.failures = 0;
       if (result?.status !== "ok" || !Array.isArray(result.events)) return null;
+      codexPlusUsageState.cache.delete(threadId);
+      codexPlusUsageState.cache.set(threadId, result.events);
+      while (codexPlusUsageState.cache.size > 32) {
+        codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
+      }
       return result.events;
     } finally {
       codexPlusUsageState.inFlight = false;
@@ -15260,37 +15292,11 @@
 
   async function codexPlusUsageTick() {
     if (codexPlusUsageState.disposed) return;
+    const threadId = codexPlusUsageSyncPlacement();
     if (codexPlusUsageState.inFlight) return;
-    if (!codexPlusUsageEnabled()) {
-      codexPlusUsageHide();
+    if (!threadId) {
       codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
       return;
-    }
-    // 页面不可见时不拉数据，但保留轮询，切回来下一拍就会刷新。
-    if (document.hidden) {
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    const card = codexPlusUsageComposerCard();
-    const threadId = codexPlusUsageThreadId(card);
-    if (!card || !threadId) {
-      codexPlusUsageHide();
-      codexPlusUsageState.threadId = "";
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    codexPlusUsageInstallStyle();
-    const node = codexPlusUsageEnsureNode(card);
-    if (!node) {
-      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
-      return;
-    }
-    // 换会话时清掉上一个会话的读数，避免把旧数字挂在新会话上。
-    if (codexPlusUsageState.threadId !== threadId) {
-      codexPlusUsageState.threadId = threadId;
-      codexPlusUsageState.failures = 0;
-      codexPlusUsageState.lastFingerprint = "";
-      codexPlusUsageHide();
     }
     let events = null;
     try {
@@ -15306,15 +15312,14 @@
     }
     if (codexPlusUsageState.disposed) return;
     if (!codexPlusUsageEnabled() || document.hidden
-      || codexPlusUsageThreadId(codexPlusUsageComposerCard()) !== threadId
-      || document.getElementById(codexPlusUsageStatusLineId) !== node) {
-      codexPlusUsageHide();
+      || codexPlusUsageThreadId(codexPlusUsageComposerCard()) !== threadId) {
+      codexPlusUsageSyncPlacement();
       codexPlusUsageSchedule(0);
       return;
     }
-    const snapshot = events ? codexPlusUsageSnapshot(events) : null;
+    codexPlusUsageSyncPlacement();
+    const snapshot = codexPlusUsageSnapshot(events || codexPlusUsageState.cache.get(threadId));
     if (snapshot) {
-      codexPlusUsageShow(node);
       codexPlusUsageRender(snapshot);
       // 刚有事件说明本轮在跑，加密轮询；本轮已经结束就拉长间隔。
       codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
@@ -15328,7 +15333,6 @@
     }
     // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，
     // 用较慢的间隔等第一条数据，避免空转。
-    codexPlusUsageShow(node);
     codexPlusUsageRender(null);
     codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
   }
@@ -15345,10 +15349,14 @@
       // 卸载时把节点整个摘掉：注入会被重跑，留一个隐藏节点等于每次重注入多挂一个。
       document.getElementById(codexPlusUsageStatusLineId)?.remove();
       codexPlusUsageState.lastFingerprint = "";
+      codexPlusUsageState.cache.clear();
       globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = undefined;
     },
   };
-  globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = () => codexPlusUsageSchedule(0);
+  globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = () => {
+    codexPlusUsageSyncPlacement();
+    codexPlusUsageSchedule(0);
+  };
   function syncActionGroupsLayout(force = false) {
     syncActionGroupLayouts(sessionRows().map(row => ({
       row, group: actionGroupFromRow(row),

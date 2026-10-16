@@ -575,6 +575,61 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
+    async fn download_progress_handles_unknown_length_and_rejects_truncated_installer() {
+        for content_length in [None, Some(100)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request);
+                let length = content_length
+                    .map(|length| format!("Content-Length: {length}\r\n"))
+                    .unwrap_or_default();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\n{length}Connection: close\r\n\r\npayload"
+                )
+                .unwrap();
+            });
+            let release = Release {
+                version: "v9.9.9".to_string(),
+                url: String::new(),
+                body: String::new(),
+                asset_name: Some("test-setup.exe".to_string()),
+                asset_url: Some(format!("http://{address}/installer.exe")),
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let mut progress = Vec::new();
+            let result =
+                download_release_asset_with_progress(&release, directory.path(), &mut |event| {
+                    progress.push(event)
+                })
+                .await;
+            server.join().unwrap();
+            if content_length.is_some() {
+                assert!(
+                    result.is_err(),
+                    "a partial installer must never reach the writing stage"
+                );
+                assert!(
+                    progress
+                        .iter()
+                        .all(|event| event.stage == UpdateStage::Downloading)
+                );
+                assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+            } else {
+                let (path, bytes, total) = result.unwrap();
+                assert_eq!(bytes, 7);
+                assert_eq!(total, None);
+                assert_eq!(std::fs::read(path).unwrap(), b"payload");
+                assert!(progress.iter().all(|event| event.percent.is_none()));
+                assert_eq!(progress.last().unwrap().stage, UpdateStage::Writing);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn download_stage_progress_reports_bytes_then_writing() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();

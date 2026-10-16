@@ -22,6 +22,7 @@ class Element {
     Object.entries(attributes).forEach(([key, value]) => this.attributes.set(key, value));
   }
   getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+  hasAttribute(name: string) { return this.attributes.has(name); }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
   closest(selector: string) {
@@ -41,6 +42,7 @@ function harness(disabled = false, label = "返回") {
   });
   button.button = button;
   let current: Element | null = button;
+  const buttons = [button];
   const listeners = new Set<Function>();
   const context = vm.createContext({
     window: {
@@ -51,6 +53,7 @@ function harness(disabled = false, label = "返回") {
     document: {
       querySelector: () => pageOpen ? {} : null,
       querySelectorAll: (selector: string) => {
+        if (selector === "[data-codex-plus-back-attributes]") return buttons.filter((node) => node.hasAttribute("data-codex-plus-back-attributes"));
         assert.equal(selector, ".header button, .tint button");
         return current ? [current] : [];
       },
@@ -76,7 +79,7 @@ function harness(disabled = false, label = "返回") {
   };
   return { button, install, click, listeners, context,
     setPage: (open: boolean) => { pageOpen = open; },
-    setButton: (next: Element | null) => { current = next; },
+    setButton: (next: Element | null) => { current = next; if (next) buttons.push(next); },
     counts: () => ({ closes, navigations }),
   };
 }

@@ -723,8 +723,12 @@ impl SQLiteStorageAdapter {
         )?;
         let (file_backups, unreadable_rollouts) =
             rollout_file_backups(tables.get("threads").and_then(Value::as_array));
+        let file_paths = file_backups
+            .iter()
+            .filter_map(|file| file.get("path").and_then(Value::as_str).map(str::to_owned))
+            .collect::<Vec<_>>();
         if !file_backups.is_empty() {
-            tables.insert("__files".to_string(), Value::Array(file_backups.clone()));
+            tables.insert("__files".to_string(), Value::Array(file_backups));
         }
         self.add_thread_sidebar_backups(&mut tables, &thread_id)?;
         let token =
@@ -767,12 +771,10 @@ impl SQLiteStorageAdapter {
             .into_iter()
             .map(|path| format!("{path}: 读取失败，未删除"))
             .collect::<Vec<_>>();
-        for file in file_backups {
-            if let Some(path) = file.get("path").and_then(Value::as_str) {
-                if let Err(err) = fs::remove_file(path) {
-                    if err.kind() != std::io::ErrorKind::NotFound {
-                        file_errors.push(format!("{path}: {err}"));
-                    }
+        for path in file_paths {
+            if let Err(err) = fs::remove_file(&path) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    file_errors.push(format!("{path}: {err}"));
                 }
             }
         }

@@ -1393,6 +1393,10 @@ export function App() {
   const refreshSettings = async (silent = false) => {
     const originalForm = settingsDraftRef.current.form;
     const result = await run(() => call<SettingsResult>("load_settings"));
+    if (result && !isSuccessStatus(result.status)) {
+      showResultNotice(t("设置已加载"), result);
+      return null;
+    }
     if (result && isSuccessStatus(result.status)) {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);

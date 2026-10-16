@@ -122,6 +122,19 @@ test("settings refresh cannot overwrite a draft edited while loading", async () 
   assert.equal(h.changes.length, 1);
 });
 
+test("settings load failure reports the error and retains the current draft", async () => {
+  const h = settingsContext();
+  const notices: string[] = [];
+  const refresh = action("refreshSettings", { ...h.context,
+    call: async () => ({ status: "failed", message: "invalid settings", settings: {} }),
+    showResultNotice: (_: string, result: { message: string }) => notices.push(result.message),
+  });
+  assert.equal(await refresh(true), null);
+  assert.deepEqual(h.changes, []);
+  assert.deepEqual(notices, ["invalid settings"]);
+  assert.equal(h.ref.current.form, h.draft);
+});
+
 test("late session-page results cannot replace a newer page or start fallback pagination", async () => {
   const requests: Array<{ offset: number; resolve: (value: unknown) => void }> = [];
   const pages: number[] = [];

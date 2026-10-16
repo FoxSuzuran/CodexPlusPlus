@@ -680,7 +680,7 @@
   function codexServiceTierBadgeButtonCandidates(composer) {
     const composerRect = composer.getBoundingClientRect();
     return Array.from(composer.querySelectorAll("button, [role='button']"))
-      .filter((button) => !button.closest?.(`[data-codex-service-tier-badge="true"]`))
+      .filter((button) => !button.closest?.("[data-codex-plus-ext], [data-composer-input], [contenteditable='true'], [data-composer-home-utility-bar-position]"))
       .filter(codexServiceTierBadgeVisibleElement)
       .filter((button) => {
         const rect = button.getBoundingClientRect();
@@ -701,7 +701,7 @@
       ...Array.from(root?.querySelectorAll?.(codexServiceTierComposerFooterSelector) || []),
     ];
     return footers
-      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
+      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn'], [data-composer-home-utility-bar-position], [data-composer-input], [contenteditable='true']"))
       .filter(codexServiceTierBadgeVisibleElement)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
@@ -759,15 +759,16 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.(codexServiceTierComposerFooterSelector)) return composer;
     return codexServiceTierBestComposerFooter(composer) || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
     const footer = codexServiceTierComposerFooter(composer);
     if (!footer) return null;
-    const children = Array.from(footer.children).filter(codexServiceTierBadgeVisibleElement);
-    if (!children.length) return footer;
+    const children = Array.from(footer.children).filter(codexServiceTierBadgeVisibleElement)
+      .filter((child) => !child.matches?.("button, [role='button'], [data-codex-plus-ext], [data-composer-input], [contenteditable='true']")
+        && !child.querySelector?.("[data-composer-input], textarea, [contenteditable='true']"));
+    if (!children.length) return footer.querySelector?.("[data-composer-input], textarea, [contenteditable='true']") ? null : footer;
     const providerNames = codexServiceTierKnownProviderNames();
     const providerGroup = children.find((child) => {
       const text = codexServiceTierBadgeText(child).toLowerCase();
@@ -777,18 +778,22 @@
   }
 
   function codexServiceTierBadgePlacement(composer) {
-    const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
-    if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
     const footer = composer ? codexServiceTierComposerFooter(composer) : null;
+    if (!footer) return null;
+    // Home 项目栏在输入框外；供应商候选也必须限制在同一原生底栏内。
+    const anchor = codexServiceTierBadgeAnchor(footer);
+    if (anchor?.parentElement && !anchor.parentElement.closest("button, [role='button'], [contenteditable='true']")) {
+      return { parent: anchor.parentElement, before: anchor };
+    }
     // 新版工具栏包含输入框；挂在模型/权限按钮同级，不能塞进输入框或原生按钮。
     const control = Array.from(footer?.querySelectorAll?.("button") || [])
       .find((button) => codexServiceTierBadgeVisibleElement(button)
-        && !button.closest("[data-codex-plus-ext]")
+        && !button.closest("[data-codex-plus-ext], [data-composer-input], [contenteditable='true']")
         && (/更改权限|permissions|选择强度|model/i.test(`${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent}`)));
-    if (control?.parentElement && !control.parentElement.closest("button, [contenteditable='true']")) {
+    if (control?.parentElement && !control.parentElement.closest("button, [role='button'], [contenteditable='true']")) {
       return { parent: control.parentElement, before: control };
     }
-    const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
+    const group = codexServiceTierBadgeFooterGroup(footer);
     if (group) return { parent: group, before: Array.from(group.childNodes).find((node) => !node.matches?.("[data-codex-service-tier-badge]")) || null };
     return null;
   }

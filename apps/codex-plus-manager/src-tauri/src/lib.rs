@@ -249,15 +249,24 @@ pub fn run() {
                     api.prevent_exit();
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
-                        auto_takeover::stop_supervisor();
                         let app = app_handle.clone();
                         tauri::async_runtime::spawn_blocking(move || {
+                            let started = std::time::Instant::now();
+                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                "app.shutdown_started",
+                                serde_json::json!({}),
+                            );
+                            auto_takeover::stop_supervisor();
                             if let Err(error) = codex_plus_launcher::shutdown() {
                                 let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                     "app.shutdown_failed",
                                     serde_json::json!({ "message": error.to_string() }),
                                 );
                             }
+                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                "app.shutdown_complete",
+                                serde_json::json!({ "elapsed_ms": started.elapsed().as_millis() }),
+                            );
                             SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                             app.exit(0);
                         });

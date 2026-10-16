@@ -376,7 +376,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "5";
+  const codexServiceTierBadgeVersion = "6";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   let lastSessionActionTrigger = null;
@@ -10033,6 +10033,10 @@
     return /^[A-Za-z0-9_.-]{8,128}$/.test(key) ? key : "";
   }
 
+  function validThreadScrollEntry(entry) {
+    return entry && finiteNonNegativeNumber(entry.scrollHeight) > 0 && finiteNonNegativeNumber(entry.clientHeight) > 0;
+  }
+
   function currentSessionRef() {
     const rows = sessionRows();
     for (const row of rows) {
@@ -10061,6 +10065,7 @@
           top: finiteScrollNumber(value.top),
           scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
           clientHeight: finiteNonNegativeNumber(value.clientHeight),
+          ...(typeof value.atBottom === "boolean" ? { atBottom: value.atBottom } : {}),
           at: finiteNonNegativeNumber(value.at),
         };
       });
@@ -10197,7 +10202,7 @@
 
   function startThreadScrollRestoreLock(sessionId, entry) {
     const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !entry) {
+    if (!key || !validThreadScrollEntry(entry)) {
       clearThreadScrollRestoreLock();
       return null;
     }
@@ -10205,6 +10210,9 @@
     runtime.restoreLock = {
       sessionId: key,
       targetTop: finiteScrollNumber(entry.top),
+      scrollHeight: entry.scrollHeight,
+      clientHeight: entry.clientHeight,
+      atBottom: entry.atBottom,
       expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
     };
     return runtime.restoreLock;
@@ -10216,9 +10224,14 @@
     if (entry) startThreadScrollRestoreLock(key, entry);
   }
 
-  function threadScrollTargetTop(scroller, targetTop) {
+  function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+    const top = finiteScrollNumber(entry.targetTop ?? entry.top);
+    const previousBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
+    // 旧快照没有底部标记，用保存时的高度识别，不能拿旧绝对位置锁住新消息。
+    const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom
+      : Math.abs(previousBottom - top) <= Math.max(24, entry.clientHeight * 0.15);
+    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, top));
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -10243,7 +10256,7 @@
     if (!lock || !codexPlusSettings().threadScrollRestore) return false;
     const guardScroller = threadScrollGuardScroller(scroller);
     if (runtime.applyingRestore || !guardScroller) return false;
-    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    const targetTop = threadScrollTargetTop(guardScroller, lock);
     return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
   }
 
@@ -10375,12 +10388,13 @@
     if (!codexPlusSettings().threadScrollRestore) return;
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !scroller) return;
+    if (!key || !validThreadScrollEntry(scroller)) return;
     if (activeThreadScrollRestoreLock(key)) return;
     const snapshot = {
       top: finiteScrollNumber(scroller.scrollTop),
       scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
       clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
+      atBottom: threadScrollNearBottom(scroller, scroller.scrollTop),
       at: Date.now(),
     };
     if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
@@ -10406,11 +10420,11 @@
     if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
     const lock = activeThreadScrollRestoreLock(key);
     const entry = lock || readThreadScrollEntries()[key];
-    if (!entry) return;
+    if (!validThreadScrollEntry(entry)) return;
     const scroller = currentThreadScroller();
     if (!scroller) return;
     bindThreadScrollListener(scroller);
-    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    const targetTop = threadScrollTargetTop(scroller, entry);
     if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
     runtime.applyingRestore = true;
     try {
@@ -15953,7 +15967,7 @@
   function codexServiceTierBadgeButtonCandidates(composer) {
     const composerRect = composer.getBoundingClientRect();
     return Array.from(composer.querySelectorAll("button, [role='button']"))
-      .filter((button) => !button.closest?.(`[data-codex-service-tier-badge="true"]`))
+      .filter((button) => !button.closest?.("[data-codex-plus-ext], [data-composer-input], [contenteditable='true'], [data-composer-home-utility-bar-position]"))
       .filter(codexServiceTierBadgeVisibleElement)
       .filter((button) => {
         const rect = button.getBoundingClientRect();
@@ -15974,7 +15988,7 @@
       ...Array.from(root?.querySelectorAll?.(codexServiceTierComposerFooterSelector) || []),
     ];
     return footers
-      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn']"))
+      .filter((footer) => !footer.closest("[data-codex-plus-ext], [role='dialog'], [data-message-author-role], [data-testid='conversation-turn'], [data-composer-home-utility-bar-position], [data-composer-input], [contenteditable='true']"))
       .filter(codexServiceTierBadgeVisibleElement)
       .sort((left, right) => {
         const leftRect = left.getBoundingClientRect();
@@ -16032,15 +16046,16 @@
   }
 
   function codexServiceTierComposerFooter(composer) {
-    if (composer?.matches?.(codexServiceTierComposerFooterSelector)) return composer;
     return codexServiceTierBestComposerFooter(composer) || null;
   }
 
   function codexServiceTierBadgeFooterGroup(composer) {
     const footer = codexServiceTierComposerFooter(composer);
     if (!footer) return null;
-    const children = Array.from(footer.children).filter(codexServiceTierBadgeVisibleElement);
-    if (!children.length) return footer;
+    const children = Array.from(footer.children).filter(codexServiceTierBadgeVisibleElement)
+      .filter((child) => !child.matches?.("button, [role='button'], [data-codex-plus-ext], [data-composer-input], [contenteditable='true']")
+        && !child.querySelector?.("[data-composer-input], textarea, [contenteditable='true']"));
+    if (!children.length) return footer.querySelector?.("[data-composer-input], textarea, [contenteditable='true']") ? null : footer;
     const providerNames = codexServiceTierKnownProviderNames();
     const providerGroup = children.find((child) => {
       const text = codexServiceTierBadgeText(child).toLowerCase();
@@ -16050,18 +16065,22 @@
   }
 
   function codexServiceTierBadgePlacement(composer) {
-    const anchor = composer ? codexServiceTierBadgeAnchor(composer) : null;
-    if (anchor?.parentElement) return { parent: anchor.parentElement, before: anchor };
     const footer = composer ? codexServiceTierComposerFooter(composer) : null;
+    if (!footer) return null;
+    // Home 项目栏在输入框外；供应商候选也必须限制在同一原生底栏内。
+    const anchor = codexServiceTierBadgeAnchor(footer);
+    if (anchor?.parentElement && !anchor.parentElement.closest("button, [role='button'], [contenteditable='true']")) {
+      return { parent: anchor.parentElement, before: anchor };
+    }
     // 新版工具栏包含输入框；挂在模型/权限按钮同级，不能塞进输入框或原生按钮。
     const control = Array.from(footer?.querySelectorAll?.("button") || [])
       .find((button) => codexServiceTierBadgeVisibleElement(button)
-        && !button.closest("[data-codex-plus-ext]")
+        && !button.closest("[data-codex-plus-ext], [data-composer-input], [contenteditable='true']")
         && (/更改权限|permissions|选择强度|model/i.test(`${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent}`)));
-    if (control?.parentElement && !control.parentElement.closest("button, [contenteditable='true']")) {
+    if (control?.parentElement && !control.parentElement.closest("button, [role='button'], [contenteditable='true']")) {
       return { parent: control.parentElement, before: control };
     }
-    const group = composer ? codexServiceTierBadgeFooterGroup(composer) : null;
+    const group = codexServiceTierBadgeFooterGroup(footer);
     if (group) return { parent: group, before: Array.from(group.childNodes).find((node) => !node.matches?.("[data-codex-service-tier-badge]")) || null };
     return null;
   }

@@ -195,9 +195,8 @@ impl EmbeddedSession {
                     Ok(runtime) => {
                         tokio::task::LocalSet::new()
                             .block_on(&runtime, runner(options, cancelled, ready));
-                        // 核心 helper/CDP 会 spawn 附属任务。销毁 session runtime 后再通知完成，
-                        // 避免它们在 GUI 留存期间跨到下次启动。
-                        drop(runtime);
+                        // runner 已等待浏览器恢复及自有服务停止；不再等附属 blocking 工作拖住退出。
+                        runtime.shutdown_background();
                     }
                     Err(error) => {
                         let _ = ready.send(Err(error.into()));
@@ -359,7 +358,9 @@ pub fn shutdown() -> Result<()> {
         .get_or_init(|| Mutex::new(RuntimeState::Idle))
         .lock()
         .map_err(|_| anyhow::anyhow!("Codex++ 后台运行时锁已损坏"))?;
-    let Some(current) = worker.begin_shutdown() else {
+    let current = worker.begin_shutdown();
+    drop(worker);
+    let Some(current) = current else {
         return Ok(());
     };
     shutdown_worker(current)
@@ -614,8 +615,21 @@ async fn run_embedded_session(
         Err(error) => Err(error),
     };
     // 启动中取消也要显式清理。不能依赖进程退出，否则 GUI 仍在时端口和系统浏览器会残留。
+    let cleanup_started = std::time::Instant::now();
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.cleanup_phase",
+        json!({"phase": "helper", "elapsed_ms": cleanup_started.elapsed().as_millis()}),
+    );
     hooks.shutdown_helper(options.helper_port).await;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.cleanup_phase",
+        json!({"phase": "native_browser", "elapsed_ms": cleanup_started.elapsed().as_millis()}),
+    );
     hooks.stop_native_browser_compatibility().await;
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "launcher.cleanup_complete",
+        json!({"elapsed_ms": cleanup_started.elapsed().as_millis()}),
+    );
     if stopped_by_host {
         let started_at_ms = hooks
             .session_state
@@ -2115,6 +2129,53 @@ mod tests {
         assert_eq!(snapshot.debug_port, Some(9333));
         assert_eq!(snapshot.started_at_ms, Some(200));
         assert!(!stopped.owned && !stopped.ready);
+    }
+
+    #[test]
+    fn session_shutdown_does_not_wait_for_unowned_blocking_tasks_after_cleanup() {
+        let (release, blocked) = mpsc::channel();
+        let blocked = Arc::new(Mutex::new(Some(blocked)));
+        let (started, running) = mpsc::channel();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let cleanup = cleaned.clone();
+        let worker = RuntimeWorker::spawn(
+            Arc::new(move |_, stop, ready| {
+                let blocked = blocked.lock().unwrap().take().unwrap();
+                let started = started.clone();
+                let cleanup = cleanup.clone();
+                Box::pin(async move {
+                    tokio::task::spawn_blocking(move || {
+                        started.send(()).unwrap();
+                        let _ = blocked.recv();
+                    });
+                    ready.send(Ok(())).unwrap();
+                    let _ = stop.await;
+                    cleanup.store(true, Ordering::SeqCst);
+                })
+            }),
+            Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        )
+        .unwrap();
+        send_test_command(&worker, |reply| {
+            test_start_command(LaunchOptions::default(), reply)
+        })
+        .unwrap();
+        running
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (done, stopped) = mpsc::channel();
+        let stopper = std::thread::spawn(move || {
+            let result = shutdown_worker(worker);
+            let _ = done.send(result);
+        });
+        let result = stopped.recv_timeout(std::time::Duration::from_secs(1));
+        // 原实现失败时也释放附属任务，避免回归自身留下挂起线程。
+        release.send(()).unwrap();
+        stopper.join().unwrap();
+        assert!(cleaned.load(Ordering::SeqCst));
+        result
+            .expect("completed cleanup must not wait for detached blocking work")
+            .unwrap();
     }
 
     #[tokio::test]

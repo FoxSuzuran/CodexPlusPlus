@@ -1415,35 +1415,43 @@ impl LaunchHooks for DefaultLaunchHooks {
             let mut bridge_reinject_backoff = BridgeReinjectBackoff::default();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    _ = interval.tick() => {
-                        let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
-                            Ok(identity) => identity.browser_id().ok(),
-                            Err(_) => None,
-                        };
-                        let identity_changed = current_browser_id
-                            .as_deref()
-                            .is_some_and(|current| {
-                                browser_identity_changed(observed_browser_id.as_deref(), current)
-                            });
-                        if let Some(current) = current_browser_id {
-                            observed_browser_id = Some(current);
-                        }
-                        let (pet_result, _) = tokio::join!(
-                            sync_pet_real_mouse_overlay(debug_port, helper_port),
-                            check_and_reinject_bridge_inner(
-                                debug_port,
-                                helper_port,
-                                identity_changed,
-                                bridge_reinjector.clone(),
-                                &mut bridge_health_failures,
-                                &mut bridge_reinject_backoff,
-                            ),
-                        );
-                        record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
+                let probe = async {
+                    interval.tick().await;
+                    let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
+                        Ok(identity) => identity.browser_id().ok(),
+                        Err(_) => None,
+                    };
+                    let identity_changed = current_browser_id
+                        .as_deref()
+                        .is_some_and(|current| {
+                            browser_identity_changed(observed_browser_id.as_deref(), current)
+                        });
+                    if let Some(current) = current_browser_id {
+                        observed_browser_id = Some(current);
                     }
-                }
+                    let (pet_result, healthy) = tokio::join!(
+                        sync_pet_real_mouse_overlay(debug_port, helper_port),
+                        probe_bridge_health(debug_port, helper_port, identity_changed),
+                    );
+                    (identity_changed, pet_result, healthy)
+                };
+                let (identity_changed, pet_result, healthy) = tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => break,
+                    result = probe => result,
+                };
+                record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
+                // 探测可取消；已经开始的注入必须完成自身的脚本注册清理。
+                check_and_reinject_bridge_inner(
+                    debug_port,
+                    helper_port,
+                    identity_changed,
+                    healthy,
+                    bridge_reinjector.clone(),
+                    &mut bridge_health_failures,
+                    &mut bridge_reinject_backoff,
+                )
+                .await;
             }
             #[cfg(windows)]
             {
@@ -3553,10 +3561,12 @@ pub async fn check_and_reinject_bridge(debug_port: u16, helper_port: u16) -> boo
     // This one-shot entry point preserves its historical immediate-repair behavior.
     let mut health_failures = BRIDGE_HEALTH_FAILURE_THRESHOLD.saturating_sub(1);
     let mut backoff = BridgeReinjectBackoff::default();
+    let healthy = probe_bridge_health(debug_port, helper_port, false).await;
     check_and_reinject_bridge_inner(
         debug_port,
         helper_port,
         false,
+        healthy,
         None,
         &mut health_failures,
         &mut backoff,
@@ -3808,15 +3818,12 @@ fn should_reinject_after_health_result(
     *health_failures >= BRIDGE_HEALTH_FAILURE_THRESHOLD
 }
 
-async fn check_and_reinject_bridge_inner(
+async fn probe_bridge_health(
     debug_port: u16,
     helper_port: u16,
     browser_identity_changed: bool,
-    bridge_reinjector: Option<BridgeReinjector>,
-    health_failures: &mut u8,
-    backoff: &mut BridgeReinjectBackoff,
-) -> bool {
-    let healthy = if browser_identity_changed {
+) -> Option<bool> {
+    if browser_identity_changed {
         Some(false)
     } else {
         match bridge_health_ok(debug_port).await {
@@ -3837,7 +3844,18 @@ async fn check_and_reinject_bridge_inner(
                 None
             }
         }
-    };
+    }
+}
+
+async fn check_and_reinject_bridge_inner(
+    debug_port: u16,
+    helper_port: u16,
+    browser_identity_changed: bool,
+    healthy: Option<bool>,
+    bridge_reinjector: Option<BridgeReinjector>,
+    health_failures: &mut u8,
+    backoff: &mut BridgeReinjectBackoff,
+) -> bool {
     match healthy {
         // 持续健康一段时间才清掉退避（见 BRIDGE_REINJECT_BACKOFF_RESET_AFTER_SECS）；
         // 探测不确定时不改变退避状态。失效计数由 should_reinject_* 统一管理。
@@ -5182,6 +5200,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(default_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn bridge_watchdog_shutdown_interrupts_an_unresponsive_cdp_probe() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (entered, probing) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).await.unwrap();
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let hooks = DefaultLaunchHooks::default();
+        hooks.start_bridge_watchdog(port, 0).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), probing)
+            .await
+            .unwrap()
+            .unwrap();
+        let watchdog = hooks.bridge_watchdog.lock().await.take().unwrap();
+        watchdog.shutdown.send(()).unwrap();
+        let mut task = watchdog.task;
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(1), &mut task).await;
+        task.abort();
+        server.abort();
+        assert!(
+            stopped.is_ok(),
+            "shutdown must interrupt an in-flight CDP probe"
+        );
     }
 
     #[test]

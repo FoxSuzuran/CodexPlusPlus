@@ -1047,6 +1047,10 @@
     return /^[A-Za-z0-9_.-]{8,128}$/.test(key) ? key : "";
   }
 
+  function validThreadScrollEntry(entry) {
+    return entry && finiteNonNegativeNumber(entry.scrollHeight) > 0 && finiteNonNegativeNumber(entry.clientHeight) > 0;
+  }
+
   function currentSessionRef() {
     const rows = sessionRows();
     for (const row of rows) {
@@ -1075,6 +1079,7 @@
           top: finiteScrollNumber(value.top),
           scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
           clientHeight: finiteNonNegativeNumber(value.clientHeight),
+          ...(typeof value.atBottom === "boolean" ? { atBottom: value.atBottom } : {}),
           at: finiteNonNegativeNumber(value.at),
         };
       });
@@ -1211,7 +1216,7 @@
 
   function startThreadScrollRestoreLock(sessionId, entry) {
     const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !entry) {
+    if (!key || !validThreadScrollEntry(entry)) {
       clearThreadScrollRestoreLock();
       return null;
     }
@@ -1219,6 +1224,9 @@
     runtime.restoreLock = {
       sessionId: key,
       targetTop: finiteScrollNumber(entry.top),
+      scrollHeight: entry.scrollHeight,
+      clientHeight: entry.clientHeight,
+      atBottom: entry.atBottom,
       expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
     };
     return runtime.restoreLock;
@@ -1230,9 +1238,14 @@
     if (entry) startThreadScrollRestoreLock(key, entry);
   }
 
-  function threadScrollTargetTop(scroller, targetTop) {
+  function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+    const top = finiteScrollNumber(entry.targetTop ?? entry.top);
+    const previousBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
+    // 旧快照没有底部标记，用保存时的高度识别，不能拿旧绝对位置锁住新消息。
+    const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom
+      : Math.abs(previousBottom - top) <= Math.max(24, entry.clientHeight * 0.15);
+    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, top));
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -1257,7 +1270,7 @@
     if (!lock || !codexPlusSettings().threadScrollRestore) return false;
     const guardScroller = threadScrollGuardScroller(scroller);
     if (runtime.applyingRestore || !guardScroller) return false;
-    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    const targetTop = threadScrollTargetTop(guardScroller, lock);
     return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
   }
 
@@ -1389,12 +1402,13 @@
     if (!codexPlusSettings().threadScrollRestore) return;
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !scroller) return;
+    if (!key || !validThreadScrollEntry(scroller)) return;
     if (activeThreadScrollRestoreLock(key)) return;
     const snapshot = {
       top: finiteScrollNumber(scroller.scrollTop),
       scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
       clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
+      atBottom: threadScrollNearBottom(scroller, scroller.scrollTop),
       at: Date.now(),
     };
     if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
@@ -1420,11 +1434,11 @@
     if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
     const lock = activeThreadScrollRestoreLock(key);
     const entry = lock || readThreadScrollEntries()[key];
-    if (!entry) return;
+    if (!validThreadScrollEntry(entry)) return;
     const scroller = currentThreadScroller();
     if (!scroller) return;
     bindThreadScrollListener(scroller);
-    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    const targetTop = threadScrollTargetTop(scroller, entry);
     if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
     runtime.applyingRestore = true;
     try {

@@ -227,3 +227,21 @@ Bennett 修复文件：`D:\Programming\Projects\CodexPlusPlus\target\temp\math-f
 当前发布产物：`D:\Programming\Projects\CodexPlusPlus\dist\windows\latest\codex-plus-plus.exe`，71,190,016 字节，SHA-256：`46bbfba6b10b56b9f616bfbd967e72a44e12961aad8a50c5d40876f152c0486a`。
 
 应用本节优化只需保存工作、完整退出 Codex++ 与官方 Codex 后，将此 EXE 手动替换到 `C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`。本节未新增独立脚本；此前脚本修复的副本及安装哈希保留于发布 manifest。未覆盖已安装 EXE 或用户脚本，未清理缓存、未推送。文档补充提交不改变已验证的生产源码。
+
+## 首页欢迎区与输入框对齐
+
+基线 `d23a9d6`，修复分支 `codex/home-composer-alignment`。欢迎区由原生布局按主内容 pane 居中，但 `conversationViewAlignNow()` 同时把首页输入框按整个 HTML 窗口居中，造成约半个侧栏宽度的偏移。只读检查上游 Issue / PR 后，未发现可直接覆盖该首页问题的修复；上游 #2462 处理对齐调度循环，现有本地版本已保留相应限制。
+
+共享对齐函数仅对明确带 `data-composer-placement="home"` 的输入框恢复原始水平偏移，保留宽度设置；首页欢迎文字和输入框都沿原生内容区中心线排列。兼容标记位于宽度宿主自身、祖先或后代的结构。对话页继续使用既有居中及宿主边界检查，没有新增配置、依赖或 DOM 缓存。
+
+验证：
+
+- 新增回归在修复前失败：原始 `3.25px` 偏移被错误改为 `250px`；修复后通过。覆盖三种标记位置、反复对齐零样式写入、对话页切回首页清除旧偏移、自适应宽度和清理恢复。
+- 管理器全套 742 passed、1 项已有 skip；TypeScript、分片组装一致性、既有 composer scope / 旧版结构回归通过。
+- 隔离 Edge 使用真实对齐函数及 Windows 皮肤 CSS，覆盖两个窗口宽度、侧栏展开 / 收起、三种标记位置、皮肤开 / 关，共 24 组。修复前复现 180px 偏差，修复后中心偏差均为 0，宽度保留，页面错误为 0。此为布局 fixture，未切换用户当前真实会话。
+- Rust `cargo test -p codex-plus-core --lib assets::tests -- --test-threads=1` 为 6 passed；`--test cdp_bridge` 为 169 passed。
+- 固定完整前端生产构建成功，70 个文件的集合和内容完全相同后恢复原时间戳。
+
+最初的 Rust 过滤命令没有限定 `--lib`，额外链接了无关集成测试，其中三个出现 MSVC `LNK1318: PDB LIMIT (12)`。随后明确限定目标，相关资源及 CDP 回归全部通过。排查时 D 盘仅剩约 158MiB，尚未运行本节 `cargo xrelease`，未覆盖上一份已验证发布 EXE。没有清理、移动缓存或修改发布配置。
+
+空间核对（2026-10-17）：`D:\Programming\Projects\CodexPlusPlus\target\debug\incremental` 为 5.39GiB 的 Debug 增量缓存；`target\debug\deps` 为 14.23GiB 的 Debug 依赖 / 测试产物；`target\release` 为 5.26GiB 的固定发布构建缓存，保留。依照本地 AGENTS.md，目录清理须由用户手动执行或明确授权。待腾出空间后，继续固定发布构建、验证、合入 main 并推送个人 fork 的 origin。

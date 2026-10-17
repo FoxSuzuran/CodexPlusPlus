@@ -11,7 +11,7 @@ function block(start: string, end: string) {
   return source.slice(a, b);
 }
 
-function fixture(originalLeft = "", originalTransform = "") {
+function fixture(originalLeft = "", originalTransform = "", homePlacement = "") {
   const writes: string[] = [];
   const dataset: Record<string, string> = {};
   const values: Record<string, string> = { left: originalLeft, transform: originalTransform };
@@ -24,8 +24,13 @@ function fixture(originalLeft = "", originalTransform = "") {
     },
   });
   const geometry = { baseLeft: 100, width: 900, center: 800, boundsLeft: 0, boundsRight: 1600 };
+  const placement = { home: homePlacement };
   const el = {
     dataset, style, isConnected: true,
+    closest: (selector: string) => selector === '[data-composer-placement="home"]'
+      && ["self", "ancestor"].includes(placement.home) ? {} : null,
+    querySelector: (selector: string) => selector === '[data-composer-placement="home"]'
+      && placement.home === "descendant" ? {} : null,
     contains: () => false,
     getBoundingClientRect: () => ({
       left: geometry.baseLeft + (parseFloat(style.left) || 0),
@@ -35,7 +40,7 @@ function fixture(originalLeft = "", originalTransform = "") {
   let mutationCallback: (records: unknown[]) => void = () => {};
   const stats = { schedules: 0, disconnects: 0 };
   const state = {
-    contentEl: el, composerEl: null, elements: new Set(),
+    contentEl: homePlacement ? null : el, composerEl: homePlacement ? el : null, elements: new Set(),
     observed: new Set(), runtimeStarted: false, moObserved: false,
     rafId: 0, pollId: 0, targetsReported: false,
   };
@@ -69,8 +74,33 @@ function fixture(originalLeft = "", originalTransform = "") {
     ${block("  function cleanupConversationView(", "  window.__codexPlusConversationViewCleanup")}
     globalThis.api = { align: conversationViewAlignNow, start: ensureConversationViewRuntime, cleanup: cleanupConversationView };
   `, context);
-  return { api: context.api, writes, style, dataset, geometry, stats, mutation: (records: unknown[]) => mutationCallback(records) };
+  return { api: context.api, writes, style, dataset, geometry, placement, stats, mutation: (records: unknown[]) => mutationCallback(records) };
 }
+
+test("home composer keeps native pane centering across root layouts and thread transitions", () => {
+  for (const homePlacement of ["self", "ancestor", "descendant"]) {
+    const f = fixture("3.25px", "", homePlacement);
+    f.api.align();
+    assert.equal(f.style.left, "3.25px", "home must stay aligned with its native welcome content");
+    assert.equal(f.style.maxWidth, "900px", "configured width still applies on home");
+    f.writes.length = 0;
+    for (let i = 0; i < 16; i++) f.api.align();
+    assert.equal(f.writes.length, 0);
+    f.placement.home = "";
+    f.api.align();
+    assert.equal(f.style.left, "250.00px", "thread centering remains enabled");
+    f.placement.home = homePlacement;
+    f.api.align();
+    assert.equal(f.style.left, "3.25px", "returning home must clear the old thread offset");
+    f.geometry.width = 600;
+    f.api.align();
+    assert.equal(f.style.maxWidth, "600px");
+    assert.equal(f.style.left, "3.25px");
+    f.api.cleanup();
+    assert.equal(f.style.left, "3.25px");
+    assert.equal(Object.keys(f.dataset).length, 0);
+  }
+});
 
 test("repeated alignment with unchanged geometry produces no style writes", () => {
   const f = fixture();

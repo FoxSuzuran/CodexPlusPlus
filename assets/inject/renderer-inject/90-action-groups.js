@@ -1128,6 +1128,12 @@
     });
     const htmlCenter = conversationViewHtmlCenter();
     targets.forEach((el) => {
+      // 首页欢迎区按内容 pane 居中，输入框沿用同一轴线。
+      if (el === conversationViewState.composerEl && (el.closest?.('[data-composer-placement="home"]')
+          || el.querySelector?.('[data-composer-placement="home"]'))) {
+        conversationViewResetOwnOffset(el);
+        return;
+      }
       const nativeRect = el.getBoundingClientRect();
       const bounds = conversationViewSessionRectFor(el);
       if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) {

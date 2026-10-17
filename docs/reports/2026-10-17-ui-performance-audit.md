@@ -221,3 +221,9 @@ Bennett 修复文件：`D:\Programming\Projects\CodexPlusPlus\target\temp\math-f
 本次降低侧栏重复解析、全页扫描和 DOM 写入；原生页面重建、历史分页及其他已安装扩展仍可能贡献等待。尚未替换安装 EXE 后做同一长会话多轮对照，不声称已消除全部转圈或给出整机加速倍数。
 
 本节源码验证：管理器全套 741 passed、1 项已有 skip；TypeScript、分片产物及皮肤生成一致性通过。Rust `assets::tests` 6 passed、`--test cdp_bridge` 169 passed，单线程。首次全套检查发现分片行数与皮肤 revision 的静态契约需要同步，更新后全套通过；没有放宽断言。固定前端生产构建成功，完整 70 文件集合与内容一致后恢复原时间戳。未新增依赖。
+
+本节代码提交：`343a25c815e0d08401ba3dc8e9b4ef6838c4ef05`。随后固定 `cargo xrelease` 成功，用时 273.28 秒；沿用原 `target`、4 任务、opt-level=3 / debug=0 / incremental=false、Sherpa 1.13.8 静态库，无环境覆盖。x64 PE、完整注入与 Windows 皮肤逐字节嵌入、生产 HTML / JS / CSS 校验通过后，覆盖固定发布目录的 EXE、说明、manifest 与校验信息；三项 SHA256SUMS 全部通过。
+
+当前发布产物：`D:\Programming\Projects\CodexPlusPlus\dist\windows\latest\codex-plus-plus.exe`，71,190,016 字节，SHA-256：`46bbfba6b10b56b9f616bfbd967e72a44e12961aad8a50c5d40876f152c0486a`。
+
+应用本节优化只需保存工作、完整退出 Codex++ 与官方 Codex 后，将此 EXE 手动替换到 `C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`。本节未新增独立脚本；此前脚本修复的副本及安装哈希保留于发布 manifest。未覆盖已安装 EXE 或用户脚本，未清理缓存、未推送。文档补充提交不改变已验证的生产源码。

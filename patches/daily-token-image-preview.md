@@ -54,3 +54,21 @@ node scripts/test-user-script-stutter-browser.cjs
 ```
 
 仍需手动替换并完整重启后，在实际会话中验收图片预览；未来原生预览标记变化可能需要调整选择器。本轮未修改管理器、Rust 或注入分片，未重复无关模块测试。
+
+## 构建与交付
+
+代码提交：`2ba5e51d015380cf971448be2402184160b38315`；修复分支 `codex/daily-image-preview`，验证后合入本地 `main`，未推送。
+
+按固定顺序执行完整前端生产构建和 `cargo xrelease`，后者用时 277.68 秒。前端整个目录的 70 个文件内容及集合一致后才恢复旧时间戳。沿用原 `target`、4 个编译任务、release opt-level=3/debug=0/incremental=false、Sherpa 1.13.8 静态库，没有环境覆盖或新增依赖。
+
+EXE 已校验 x64 PE、完整注入和 Windows 皮肤逐字节嵌入、生产 HTML / JS / CSS。源码没有改动 EXE 功能，重新编译的二进制哈希与上一版不同，交付校验使用本次实际文件：
+
+```text
+D:\Programming\Projects\CodexPlusPlus\dist\windows\latest\codex-plus-plus.exe
+71,190,528 字节
+SHA-256 be49f727f79695368871e9f67b41b98b805115561ef16cecb9032d8ae712f895
+```
+
+验证完成后更新固定发布目录的 EXE、README、manifest 和校验信息。该 EXE 沿用上一轮界面性能修复；本次图片遮挡修复需要单独替换上文的 Daily 脚本。
+
+子代理只读复核未发现实质性问题：隐藏状态只在变化时写入，现有观察器过滤脚本自身 DOM，未形成循环；预览关闭恢复和销毁清理保持。实际工作界面尚未替换脚本或重启。

@@ -34,3 +34,4 @@ patches/bennett-math-performance.patch text eol=lf
 patches/daily-token-message-performance.patch text eol=lf
 patches/context-used-meter-stutter.patch -text whitespace=-blank-at-eol,cr-at-eol
 patches/daily-token-usage-stutter.patch text eol=lf whitespace=-blank-at-eol
+patches/daily-token-image-preview.patch text eol=lf whitespace=-blank-at-eol

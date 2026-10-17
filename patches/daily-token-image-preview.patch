@@ -1,0 +1,55 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index 73312c98..85837cd1 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -3753,6 +3753,7 @@
+         z-index: 2147483600;
+         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       }
++      #${ROOT_ID}[hidden] { display: none !important; }
+       #${ROOT_ID}.codex-daily-floating {
+         position: fixed;
+         top: ${FLOATING_TOP}px;
+@@ -5331,8 +5332,33 @@
+     return null;
+   }
+ 
++  function isImagePreviewOpen() {
++    const selector = [
++      '.codex-dialog:has([data-image-preview-toolbar])',
++      '[role="dialog"]:has([data-image-preview-toolbar])',
++      '[role="dialog"]:has([data-testid="image-preview-dismiss-area"])',
++      '.codex-dialog-overlay[class*="_imageOverlay_"]',
++    ].join(",");
++    return Array.from(document.querySelectorAll(selector)).some((node) => {
++      if (node.closest('[hidden], [aria-hidden="true"], [inert], [data-state="closed"]')) return false;
++      const rect = node.getBoundingClientRect();
++      const style = getComputedStyle(node);
++      return rect.width > 0 && rect.height > 0 &&
++        style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
++    });
++  }
++
+   function mountRoot() {
+     if (!root || destroyed || !document.body) return;
++    const previewOpen = isImagePreviewOpen();
++    if (root.hidden !== previewOpen) root.hidden = previewOpen;
++    if (previewOpen) {
++      if (panel?.classList.contains("is-visible")) {
++        pinnedOpen = false;
++        hidePanel();
++      }
++      return;
++    }
+     const toolbar = findToolbar();
+ 
+     if (toolbar) {
+@@ -5740,7 +5766,7 @@
+       childList: true,
+       subtree: true,
+       attributes: true,
+-      attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "style"],
++      attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "inert", "style"],
+     });
+     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+     window.addEventListener("resize", handleWindowResize);

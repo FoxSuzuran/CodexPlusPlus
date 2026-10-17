@@ -77,6 +77,51 @@ test("both skin observers ignore text-only replacements and retain structural ch
   }
 });
 
+test("both skins defer hidden mutations and safety passes, then flush once on visibility resume", async () => {
+  for (const platform of ["windows", "macos"]) {
+    const renderer = await readFile(new URL(
+      `../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url,
+    ), "utf8");
+    const from = renderer.indexOf("  const scheduler = ");
+    const to = renderer.indexOf('\n  if (typeof MutationObserver', from);
+    const timers = new Map<number, () => void>();
+    const listeners = new Map<string, () => void>();
+    const calls: Array<Record<string, boolean>> = [];
+    const document = {
+      hidden: true,
+      addEventListener: (name: string, fn: () => void) => listeners.set(name, fn),
+      removeEventListener: (name: string) => listeners.delete(name),
+    };
+    let serial = 0;
+    const api = new Function("document", "setTimeout", "clearTimeout", "ensure",
+      `${renderer.slice(from, to)};return {scheduleEnsure,flushScheduledEnsure,visibilityHandler};`)(
+      document, (fn: () => void) => { timers.set(++serial, fn); return serial; },
+      (id: number) => timers.delete(id), (pending: Record<string, boolean>) => calls.push(pending),
+    );
+    for (let i = 0; i < 100; i++) api.scheduleEnsure({scope: true, parts: true}, 80);
+    api.flushScheduledEnsure(); // A timeout queued just before hiding must retain the flags.
+    assert.equal(calls.length, 0, platform);
+    assert.equal(timers.size, 0);
+    const safetyStart = renderer.indexOf("  const timer = setInterval(");
+    const safetyEnd = renderer.indexOf("\n  window[STATE_KEY].timer", safetyStart);
+    let safety: () => void = () => {};
+    new Function("setInterval", "scheduleEnsure", "metrics", renderer.slice(safetyStart, safetyEnd))(
+      (fn: () => void) => { safety = fn; }, api.scheduleEnsure, {safetyPasses: 0},
+    );
+    safety();
+    assert.equal(calls.length, 0);
+    document.hidden = false;
+    listeners.get("visibilitychange")!();
+    assert.deepEqual(calls, [{root: true, scope: true, parts: true}]);
+    listeners.get("visibilitychange")!();
+    assert.equal(calls.length, 1, "no extra pass without pending work");
+    api.scheduleEnsure({parts: true});
+    [...timers.values()].forEach(fn => fn());
+    assert.equal(calls.length, 2, "visible mutations still update");
+    assert.match(renderer, /document\.removeEventListener\?\.\("visibilitychange", visibilityHandler\)/);
+  }
+});
+
 test("universal skin predicates visit elements once and remove stale marks without repeated writes", async () => {
   const renderer = await readFile(new URL(
     "../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url,

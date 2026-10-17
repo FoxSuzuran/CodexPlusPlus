@@ -2,10 +2,12 @@
  * https://github.com/farion1231/cc-switch — Codex 写入使用本仓库的原有后端。
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
 import { t } from "./i18n";
 import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
+import { usePopoverLayer } from "./use-popover-layer";
 import "./ManagementPages.css";
 
 type Result = { status: string; message: string };
@@ -28,15 +30,11 @@ function SearchField({ value, onChange, placeholder }: { value: string; onChange
 }
 function Menu({ label = t("更多操作"), children }: { label?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const { rootRef, menuRef, menuStyle } = usePopoverLayer({ open, onOpenChange: setOpen, align: "end", minWidth: 180 });
   useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", close); document.addEventListener("keydown", escape);
-    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", escape); };
-  }, [open]);
-  return <div className="mg-menu-wrap" ref={ref}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}><MoreHorizontal size={17} /></button>{open && <div className="mg-menu" role="menu" onClick={() => setOpen(false)}>{children}</div>}</div>;
+    if (open && menuStyle.visibility !== "hidden") menuRef.current?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+  }, [menuRef, menuStyle.visibility, open]);
+  return <div className="mg-menu-wrap" ref={rootRef}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen(!open)}><MoreHorizontal size={17} /></button>{open && createPortal(<div className="mg-menu mg-menu-portal" role="menu" ref={menuRef} style={menuStyle} onClick={() => setOpen(false)}>{children}</div>, document.body)}</div>;
 }
 function MenuItem({ children, onClick, disabled, danger }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean }) {
   return <button type="button" role="menuitem" className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick}>{children}</button>;
@@ -174,6 +172,18 @@ function McpEditor({ entry, kind, onClose, onSave, notify, busy }: { entry?: Con
 }
 function McpImport({ onClose, onImport, busy }: { onClose: () => void; onImport: (json: string) => Promise<boolean>; busy: boolean }) {
   const [json, setJson] = useState(""); const [preview, setPreview] = useState<(Result & { entries: { id: string; tomlBody: string }[]; warnings: string[] }) | null>(null); const [checking, setChecking] = useState(false); const [error, setError] = useState("");
-  const check = async () => { setChecking(true); setError(""); try { const result = await invoke<NonNullable<typeof preview>>("preview_mcp_servers_json", { json }); setPreview(succeeded(result) ? result : null); if (!succeeded(result)) setError(result.message); } catch (e) { setError(String(e)); } finally { setChecking(false); } };
-  return <ManagementDrawer title={t("导入 MCP JSON")} onClose={onClose} footer={<><Action onClick={() => void check()} disabled={!json.trim() || checking || busy}>{checking ? t("正在解析…") : t("预览")}</Action><Action onClick={() => void onImport(json)} disabled={!preview || busy} primary>{t("确认导入")}</Action></>}><p className="mg-muted">{t("粘贴 mcpServers、servers 或单个服务器配置。")}</p><Field label={t("MCP 配置 JSON")}><textarea rows={18} className="mg-code" spellCheck={false} value={json} onChange={(e) => { setJson(e.target.value); setPreview(null); }} placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'} /></Field>{preview && <div className="mg-notice"><strong>{t("将导入：")}{preview.entries.map((e) => e.id).join("、")}</strong>{preview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}{error && <p role="alert" className="mg-error">{error}</p>}</ManagementDrawer>;
+  const previewSequence = useRef(0);
+  useEffect(() => () => { previewSequence.current += 1; }, []);
+  const check = async () => {
+    const sequence = ++previewSequence.current;
+    setChecking(true); setError(""); setPreview(null);
+    try {
+      const result = await invoke<NonNullable<typeof preview>>("preview_mcp_servers_json", { json });
+      if (sequence !== previewSequence.current) return;
+      setPreview(succeeded(result) ? result : null);
+      if (!succeeded(result)) setError(result.message);
+    } catch (e) { if (sequence === previewSequence.current) setError(String(e)); }
+    finally { if (sequence === previewSequence.current) setChecking(false); }
+  };
+  return <ManagementDrawer title={t("导入 MCP JSON")} onClose={onClose} footer={<><Action onClick={() => void check()} disabled={!json.trim() || checking || busy}>{checking ? t("正在解析…") : t("预览")}</Action><Action onClick={() => void onImport(json)} disabled={!preview || checking || busy} primary>{t("确认导入")}</Action></>}><p className="mg-muted">{t("粘贴 mcpServers、servers 或单个服务器配置。")}</p><Field label={t("MCP 配置 JSON")}><textarea rows={18} className="mg-code" spellCheck={false} value={json} onChange={(e) => { previewSequence.current += 1; setJson(e.target.value); setPreview(null); setChecking(false); setError(""); }} placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'} /></Field>{preview && <div className="mg-notice"><strong>{t("将导入：")}{preview.entries.map((e) => e.id).join("、")}</strong>{preview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}{error && <p role="alert" className="mg-error">{error}</p>}</ManagementDrawer>;
 }

@@ -2653,7 +2653,8 @@ fn injection_script_recovers_plugin_search_from_remote_auth_errors() {
 
     assert_eq!(cases["ordinaryBuildMatched"], false);
     assert_eq!(cases["ordinaryHiddenMatched"], false);
-    assert_eq!(cases["ordinaryFunctionToStringCalls"], 0);
+    // 先按回调排除无关数组，源码只读取一次并由两类检查共享缓存。
+    assert_eq!(cases["ordinaryFunctionToStringCalls"], 1);
     assert_eq!(cases["buildFlavorMatched"], true);
     assert_eq!(cases["buildFlavorMatchedAgain"], true);
     assert_eq!(cases["cachedFunctionToStringCalls"], 1);

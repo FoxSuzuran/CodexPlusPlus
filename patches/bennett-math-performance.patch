@@ -1,0 +1,54 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+index e0db213a..adbdbafb 100644
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -429,6 +429,7 @@ const FEATURES = {
+     let scanning = false;
+     let scanRequested = false;
+     let katexPromise = null;
++    let katexRetryAt = 0;
+     let mainModuleUrl = null;
+     let lastError = null;
+     let imageRequestSequence = 0;
+@@ -1120,8 +1121,10 @@ const FEATURES = {
+     }
+ 
+     function loadNativeKatex() {
+-      if (katexPromise) return katexPromise;
++      if (katexPromise && (!lastError || Date.now() < katexRetryAt)) return katexPromise;
+       if (typeof window.katex?.renderToString === "function") {
++        lastError = null;
++        katexRetryAt = 0;
+         katexPromise = Promise.resolve(window.katex);
+         return katexPromise;
+       }
+@@ -1132,11 +1135,14 @@ const FEATURES = {
+           if (typeof katex?.renderToString !== "function") {
+             throw new Error("Codex KaTeX module has no renderToString export");
+           }
++          lastError = null;
++          katexRetryAt = 0;
+           return katex;
+         })
+         .catch((error) => {
+           lastError = String(error?.message || error);
+-          katexPromise = null;
++          katexRetryAt = Date.now() + 30000;
++          api.log.warn("Markdown preview math unavailable", error);
+           throw error;
+         });
+       return katexPromise;
+@@ -2290,11 +2296,11 @@ const FEATURES = {
+           }
+         }
+ 
++        if (editors.length === 0) return;
+         let katex;
+         try {
+           katex = await loadNativeKatex();
+-        } catch (error) {
+-          api.log.warn("Markdown preview math unavailable", error);
++        } catch {
+           return;
+         }
+         for (const editor of editors) await installForEditor(editor, katex);

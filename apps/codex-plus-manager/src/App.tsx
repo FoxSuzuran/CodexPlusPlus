@@ -10727,10 +10727,19 @@ function McpJsonImporter({
 }) {
   const [json, setJson] = useState("");
   const [preview, setPreview] = useState<McpImportPreviewResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const previewSequence = useRef(0);
+  useEffect(() => () => { previewSequence.current += 1; }, []);
 
   const runPreview = async () => {
-    const result = await actions.previewMcpServersJson(json);
-    setPreview(result && isSuccessStatus(result.status) ? result : null);
+    const sequence = ++previewSequence.current;
+    setChecking(true); setPreview(null);
+    try {
+      const result = await actions.previewMcpServersJson(json);
+      if (sequence === previewSequence.current) setPreview(result && isSuccessStatus(result.status) ? result : null);
+    } finally {
+      if (sequence === previewSequence.current) setChecking(false);
+    }
   };
 
   return (
@@ -10748,8 +10757,10 @@ function McpJsonImporter({
             className="context-editor-textarea"
             value={json}
             onChange={(event) => {
+              previewSequence.current += 1;
               setJson(event.currentTarget.value);
               setPreview(null);
+              setChecking(false);
             }}
             placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'}
             spellCheck={false}
@@ -10762,8 +10773,8 @@ function McpJsonImporter({
           </div>
         ) : null}
         <Toolbar>
-          <Button disabled={!json.trim()} onClick={() => void runPreview()} size="sm" variant="secondary">{t("预览")}</Button>
-          <Button disabled={!preview} onClick={() => onImport(json)} size="sm">
+          <Button disabled={!json.trim() || checking} onClick={() => void runPreview()} size="sm" variant="secondary">{t("预览")}</Button>
+          <Button disabled={!preview || checking} onClick={() => onImport(json)} size="sm">
             <Download className="h-4 w-4" />
             {t("确认导入")}
           </Button>
@@ -11322,6 +11333,7 @@ function SessionIndexCleanupDialog({
   onConfirm: (selectedIds: string[]) => void;
   onCancel: () => void;
 }) {
+  const ref = useModalFocus(onCancel);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const allSelected = request.candidates.length > 0 && selectedIds.size === request.candidates.length;
   const toggleCandidate = (id: string, selected: boolean) => {
@@ -11334,7 +11346,7 @@ function SessionIndexCleanupDialog({
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t("清理幽灵任务索引")} ref={ref}>
       <div className="modal-card session-index-cleanup-modal">
         <div className="modal-head">
           <div>
@@ -11343,7 +11355,7 @@ function SessionIndexCleanupDialog({
               {tf("发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。", [request.candidates.length])}
             </p>
           </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
+          <button className="toast-close" onClick={onCancel} type="button" aria-label={t("关闭窗口")}>×</button>
         </div>
         <label className="session-index-cleanup-select-all">
           <input
@@ -11376,7 +11388,7 @@ function SessionIndexCleanupDialog({
             <Trash2 className="h-4 w-4" />
             {tf("确认清理 {0} 条", [selectedIds.size])}
           </Button>
-          <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
+          <Button onClick={onCancel} variant="secondary" data-modal-cancel>{t("取消")}</Button>
         </Toolbar>
       </div>
     </div>

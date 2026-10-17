@@ -33,10 +33,17 @@ for (const platform of ["windows", "macos"]) {
   const mutationAnchor = '        if (record.type !== "attributes") return true;';
   const ancestorAnchor = "            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) candidates.add(ancestor);";
   const branchAnchor = "      for (const branch of branches) {";
+  const schedulerAnchor = "    scheduler.timeout = null;\n    const pending = ";
+  const timeoutAnchor = "    if (scheduler.timeout) return;";
+  const observerAnchor = '  if (typeof MutationObserver === "function") {';
+  const cleanupAnchor = "    if (state?.timer) clearInterval(state.timer);";
+  const safetyAnchor = "    metrics.safetyPasses += 1;\n    ensure({ root: true });";
   if ([...baseRenderer.matchAll(declaration)].length !== 1 ||
       baseRenderer.split(mutationAnchor).length !== 2 ||
       baseRenderer.split(ancestorAnchor).length !== 2 ||
       baseRenderer.split(branchAnchor).length !== 2 ||
+      [schedulerAnchor, timeoutAnchor, observerAnchor, cleanupAnchor, safetyAnchor]
+        .some(anchor => baseRenderer.split(anchor).length !== 2) ||
       !baseRenderer.includes("refreshPredicates();") ||
       !baseRenderer.includes("removePredicates();")) {
     throw new Error(`${platform}: upstream predicate contract changed; review the adapter`);
@@ -60,7 +67,19 @@ ${branchAnchor}
             }`)
     .replace(mutationAnchor, `        if (record.type === "childList" && record.addedNodes && record.removedNodes
             && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
-${mutationAnchor}`);
+${mutationAnchor}`)
+    .replace(schedulerAnchor, `    scheduler.timeout = null;
+    if (document.hidden) return;
+    const pending = `)
+    .replace(timeoutAnchor, "    if (document.hidden || scheduler.timeout) return;")
+    .replace(observerAnchor, `  const visibilityHandler = () => {
+    if (!document.hidden && (scheduler.root || scheduler.scope || scheduler.parts)) flushScheduledEnsure();
+  };
+  document.addEventListener?.("visibilitychange", visibilityHandler);
+${observerAnchor}`)
+    .replace(cleanupAnchor, `    document.removeEventListener?.("visibilitychange", visibilityHandler);
+${cleanupAnchor}`)
+    .replace(safetyAnchor, "    metrics.safetyPasses += 1;\n    scheduleEnsure({ root: true }, 0);");
   new Function(renderer);
   for (const [name, source, content] of [
     ["dream-skin.css", baseCss, css],

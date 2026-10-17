@@ -1012,6 +1012,7 @@
     if (bodyReadyHandler && typeof document.removeEventListener === "function") {
       document.removeEventListener("DOMContentLoaded", bodyReadyHandler);
     }
+    document.removeEventListener?.("visibilitychange", visibilityHandler);
     if (state?.timer) clearInterval(state.timer);
     if (state?.scheduler?.timeout) clearTimeout(state.scheduler.timeout);
     if (analysisTimer) clearTimeout(analysisTimer);
@@ -1040,6 +1041,7 @@
   const flushScheduledEnsure = () => {
     if (scheduler.timeout) clearTimeout(scheduler.timeout);
     scheduler.timeout = null;
+    if (document.hidden) return;
     const pending = { root: scheduler.root, scope: scheduler.scope, parts: scheduler.parts };
     scheduler.root = false;
     scheduler.scope = false;
@@ -1050,9 +1052,13 @@
     scheduler.root ||= root;
     scheduler.scope ||= scope;
     scheduler.parts ||= parts;
-    if (scheduler.timeout) return;
+    if (document.hidden || scheduler.timeout) return;
     scheduler.timeout = setTimeout(flushScheduledEnsure, delay);
   };
+  const visibilityHandler = () => {
+    if (!document.hidden && (scheduler.root || scheduler.scope || scheduler.parts)) flushScheduledEnsure();
+  };
+  document.addEventListener?.("visibilitychange", visibilityHandler);
   if (typeof MutationObserver === "function") {
     rootObserver = new MutationObserver(() => scheduleEnsure({ root: true }));
     // SPA route changes are observable as DOM mutations even when Chromium's
@@ -1157,7 +1163,7 @@
   }
   const timer = setInterval(() => {
     metrics.safetyPasses += 1;
-    ensure({ root: true });
+    scheduleEnsure({ root: true }, 0);
   }, 30000);
   window[STATE_KEY].timer = timer;
   if (mediaHandler && mediaQuery && typeof mediaQuery.addEventListener === "function") {

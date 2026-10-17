@@ -341,8 +341,10 @@
     codexPlusUsageState.inFlight = true;
     try {
       const result = await postJson("/thread-usage-live", { session_id: threadId });
+      if (result?.status !== "ok" || !Array.isArray(result.events)) {
+        throw new Error(result?.message || "Usage bridge returned an invalid response");
+      }
       codexPlusUsageState.failures = 0;
-      if (result?.status !== "ok" || !Array.isArray(result.events)) return null;
       codexPlusUsageState.cache.delete(threadId);
       codexPlusUsageState.cache.set(threadId, result.events);
       while (codexPlusUsageState.cache.size > 32) {
@@ -385,14 +387,16 @@
     const snapshot = codexPlusUsageSnapshot(events || codexPlusUsageState.cache.get(threadId));
     if (snapshot) {
       codexPlusUsageRender(snapshot);
-      // 刚有事件说明本轮在跑，加密轮询；本轮已经结束就拉长间隔。
-      codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
-      return;
     }
     if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
-      // 桥接连续失败：整条隐藏，退到慢轮询，等宿主恢复。
-      codexPlusUsageHide();
+      // 保留已有读数；无缓存时隐藏占位符，等桥接恢复。
+      if (!snapshot) codexPlusUsageHide();
       codexPlusUsageSchedule(30000);
+      return;
+    }
+    if (snapshot) {
+      // 刚有事件说明本轮在跑，加密轮询；本轮已经结束就拉长间隔。
+      codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
       return;
     }
     // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，

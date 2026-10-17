@@ -82,6 +82,8 @@ function placementHarness() {
   let thread = "thread-a";
   const renders: Array<{ thread: string; context: number | null }> = [];
   const requests: Array<{ thread: string; resolve: (value: unknown) => void }> = [];
+  const schedules: number[] = [];
+  let hides = 0;
   const names = [
     "codexPlusUsageState", "codexPlusUsageStaleMs", "codexPlusUsageFailureLimit",
     "codexPlusUsageIdleIntervalMs", "codexPlusUsageActiveIntervalMs", "codexPlusUsageWarmupIntervalMs",
@@ -96,12 +98,33 @@ function placementHarness() {
     const codexPlusSettings = () => ({ usageStatusLine: true });
     return { state: codexPlusUsageState, sync: codexPlusUsageSyncPlacement, tick: codexPlusUsageTick, refresh: codexPlusUsageRefresh };`);
   const api = factory({ hidden: false }, () => ({ thread }), (card: { thread: string }) => card.thread,
-    () => {}, () => ({}), () => {}, () => {},
+    () => {}, () => ({}), () => {}, () => { hides++; },
     (snapshot: { context: number } | null) => renders.push({ thread, context: snapshot?.context ?? null }),
-    () => {}, (_: string, body: { session_id: string }) => new Promise((resolve) => requests.push({ thread: body.session_id, resolve })),
+    (delay: number) => schedules.push(delay), (_: string, body: { session_id: string }) => new Promise((resolve) => requests.push({ thread: body.session_id, resolve })),
     () => {});
-  return { ...api, renders, requests, setThread: (next: string) => { thread = next; } };
+  return { ...api, renders, requests, schedules, hides: () => hides, setThread: (next: string) => { thread = next; } };
 }
+
+test("explicit usage failures back off with or without cached data and recover on a valid empty response", async () => {
+  for (const cached of [false, true]) {
+    const h = placementHarness();
+    if (cached) h.state.cache.set("thread-a", [event(0, 10)]);
+    for (let i = 0; i < 5; i++) {
+      const pending = h.tick();
+      h.requests.at(-1)!.resolve({ status: "failed", message: "bridge unavailable" });
+      await pending;
+    }
+    assert.equal(h.state.failures, 5);
+    assert.equal(h.schedules.at(-1), 30000);
+    assert.equal(h.hides(), cached ? 0 : 1);
+    const pending = h.tick();
+    h.requests.at(-1)!.resolve({ status: "ok", events: [] });
+    await pending;
+    assert.equal(h.state.failures, 0);
+    assert.equal(h.schedules.at(-1), 2500, "valid empty data is a new-session warmup");
+    assert.equal(h.state.cache.get("thread-a").length, 0);
+  }
+});
 
 test("usage switches immediately show cached data and late requests cannot paint another thread", async () => {
   const h = placementHarness();

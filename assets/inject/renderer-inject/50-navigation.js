@@ -167,10 +167,10 @@
 
   function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
     if (!codexPluginBuildFlavorFilterSourcePattern.test(source)) return false;
+    if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
       && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
   }
@@ -179,10 +179,10 @@
   // 外部拿不到 id→marketplace 的映射，所以这里只做「结构 + 确实过滤掉了元素」的判定。
   function isCodexPluginFeaturedFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    if (!sample.every((id) => typeof id === "string")) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
     if (!codexPluginFeaturedFilterSourcePattern.test(source)) return false;
+    if (!sample.every((id) => typeof id === "string")) return false;
     if (Array.isArray(filtered) && filtered.length >= sample.length) return false;
     return true;
   }

@@ -15,3 +15,4 @@
 .screen.management-screen .mg-page>.mg-content>.mg-matrix,
 .screen.management-screen .mg-page>.mg-content>.mg-skill-list,
 .screen.management-screen .mg-page>.mg-content>.mg-session-list{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto}
+.mg-menu-portal{right:auto;z-index:240;overflow-y:auto}

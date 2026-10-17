@@ -25,7 +25,12 @@ for (const platform of ["windows", "macos"]) {
   const baseRenderer = await read(`${sourcePrefix}/renderer-inject.js`);
   const compatibility = platform === "windows" ? await read("assets/inject/dream-skin-compat.windows.css") : "";
   const css = baseCss + (compatibility ? `\n${compatibility}` : "");
-  const predicates = cssPredicateManifest(css);
+  if (css.split(":has(*)").length !== 2 ||
+      !css.includes("[data-app-shell-main-content-top-fade]:not(:has(*))")) {
+    throw new Error(`${platform}: top-fade predicate changed; review the adapter`);
+  }
+  // The rare top-fade owner can use native :has(*) without marking the entire DOM.
+  const predicates = cssPredicateManifest(css).filter(({ selector }) => selector !== ":has(*)");
   if (predicates.some(({ selector }) => /:(?:empty|blank|dir)\b/.test(selector))) {
     throw new Error(`${platform}: text-sensitive predicate added; review the mutation filter`);
   }
@@ -51,15 +56,7 @@ for (const platform of ["windows", "macos"]) {
   // Include local compatibility CSS in the upstream manifest, never parse CSS in the renderer.
   const renderer = baseRenderer
     .replace(declaration, () => `  const CSS_PREDICATES = ${JSON.stringify(predicates)}`)
-    .replace(branchAnchor, `      const visitedAncestors = new Set();
-${branchAnchor}
-        if (branch.selector === "*" && branch.relation !== "sibling" && branch.relation !== "adjacent") {
-          // :has(*) needs non-leaf elements, not every leaf's ancestor chain.
-          for (const node of document.querySelectorAll("*")) {
-            if (node.firstElementChild) candidates.add(node);
-          }
-          continue;
-        }`)
+    .replace(branchAnchor, `      const visitedAncestors = new Set();\n${branchAnchor}`)
     .replace(ancestorAnchor, `            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) {
               if (visitedAncestors.has(ancestor)) break;
               visitedAncestors.add(ancestor);

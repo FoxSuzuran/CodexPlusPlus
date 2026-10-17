@@ -126,6 +126,48 @@ function deleteFixture() {
   return { context, rows, native, buttons, requests, confirmations, diagnostics, timers, toasts, refreshes, begin, finish, activate, setLocation, reloads: () => reloads };
 }
 
+test("current session skips inactive sidebar metadata and resolves fresh active rows", () => {
+  const f = deleteFixture();
+  f.setLocation("app://-/index.html");
+  let fiberReads = 0;
+  const trackedRow = (id: string, active: boolean) => {
+    const element = row(id, "local");
+    const fiber = element.__reactFiber$fixture;
+    Object.defineProperty(element, "__reactFiber$fixture", { get: () => { fiberReads += 1; return fiber; } });
+    element.setAttribute("data-app-action-sidebar-thread-active", String(active));
+    element.setAttribute("aria-current", "page");
+    return element;
+  };
+  const inactive = Array.from({ length: 300 }, () => trackedRow(uuid, false));
+  const active = trackedRow(uuid, true);
+  f.rows.splice(0, f.rows.length, ...inactive, active);
+  assert.equal(f.context.currentSessionRef().session_id, uuid);
+  assert.equal(fiberReads, 1);
+  f.rows.splice(0, f.rows.length, ...inactive, trackedRow(otherUuid, true));
+  assert.equal(f.context.currentSessionRef().session_id, otherUuid);
+  assert.equal(fiberReads, 2);
+});
+
+test("current session preserves host validation, legacy rows and route fallback", () => {
+  const f = deleteFixture();
+  for (const [host, props, expected] of [
+    ["local", null, "local"],
+    ["ssh:fixture", null, "ssh:fixture"],
+    ["local", { conversationId: uuid, hostId: "ssh:fixture" }, null],
+  ] as const) {
+    f.rows.splice(0, f.rows.length, row(uuid, host, props));
+    f.rows[0].setAttribute("data-app-action-sidebar-thread-active", "true");
+    assert.equal(f.context.currentSessionRef().host_id, expected);
+  }
+  f.rows[0].attributes.delete("data-app-action-sidebar-thread-active");
+  assert.equal(f.context.currentSessionRef().session_id, uuid);
+  f.rows[0].setAttribute("data-app-action-sidebar-thread-active", "false");
+  assert.deepEqual(JSON.parse(JSON.stringify(f.context.currentSessionRef())), { session_id: uuid, title: "" });
+  f.rows[0].setAttribute("data-app-action-sidebar-thread-active", "true");
+  f.setLocation(`app://-/thread/${otherUuid}`);
+  assert.equal(f.context.currentSessionRef().session_id, otherUuid);
+});
+
 test("local current deletion uses native navigation and refresh without a page reload", async () => {
   const f = deleteFixture(); await f.begin(); await f.finish();
   assert.equal(f.native.clicks, 1);

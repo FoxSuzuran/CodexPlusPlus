@@ -122,7 +122,25 @@ test("both skins defer hidden mutations and safety passes, then flush once on vi
   }
 });
 
-test("universal skin predicates visit elements once and remove stale marks without repeated writes", async () => {
+test("both skins keep the rare top-fade predicate native without marking the full DOM", async () => {
+  for (const platform of ["windows", "macos"]) {
+    const renderer = await readFile(new URL(
+      `../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url,
+    ), "utf8");
+    const predicates = JSON.parse(renderer.match(/^  const CSS_PREDICATES = (.+);?$/m)![1]);
+    assert.equal(predicates.length, 16, platform);
+    assert.ok(!predicates.some((item: { selector: string }) => item.selector === ":has(*)"), platform);
+    assert.ok(predicates.some((item: { attribute: string }) => item.attribute === "data-dream-has-12"));
+    assert.ok(!renderer.includes('document.querySelectorAll("*")'), "no universal predicate scan");
+    const css = await readFile(new URL(
+      `../../../assets/inject/upstream/dream-skin/${platform}/dream-skin.css`, import.meta.url,
+    ), "utf8");
+    assert.equal(css.split(":has(*)").length, 2, platform);
+    assert.ok(css.includes("[data-app-shell-main-content-top-fade]:not(:has(*))"));
+  }
+});
+
+test("skin predicates visit shared ancestors once and remove stale marks without repeated writes", async () => {
   const renderer = await readFile(new URL(
     "../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url,
   ), "utf8");
@@ -133,7 +151,7 @@ test("universal skin predicates visit elements once and remove stale marks witho
   const nodes: any[] = [];
   for (let i = 0; i < 2000; i++) {
     const attributes = new Map<string, string>();
-    const parent = nodes[Math.floor((i - 1) / 4)] || null;
+    const parent = nodes[i - 1] || null;
     const node: any = {
       firstElementChild: null,
       get parentElement() { ancestorReads++; return parent; },
@@ -149,12 +167,12 @@ test("universal skin predicates visit elements once and remove stale marks witho
   const metrics = { predicatePasses: 0, predicateWrites: 0, predicateMs: 0 };
   const refresh = new Function("CSS_PREDICATES", "document", "metrics", "now",
     `${renderer.slice(from, to)};return refreshPredicates;`)(
-    [{ selector: ":has(*)", attribute: "data-test-has", branches: [{ selector: "*", relation: "descendant" }] }],
-    { querySelectorAll: () => nodes }, metrics, () => 0,
+    [{ selector: ':has([role="main"])', attribute: "data-test-has", branches: [{ selector: '[role="main"]', relation: "descendant" }] }],
+    { querySelectorAll: () => nodes.slice(1) }, metrics, () => 0,
   );
   refresh();
   for (const node of nodes) assert.equal(node.getAttribute("data-test-has"), node.firstElementChild ? "true" : undefined);
-  assert.equal(ancestorReads, 0, "universal selectors must not walk each leaf's ancestors");
+  assert.ok(ancestorReads < nodes.length * 3, "shared ancestors must not be walked for every landmark");
   const writes = metrics.predicateWrites;
   refresh();
   assert.equal(metrics.predicateWrites, writes, "unchanged predicates must not write attributes");

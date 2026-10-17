@@ -10105,6 +10105,7 @@
   function currentSessionRef() {
     const rows = sessionRows();
     for (const row of rows) {
+      if (row.getAttribute("data-app-action-sidebar-thread-active") === "false") continue;
       const ref = sessionRefFromRow(row);
       if (ref.session_id && isCurrentSessionRow(row, ref)) return ref;
     }

@@ -172,6 +172,20 @@ node target/temp/audit-perf-20261017.cjs
 - 新增真实组件 Edge 回归 5 组：两个导入入口的过期响应、保存失败草稿、末行菜单裁切与键盘、清理弹窗焦点。无页面运行错误，未执行真实导入或清理。
 - Rust `cdp_bridge` 169 passed、`user_scripts_reload` 2 passed，单线程。旧契约中“普通回调不读取源码”的断言已按新顺序更新为读取一次且共享缓存；返回语义和插件搜索回退断言保持通过。
 - 当前生产 CSS 下再次运行管理界面 5 组、既有布局 4 组、Fast 按钮 12 组及流式扫描 5 类结构回归通过。
-- 固定 Windows 发布构建结果将在完成后补充；已有发布 EXE 在验证完成前保留。
+- 固定前端生产构建和 `cargo xrelease` 成功，Cargo 用时 4m 42s。沿用原 `target`、4 任务、opt-level=3、debug=0、incremental=false 和 Sherpa 1.13.8 静态库，没有环境覆盖或新增依赖。
+- 新 EXE 通过 x64 PE、完整注入与 Windows 皮肤逐字节嵌入、生产 HTML / JS / CSS 校验。验证完成后才覆盖固定发布目录，SHA256SUMS 同时校验 EXE、manifest、README。
 
 Bennett 修复文件：`D:\Programming\Projects\CodexPlusPlus\target\temp\math-fixed-market-bennett-ui-improvements.js`。基线、哈希、回归和手动替换说明见 `patches/bennett-math-performance.md`。该修改消除重复读取，不改变现有 KaTeX 资源发现兼容范围。
+
+代码提交：`6ef581a3ddc865c9e9aefd8ce9aab233c9e78685`。文档随后补充构建结果，未改动已验证的生产源码。
+
+发布产物：`D:\Programming\Projects\CodexPlusPlus\dist\windows\latest\codex-plus-plus.exe`，71,190,528 字节；SHA-256：`efdada57fead364882aabf254d73a6b33118290dd479db109f9f6d804f9379b8`。
+
+保存工作并完整退出 Codex++ 与官方 Codex 后，手动替换：
+
+1. 发布 EXE → `C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`。
+2. 上述 Bennett 修复脚本 → `C:\Users\29035\AppData\Roaming\Codex++\user_scripts\market-bennett-ui-improvements.js`。
+
+本轮没有覆盖已安装文件、热重载、清理缓存或推送。发布 manifest 保留上一轮 Context / Daily 脚本副本与当前安装哈希；核对时这两份也尚未与上一轮修复副本一致，若此前没有替换，请按 10 月 16 日报告补齐。市场更新导致哈希变化时先核对版本和补丁，不盲目覆盖新版。
+
+仍缺安装新版和脚本后的同场景长会话多轮对照；本报告不声称全部原生或其他扩展导致的卡顿已经消失。子代理对性能改动的额外只读复核未发现实质性回归。

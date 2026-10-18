@@ -979,64 +979,6 @@
         font-size: 13px;
       }
       .codex-plus-typing-effect-select:disabled { opacity: .55; cursor: not-allowed; }
-      .codex-plus-service-tier-control { display: grid; gap: 6px; min-width: 316px; justify-items: end; align-self: center; }
-      .codex-plus-service-tier-status { color: #a1a1aa; font-size: 13px; line-height: 1.3; text-align: right; }
-      .codex-plus-service-tier-status[data-status="ok"] { color: #34d399; }
-      .codex-plus-service-tier-status[data-status="failed"] { color: #f87171; }
-      .codex-plus-service-tier-status[data-status="unsupported"] { color: #fbbf24; }
-      .codex-plus-service-tier-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-      .codex-plus-service-tier-thread-actions { opacity: .88; align-items: center; }
-      .codex-plus-service-tier-thread-label { color: #a1a1aa; font-size: 13px;
-        line-height: 1.2;
-        font-family: inherit; white-space: nowrap; }
-      .codex-plus-service-tier-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font-size: 13px;
-        font-family: inherit; padding: 5px 8px; white-space: nowrap; }
-      .codex-plus-service-tier-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.22); color: #6ee7b7; }
-      .codex-plus-service-tier-button:disabled { opacity: .55; cursor: not-allowed; }
-      .${codexServiceTierBadgeClass} {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        flex: 0 0 auto;
-        height: 24px;
-        min-width: 54px;
-        box-sizing: border-box;
-        border: 1px solid rgba(148,163,184,.28);
-        border-radius: 999px;
-        background: rgba(148,163,184,.12);
-        color: #d4d4d8;
-        font-size: 13px;
-        font-weight: 600;
-        line-height: 1;
-        font-family: inherit;
-        padding: 0 8px;
-        white-space: nowrap;
-        cursor: pointer;
-      }
-      .${codexServiceTierBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"], .${codexServiceTierBadgeClass}[data-tier="ultrafast"] { border-color: rgba(16,163,127,.55); background: rgba(16,163,127,.18); color: #6ee7b7; }
-      .${codexServiceTierBadgeClass}[data-tier="loading"] { color: #a1a1aa; }
-      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
-      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
-      .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
-      .${codexServiceTierBadgeClass} .codex-fast-icon { opacity: .45; filter: grayscale(1); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"] .codex-fast-icon, .${codexServiceTierBadgeClass}[data-tier="ultrafast"] .codex-fast-icon { opacity: 1; filter: none; }
-      .codex-fast-slash-menu { display: contents; }
-      .codex-fast-slash-menu button { display: flex; align-items: center;
-        width: 100%; padding: var(--suggestion-menu-item-padding, 6px 8px);
-        gap: var(--gap-menu-row-content, 10px); border: 0; border-radius: var(--radius-xl, 6px); color: inherit;
-        background: transparent; cursor: pointer; text-align: left; font: inherit; }
-      .codex-fast-slash-menu button:hover, .codex-fast-slash-menu[data-selected="true"] button {
-        background: var(--color-primary-ghost-hover, #10a37f26); }
-      .codex-fast-slash-menu button:disabled { opacity: .6; cursor: not-allowed; }
-      .codex-fast-slash-icon { width: 1em; flex-shrink: 0; }
-      .codex-fast-slash-label { flex-shrink: 0; }
-      [data-codex-fast-slash-status] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        color: var(--color-text-codex-description, inherit); opacity: .75; }
-      [data-codex-fast-native-selection] button:not([data-codex-fast-slash-action]),
-      [data-codex-fast-native-selection] [role="option"]:not([data-codex-fast-slash-action]) {
-        background-color: transparent !important; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -1162,15 +1104,13 @@
         box-shadow: var(--shadow-400, 0 16px 48px rgba(0,0,0,.2));
       }
       .codex-delete-confirm-message,
-.codex-plus-row-description,
-.codex-plus-about,
-.codex-plus-service-tier-thread-label,
-.codex-plus-backend-label,
-.codex-plus-form-message { color: var(--codex-plus-text-secondary); }
+      .codex-plus-row-description,
+      .codex-plus-about,
+      .codex-plus-backend-label,
+      .codex-plus-form-message { color: var(--codex-plus-text-secondary); }
       .codex-delete-confirm-actions button,
       .codex-plus-action-button,
-      .codex-plus-issue-button,
-      .codex-plus-service-tier-button {
+      .codex-plus-issue-button {
         min-height: 32px;
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-lg, 8px);
@@ -1187,8 +1127,6 @@
       .codex-plus-action-button:focus-visible,
       .codex-plus-issue-button:hover,
       .codex-plus-issue-button:focus-visible,
-      .codex-plus-service-tier-button:hover,
-      .codex-plus-service-tier-button:focus-visible,
       .codex-delete-confirm-actions [data-codex-delete-confirm="true"] {
         border-color: var(--color-border-danger, #dc2626);
         background: var(--color-background-danger-solid, #dc2626);
@@ -1222,11 +1160,6 @@
       .codex-plus-width-input:focus,
       .codex-plus-typing-effect-select:focus,
       .codex-plus-form-field input:focus { border-color: var(--codex-plus-focus); outline: 2px solid color-mix(in srgb, var(--codex-plus-focus) 25%, transparent); outline-offset: 0; }
-      .codex-plus-service-tier-button[data-active="true"] {
-        border-color: var(--color-border-primary, var(--codex-plus-focus));
-        background: var(--color-background-primary-soft, var(--codex-plus-bg-selected));
-        color: var(--color-text-primary, var(--codex-plus-text));
-      }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -1237,18 +1170,6 @@
       .codex-plus-backend-indicator[data-status="checking"] { background: var(--codex-plus-warning); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="degraded"],
       .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
-      .${codexServiceTierBadgeClass} {
-        height: 24px;
-        border-color: var(--codex-plus-border);
-        border-radius: var(--border-radius-lg, 8px);
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text-secondary);
-        font-family: inherit;
-      }
-      .${codexServiceTierBadgeClass}:hover { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"], .${codexServiceTierBadgeClass}[data-tier="ultrafast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
-      .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
-      .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
       /*
        * 优惠条：暗底配橙色文字。
        *
@@ -1256,10 +1177,10 @@
        * 的值），压在深色卡片上非常刺眼。改成用警告色按低透明度混出来，深浅主题
        * 都成立，也和原生「需要注意」的语义色同源。
        */
-      .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
-      .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
+      .codex-plus-form-message[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-form-message[data-status="failed"], .codex-plus-backend-label[data-status="failed"] { color: var(--codex-plus-danger); }
       .codex-plus-backend-label[data-status="degraded"] { color: var(--codex-plus-warning); }
-      .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
+      .codex-plus-form-message[data-status="loading"], .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
       /* Codex++ 设置主页：对齐原生设置页，保持其它页面与弹窗的布局独立。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] {
         background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
@@ -1359,15 +1280,9 @@
         flex-wrap: wrap;
         gap: 8px;
       }
-      .codex-plus-settings .codex-plus-service-tier-control {
-        flex: 0 1 300px;
-        min-width: 0;
-      }
-      .codex-plus-settings .codex-plus-service-tier-status { overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
-      .codex-plus-settings .codex-plus-service-tier-button,
       .codex-plus-settings .codex-plus-width-input,
       .codex-plus-settings .codex-plus-typing-effect-select {
         box-sizing: border-box;
@@ -1469,16 +1384,9 @@
       .codex-plus-settings .codex-plus-action-button:hover,
       .codex-plus-settings .codex-plus-action-button:focus-visible,
       .codex-plus-settings .codex-plus-issue-button:hover,
-      .codex-plus-settings .codex-plus-issue-button:focus-visible,
-      .codex-plus-settings .codex-plus-service-tier-button:hover,
-      .codex-plus-settings .codex-plus-service-tier-button:focus-visible {
+      .codex-plus-settings .codex-plus-issue-button:focus-visible {
         border-color: var(--codex-plus-border);
         background: var(--codex-plus-bg-hover);
-        color: var(--codex-plus-text);
-      }
-      .codex-plus-settings .codex-plus-service-tier-button[data-active="true"] {
-        border-color: var(--codex-plus-switch-on, #3485ff);
-        background: color-mix(in srgb, var(--codex-plus-switch-on, #3485ff) 16%, var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary)));
         color: var(--codex-plus-text);
       }
       .codex-plus-settings button:focus-visible,
@@ -1496,9 +1404,6 @@
       }
       @container codex-plus-settings (max-width: 560px) {
         .codex-plus-settings .codex-plus-row { gap: 16px; }
-        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] { flex-wrap: wrap; }
-        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
-        .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
         box-sizing: border-box;
@@ -1781,7 +1686,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1795,7 +1700,7 @@
     whaleWidget: "codexAppWhaleWidgetEnabled",
     threadScrollRestore: "codexAppThreadScrollRestore",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
-    serviceTierControls: "codexAppServiceTierControls",
+    nativeFastUnlock: "codexAppNativeFastUnlock",
     petRealMouseLook: "codexAppPetRealMouseLook",
     activityOverlayRight: "codexAppActivityOverlayRight",
     stepwise: "codexAppStepwiseEnabled",
@@ -1838,7 +1743,7 @@
         conversationViewMaxWidth: conversationViewDefaultWidth,
         threadScrollRestore: false,
         nativeMenuPlacement: false,
-        serviceTierControls: false,
+        nativeFastUnlock: false,
         petRealMouseLook: false,
         activityOverlayRight: false,
         stepwise: false,
@@ -1856,6 +1761,7 @@
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       delete settings.customLayout;
+      delete settings.serviceTierControls;
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -2638,14 +2544,6 @@
       (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
       window.__codexThreadScrollSyncTimers = [];
       window.__codexThreadScrollRuntime = null;
-    }
-    if (key === "serviceTierControls") {
-      if (value) {
-        void loadCodexServiceTierState();
-      } else {
-        removeCodexServiceTierBadges();
-        refreshCodexServiceTierControls();
-      }
     }
     if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();

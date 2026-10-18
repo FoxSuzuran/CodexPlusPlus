@@ -1,11 +1,11 @@
 {
   "repository": "Fei-Away/Codex-Dream-Skin",
-  "commit": "6f72d849e8de36aa7eef6bca9f2634e96b5706f7",
+  "commit": "1c2e8fea9e44e2ce8384bbd1c8759b99397c5d7d",
   "files": [
     {
       "file": "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-      "upstreamSha256": "7f597e73263cd103a96cecdd8715774c5bd05c68fbd749d4b8550dfd3665067a",
-      "sha256": "02560b6b714c87c67702843e0bf70af3d1fc2efd58a441be37ca6cea8d051a1a"
+      "upstreamSha256": "6cd518f4f4a2a17ccb7f4bfcf03ecf73fb3f74e9d8f3c9788751aba06f46c828",
+      "sha256": "679558f3593e57cbdd6f29e2bb1f9086f87693a49c6826b28e79c82a4bf45d03"
     },
     {
       "file": "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
@@ -14,8 +14,8 @@
     },
     {
       "file": "assets/inject/upstream/dream-skin/macos/dream-skin.css",
-      "upstreamSha256": "b8e567f0baaffd84942c26f7bdb8d3ed7c5925bb527f12923b4ef33ddbc2ab23",
-      "sha256": "b8e567f0baaffd84942c26f7bdb8d3ed7c5925bb527f12923b4ef33ddbc2ab23"
+      "upstreamSha256": "04c15844ddca795157e2dcf81f184d04798dc32895bc5eb3697660522bf7343e",
+      "sha256": "04c15844ddca795157e2dcf81f184d04798dc32895bc5eb3697660522bf7343e"
     },
     {
       "file": "assets/inject/upstream/dream-skin/macos/renderer-inject.js",

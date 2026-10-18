@@ -282,8 +282,9 @@ window.codexPlus.call("/session/export", { session_id })
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
+| `/cdp/targets` | 列出可注入的 Codex 页面（`main` / `avatar-overlay` / `quick-chat`） |
 
-**写能力没有开放**：`/settings/set`、`/delete`、`/undo`、`/share/create` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+**写能力没有开放**：`/settings/set`、`/delete`、`/undo`、`/share/create`、`/cdp/evaluate` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
 
 ---
 

@@ -15,7 +15,7 @@ async function modelRuntime(modelMetadata: Record<string, unknown>) {
   const source = await readFile(rendererPath, "utf8");
   const catalog = { model: "future-model", default_model: "future-model", modelMetadata };
   const metadata = between(source, "  function codexPlusModelMetadata(", "  function modelArrayLooksPatchable(");
-  const fast = between(source, "  function isFastServiceTierValue(", "  function codexServiceTierInheritedValue(");
+  const fast = between(source, "  function normalizeCodexServiceTierModelName(", "  // 服务等级由 Codex 原生控件决定");
   return new Function("codexModelCatalog", `
     const window = {};
     const currentSessionRef = () => ({ session_id: "active-thread" });
@@ -196,13 +196,15 @@ describe("native state API discovery", () => {
 });
 
 describe("captured request clients continue forwarding requests", () => {
-  it("preserves parameters, options and repeated turns for instance and prototype patches", async () => {
+  it("preserves native tiers, parameters, options, errors and repeated turns for both patch paths", async () => {
     const source = await readFile(rendererPath, "utf8");
     const instance = between(source, "  function patchAppServerModelRequestClient(", "\n  // issue #2177");
     const prototype = between(source, "    function installCodexAppServerClientPrototypePatch(", "  const appServerModelRequestPatchMaxMisses");
-    const requestTier = between(source, "  function applyCodexServiceTierRequestOnly(", "  function applyCodexServiceTierRequestOverride(");
     const api = new Function(`
       const window = {};
+      Object.defineProperty(window, "__codexPlusFastRequestHandlers", {
+        get() { throw new Error("retired Fast handlers must not run"); },
+      });
       const codexAppServerModelRequestPatchVersion = "13";
       const registerNativeHostClient = () => {};
       const codexPlusPluginNativeInterceptClient = () => null;
@@ -212,33 +214,35 @@ describe("captured request clients continue forwarding requests", () => {
       const codexRemoteSessionProviderPatchEnabled = () => false;
       const codexRemoteSessionProviderRequestMethod = () => false;
       const codexRemoteSessionProviderOverrideEnabled = () => false;
-      const codexPlusSettings = () => ({serviceTierControls:true});
+      const codexPlusSettings = () => ({sessionDelete:true});
       const appServerModelRequestMethod = (method) => method;
       const applyCodexRemoteSessionProviderOverride = (method, params) => params;
-      const codexServiceTierRequestMethods = () => new Set(["thread/start", "thread/resume", "turn/start"]);
-      const observations = [];
-      const beginCodexServiceTierRequest = () => ({});
-      const observeCodexServiceTierRequestResult = (method, params, result, failed = false) =>
-        observations.push({method, params, result, failed});
+      const codexManagedSessionConnection = () => null;
+      const prepareCodexManagedSessionConnection = async (_method, params) => params;
+      const sendCodexManagedSessionTurn = async () => null;
+      const noteCodexManagedSessionStart = () => {};
+      const prewarmCodexManagedSession = (_client, prewarm, params, options) => prewarm(params, options);
       const refreshCodexThreadModelBeforeTurn = async () => null;
       const codexThreadModelRequestState = (method, params) => ({
         requestMethod: method, threadId: params.threadId, model: params.model
       });
-      const codexServiceTierOverrideForRequest = (method, params) => ["turn/start", "thread/start"].includes(method)
-        ? {serviceTier:"priority",mode:"global-fast",threadId:params.threadId,modelName:params.model}
-        : null;
       const sendCodexPlusDiagnostic = () => {};
-      ${requestTier}
-      const prepareCodexServiceTierRequest = async (...args) => applyCodexServiceTierRequestOnly(...args);
       ${instance}
       ${prototype}
-      return {window,observations,instance:patchAppServerModelRequestClient,prototype:installCodexAppServerClientPrototypePatch};
+      return {window,instance:patchAppServerModelRequestClient,prototype:installCodexAppServerClientPrototypePatch};
     `)();
+    const failure = new Error("original request failed");
     class Client {
+      hostId = "local";
+      results: unknown[] = [];
       async sendRequest(method: string, params: Record<string, unknown>, options: unknown) {
-        return { method, params, options };
+        if (params.fail) throw failure;
+        const result = { method, params, options };
+        this.results.push(result);
+        return result;
       }
       async prewarmThreadStart(params: Record<string, unknown>, options: unknown) {
+        if (params.fail) throw failure;
         return { params, options };
       }
     }
@@ -251,61 +255,54 @@ describe("captured request clients continue forwarding requests", () => {
     });
     api.window.__codexPlusAppServerClientClass = CapturedClient;
     assert.equal(api.prototype(), true);
-    const options = { signal: "original-signal" };
+    const options = Object.freeze({ signal: new AbortController().signal, priority: "critical" });
     const prototypeClient = new CapturedClient();
     for (const client of [instanceClient, prototypeClient]) {
       for (let turn = 0; turn < 2; turn++) {
-        const result = await client.sendRequest("turn/start", {
-          threadId: "thread-repeat", model: "gpt-6.1-sol",
-          service_tier: null, input: [{ text: "test" }], custom: "keep",
-        }, options);
-        assert.equal(result.params.serviceTier, "priority");
-        assert.equal(result.params.service_tier, "priority");
-        assert.equal(result.params.custom, "keep");
-        assert.deepEqual(result.params.input, [{ text: "test" }]);
-        assert.equal(result.options, options);
+        for (const method of ["thread/start", "thread/resume", "turn/start"]) {
+          for (const tier of [null, "default", "priority", "ultrafast", "future-tier"]) {
+            for (const key of ["serviceTier", "service_tier"]) {
+              const params = Object.freeze({
+                threadId: "thread-repeat", model: "gpt-6.1-sol",
+                [key]: tier, input: [{ text: "test" }], custom: "keep",
+              });
+              const result = await client.sendRequest(method, params, options);
+              assert.equal(result, client.results.at(-1), "native result identity must be preserved");
+              assert.equal(result.method, method);
+              assert.equal(result.params, params, "the native tier and complete request pass through unchanged");
+              assert.equal(result.options, options);
+            }
+          }
+        }
       }
-      const params = { includeHidden: true };
-      const result = await client.sendRequest("model/list", params, options);
-      assert.equal(result.params, params, "unrelated RPCs must pass through unchanged");
-      const warm = await client.prewarmThreadStart({ threadId: "warm" }, options);
-      assert.equal(warm.params.serviceTier, "priority");
-      assert.equal(warm.options, options);
+      for (const [method, params] of [
+        ["model/list", { includeHidden: true }],
+        ["turn/start", { threadId: "native-default", model: "model" }],
+      ] as const) {
+        const result = await client.sendRequest(method, params, options);
+        assert.equal(result.params, params, "unrelated RPCs and an omitted native tier remain unchanged");
+      }
+      for (const tier of [null, "priority", "ultrafast"]) {
+        const params = { threadId: "warm", serviceTier: tier };
+        const warm = await client.prewarmThreadStart(params, options);
+        assert.equal(warm.params, params);
+        assert.equal(warm.options, options);
+      }
+      await assert.rejects(() => client.sendRequest("turn/start", { threadId: "failed", fail: true }, options),
+        (error) => error === failure);
+      await assert.rejects(() => client.prewarmThreadStart({ fail: true }, options),
+        (error) => error === failure);
+      const recovered = { threadId: "recovered", serviceTier: "ultrafast" };
+      assert.equal((await client.sendRequest("turn/start", recovered, options)).params, recovered);
     }
-    const originalWarm = (instanceClient as unknown as Record<string, unknown>).__codexPlusServiceTierOriginalPrewarmThreadStart;
     Object.assign(instanceClient, {
       __codexPlusModelRequestPatch: "previous",
       prewarmThreadStart: async () => ({ params: { serviceTier: "obsolete" } }),
     });
-    api.instance(instanceClient);
-    assert.equal((instanceClient as unknown as Record<string, unknown>).__codexPlusServiceTierOriginalPrewarmThreadStart, originalWarm);
-    assert.equal((await instanceClient.prewarmThreadStart({}, options)).params.serviceTier, "priority");
-    const turns = api.observations.filter((item: { method: string }) => item.method === "turn/start");
-    assert.equal(turns.length, 4);
-    assert.ok(turns.every((item: { params: { serviceTier: string }; failed: boolean }) =>
-      item.params.serviceTier === "priority" && !item.failed));
-    const failure = new Error("original request failed");
-    class FailingClient extends Client {
-      async sendRequest(_method: string, _params: Record<string, unknown>, _options: unknown): Promise<never> { throw failure; }
-    }
-    const failing = new FailingClient();
-    api.instance(failing);
-    await assert.rejects(() => failing.sendRequest("turn/start", { threadId: "failed" }, options), (error) => error === failure);
-    assert.equal(api.observations.at(-1).failed, true);
-    let activeResults = 0;
-    const activeLease = {};
-    api.window.__codexPlusFastRequestHandlers = {
-      prepare: async (_method: string, params: Record<string, unknown>) => ({ ...params, serviceTier: null }),
-      begin: () => activeLease,
-      observe: (_method: string, _params: unknown, _result: unknown, _failed: boolean, lease: unknown) => {
-        assert.equal(lease, activeLease);
-        activeResults++;
-      },
-    };
-    for (const client of [instanceClient, prototypeClient]) {
-      assert.equal((await client.sendRequest("turn/start", { threadId: "reloaded" }, options)).params.serviceTier, null);
-      assert.equal((await client.prewarmThreadStart({}, options)).params.serviceTier, null);
-    }
-    assert.equal(activeResults, 2, "existing wrappers use the active reload's configuration and observers");
+    assert.equal(api.instance(instanceClient), true);
+    assert.equal(api.instance(instanceClient), true);
+    const warm = { threadId: "reloaded", serviceTier: null };
+    assert.equal((await instanceClient.prewarmThreadStart(warm, options)).params, warm,
+      "reinjection retains the original native prewarm without reusing an obsolete wrapper");
   });
 });

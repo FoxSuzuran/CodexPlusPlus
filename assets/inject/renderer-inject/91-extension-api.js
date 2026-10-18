@@ -15,7 +15,7 @@
    * 不读 DOM；实际挂载发生在 99-tail 之前，那时所有依赖函数都已可用。
    */
   const codexPlusExtensionApiVersion = 1;
-  const codexPlusExtensionAdapterVersion = "1.0.0";
+  const codexPlusExtensionAdapterVersion = "1.1.0";
 
   /** 类名与属性契约。一旦发布不再更名，新增用新名字。 */
   const codexPlusExtensionConstants = {
@@ -43,6 +43,8 @@
     "/archived-thread",
     "/export-markdown",
     "/user-scripts/list",
+    // 页面列表只读；任意表达式可修改配置，不开放给扩展。
+    "/cdp/targets",
   ]);
 
   /** 单次调用的默认超时，略短于桥接自身的 26s，让拓展先拿到可读的错误。 */

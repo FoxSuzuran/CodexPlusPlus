@@ -8,6 +8,10 @@ export const EN_PLAIN: Record<string, string> = {
   "设置有未保存修改": "Settings have unsaved changes",
   "搜索本页标题、目录或会话 ID": "Search this page by title, directory or session ID",
   "取消全选": "Deselect all",
+  "设为当前 Key": "Select this key",
+  "Key 名称": "Key name",
+  "删除 Key": "Delete key",
+  "添加 Key": "Add key",
   "本地服务器状态": "Local server status",
   "调试连接状态": "Debug connection status",
   "当前配置无需本地服务器": "The current configuration does not require a local server",
@@ -230,6 +234,28 @@ export const EN_PLAIN: Record<string, string> = {
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
   "Chat Completions 转 Responses": "Chat Completions to Responses",
+  "Anthropic Messages 转 Responses": "Anthropic Messages to Responses",
+  "思考模式": "Thinking mode",
+  "自动（新代模型透传等级）": "Auto (pass level through on newer models)",
+  "等级透传（adaptive）": "Pass level through (adaptive)",
+  "经典预算（budget_tokens）": "Classic budget (budget_tokens)",
+  "关闭思考": "Disable thinking",
+  "思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking follows Codex reasoning effort: in auto mode newer models receive the level as-is (adaptive + effort) while older ones fall back to a thinking budget. A declared 1M context window automatically adds the 1m context beta header.",
+  "提示缓存": "Prompt caching",
+  "给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。":
+    "Marks 5-minute cache breakpoints on the system prompt, tool definitions and the latest turn (up to 4), so long conversations are not re-billed in full every turn.",
+  "模拟 Claude Code 客户端": "Emulate the Claude Code client",
+  "伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。":
+    "Spoofs the User-Agent, anthropic-beta and x-app headers and injects the Claude Code identity as the first system line. Enable only when the gateway restricts usage to Claude Code.",
+  "思考档位跟随 Codex 的 reasoning effort 折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking budget follows Codex reasoning effort, and a declared 1M context window automatically adds the 1m context beta header.",
+  "认证字段": "Auth header",
+  "x-api-key（Anthropic 原生）": "x-api-key (Anthropic native)",
+  "Authorization: Bearer": "Authorization: Bearer",
+  "最大输出 tokens": "Max output tokens",
+  "此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。":
+    "This upstream speaks Anthropic Messages (/v1/messages): the local proxy at 127.0.0.1:57321 converts requests to Anthropic and converts the responses back to Responses. Codex must be launched from Codex++.",
   "Codex 启动参数": "Codex launch arguments",
   "Codex MCP&插件": "Codex MCP & plugins",
   "Codex 应用": "Codex app",
@@ -242,7 +268,9 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex-Dream-Skin 风格主题和换图": "Codex-Dream-Skin style themes and image replacement",
   "Codex增强": "Codex enhancements",
   "Debug 端口": "Debug port",
-  "Fast 按钮": "Fast button",
+  "原生 Fast 强制解锁": "Force unlock native Fast",
+  "纯 API Key 模式恢复原生 Fast 开关；保存后重新启动 Codex 生效，实际支持与计费由供应商决定。":
+    "Restore the native Fast switch in API key mode; save and restart Codex to apply. Actual support and billing depend on the provider.",
   "GitHub Release 更新": "GitHub Release update",
   "GitHub Release 检查": "GitHub Release check",
   "Helper 端口": "Helper port",
@@ -460,7 +488,6 @@ export const EN_PLAIN: Record<string, string> = {
   "启用 Codex 皮肤": "Enable Codex skin",
   "最多建议数": "Max suggestions",
   "最大输入字符": "Max input characters",
-  "最大输出 tokens": "Max output tokens",
   "测试连接": "Test connection",
   "超时毫秒": "Timeout milliseconds",
   "连接": "Connection",
@@ -726,8 +753,14 @@ export const EN_PLAIN: Record<string, string> = {
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
   "启用 Codex增强": "Enable Codex enhancements",
-  "独立额度解锁": "Standalone quota unlock",
-  "官方登录 + 混入 API Key": "Official login + mixed API key",
+  "独立模式": "Standalone mode",
+  "增强总开关关闭后仍会生效的补丁。":
+    "Patches that still apply after the enhancement master switch is turned off.",
+  "官方额度解锁": "Official quota unlock",
+  "增强开启时此能力已自动生效；此开关只在关闭增强后生效。":
+    "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
+  "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。保存后重启 Codex 生效。":
+    "Official login + API providers can still send after the official subscription quota runs out. Only the client send state changes; real usage and billing are untouched. Restart Codex after saving.",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
   "包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。":
@@ -880,8 +913,6 @@ export const EN_PLAIN: Record<string, string> = {
   "日志已复制。": "Logs copied.",
   "时间": "Time",
   "桌宠跟随真实鼠标": "Real-mouse pet look",
-  "显示服务模式切换按钮；根据模型元数据自动识别 Fast 支持，未声明支持的模型按 Standard 发送。":
-    "Show the service-tier toggle; detect Fast support from model metadata and use Standard when support is not declared.",
   "多模态模型（支持图片输入的模型）请保持 send-as-is。": "Keep send-as-is for multimodal models that support image input.",
   "暂无": "None",
   "暂无启动状态。": "No launch status yet.",
@@ -1447,6 +1478,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "本页已选 {0} 项": "{0} selected on this page",
   "第 {0} 页 · 共 {1} 个会话": "Page {0} · {1} sessions total",
   "选择会话：{0}": "Select session: {0}",
+  "{0} 的 API Key": "API key for {0}",
+  "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "{0} 个插件": "{0} plugins",
   "{0} / {1} 个插件": "{0} / {1} plugins",
   "查看插件 {0} 的详情": "View details for plugin {0}",

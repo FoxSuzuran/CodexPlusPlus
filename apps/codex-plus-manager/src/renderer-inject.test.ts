@@ -280,7 +280,8 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /function installCodexPlusPageNavigationCloseHandler\(\)/);
     assert.match(renderer, /target\?\.closest\(selectors\.sidebarThread\)/);
     assert.match(renderer, /closeCodexPlusPageAfterNativeNavigation\(\)/);
-    assert.match(renderer, /setTimeout\(\(\) => \{\s*window\.__codexPlusPageNavigationCloseTimer = null;\s*closeCodexPlusPage\(\);/);
+    assert.match(renderer, /const timer = setTimeout\(\(\) => \{\s*if \(window\.__codexPlusPageNavigationCloseTimer !== timer\) return;/);
+    assert.match(renderer, /if \(document\.querySelector\(`\.\$\{codexPlusPageClass\}`\) === page\) closeCodexPlusPage\(\);/);
     assert.match(renderer, /installCodexPlusNavigationEntries\(\);/);
     assert.match(renderer, /document\.querySelectorAll\(`#\$\{codexPlusMenuId\}/);
   });
@@ -503,7 +504,7 @@ describe("renderer injection header compatibility", () => {
     const renderEnd = renderer.indexOf("\n  let codexPlusBackendSettings =", renderStart);
     assert.ok(renderStart >= 0 && renderEnd > renderStart);
     const settings: Record<string, boolean> = { pluginMarketplaceUnlock: true, threadScrollRestore: true, modelWhitelistUnlock: true };
-    const render = new Function("document", "codexPlusSettings", "codexPlusBackendMappedSettings", "refreshConversationViewControls", "refreshCodexServiceTierControls",
+    const render = new Function("document", "codexPlusSettings", "codexPlusBackendMappedSettings", "refreshConversationViewControls",
       `let codexPlusBackendSettingsLoaded = false; const codexPlusBackendSettings = {};
 ${renderer.slice(renderStart, renderEnd)}
 return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMenu(); };`,
@@ -1981,14 +1982,15 @@ describe("拓展接口层", () => {
     return Array.from(body.matchAll(/"([^"]+)"/g), ([, route]) => route);
   }
 
-  it("路由白名单只放只读能力，不含设置写入与远端控制", async () => {
+  it("路由白名单允许只读页面列表，拒绝设置写入与 CDP 表达式", async () => {
     const routes = await readRouteWhitelist();
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
-    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/cdp/evaluate"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
+    assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
   });
 
   it("接口对象在 IIFE 收尾前挂载", async () => {
@@ -2081,7 +2083,7 @@ describe("拓展菜单项", () => {
  */
 function conversationViewRuntime(renderer: string) {
   const start = renderer.indexOf("  // 旧版（26.9xx 之前）内容容器类名清单");
-  const end = renderer.indexOf("  function codexServiceTierBadgeVisibleElement(", start);
+  const end = renderer.indexOf("  function removeLegacyCodexServiceTierBadges(", start);
   assert.ok(start >= 0 && end > start, "conversation view target finder block not found");
   const finderSource = renderer.slice(start, end);
   // 宽度计算与目标查找在文件里不相邻，单独切一段。

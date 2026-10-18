@@ -1,4 +1,5 @@
 mod auto_takeover;
+mod agent_collaboration_commands;
 pub mod commands;
 pub mod install;
 mod runtime_health;
@@ -20,6 +21,10 @@ const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
 
 pub(crate) fn app_is_exiting() -> bool {
     APP_EXITING.load(Ordering::SeqCst)
+}
+
+pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
+    agent_collaboration_commands::run_mcp(args)
 }
 
 pub fn run() {
@@ -103,6 +108,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            agent_collaboration_commands::agent_collaboration_request,
             commands::backend_version,
             commands::startup_options,
             commands::consume_pending_manager_navigation,
@@ -172,6 +178,8 @@ pub fn run() {
             commands::preview_provider_sync,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
+            commands::load_provider_sync_recovery,
+            commands::recover_provider_sync,
             commands::refresh_script_market,
             commands::refresh_plugin_market,
             commands::install_plugin_market_item,
@@ -184,6 +192,7 @@ pub fn run() {
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
+            commands::import_ccs_skills,
             commands::install_skill,
             commands::update_skill,
             commands::set_skill_enabled,
@@ -191,6 +200,7 @@ pub fn run() {
             commands::restore_skill_backup,
             commands::delete_skill_backup,
             commands::upsert_skill_repo,
+            commands::inspect_skill_repo,
             commands::delete_skill_repo,
             commands::open_external_url,
             commands::repair_shortcuts,
@@ -257,6 +267,10 @@ pub fn run() {
                                 serde_json::json!({}),
                             );
                             auto_takeover::stop_supervisor();
+                            // 退出前先等待自有 CLI 任务清理，避免进程退出后遗留执行器。
+                            tauri::async_runtime::block_on(
+                                codex_plus_core::agent_collaboration::executor::shutdown_owned_tasks(),
+                            );
                             if let Err(error) = codex_plus_launcher::shutdown() {
                                 let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                     "app.shutdown_failed",

@@ -90,6 +90,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
+import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage, SessionPage } from "./ManagementExtra";
@@ -174,6 +175,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -304,6 +306,7 @@ type MultiLaunchInstancesResult = CommandResult<{
 }>;
 
 type BackendSettings = WhaleBalanceSettings & {
+  revision?: string;
   codexAppPath: string;
   /** 自动接管官方 App（与 Rust `codex_app_auto_takeover` 对应）。 */
   codexAppAutoTakeover: boolean;
@@ -316,6 +319,7 @@ type BackendSettings = WhaleBalanceSettings & {
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
+  localConfigProviderImported: boolean;
   enhancementsEnabled: boolean;
   codexAppStandaloneQuotaUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
@@ -331,7 +335,7 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppThreadScrollRestore: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
-  codexAppServiceTierControls: boolean;
+  codexAppNativeFastUnlock: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
   codexAppCapacityAutoRetry: boolean;
@@ -374,6 +378,7 @@ type BackendSettings = WhaleBalanceSettings & {
   aggregateRelayProfiles: AggregateRelayProfile[];
   activeAggregateRelayId: string;
   relayCommonConfigContents: string;
+  relayPreserveNonproviderSettings: boolean;
   relayContextConfigContents: string;
   activeRelayId: string;
   relayTestModel: string;
@@ -421,6 +426,8 @@ export type RelayProfile = {
   baseUrl: string;
   upstreamBaseUrl: string;
   apiKey: string;
+  apiKeys?: RelayApiKey[];
+  activeApiKeyId?: string;
   protocol: RelayProtocol;
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
@@ -450,6 +457,16 @@ export type RelayProfile = {
   modelRoutes?: RelayModelRoute[];
   standardOpenaiProtocol: boolean;
   webSearchHistoryCompat: boolean;
+  /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
+  anthropicAuthHeader?: string;
+  /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
+  anthropicMaxTokens?: number;
+  /** 注入 Anthropic 提示缓存断点，默认开启。 */
+  anthropicPromptCache?: boolean;
+  /** 伪装 Claude Code 客户端（仅网关限制「只能通过 Claude Code 使用」时需要）。 */
+  anthropicImpersonateClaudeCode?: boolean;
+  /** 思考模式：空/auto、adaptive（等级透传）、budget（经典预算）、off。 */
+  anthropicThinkingMode?: string;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -514,7 +531,7 @@ type CodexContextEntries = {
   plugins: CodexContextEntry[];
 };
 
-type RelayProtocol = "responses" | "chatCompletions";
+type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
 type StepwiseGenerationMode = "auto" | "manual";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
@@ -547,6 +564,7 @@ type UserScriptInventory = {
 };
 
 type SettingsResult = CommandResult<{
+  revision: string;
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
@@ -658,6 +676,8 @@ type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
   responsePreview: string;
+  protocolValid: boolean;
+  completionStatus: "completed" | "incomplete" | "failed";
 }>;
 
 type StepwiseTestResult = CommandResult<{
@@ -761,6 +781,10 @@ type RemoveEnvConflictsResult = CommandResult<{
 type ProviderSyncPayload = {
   syncStatus?: string;
   syncMessage?: string;
+  recoveryJournalPath?: string | null;
+  recoveryAvailable?: boolean;
+  recoveryErrors?: string[];
+  databaseOutcomes?: Array<{ database: string; attemptedRows: number; restoredRows: number; remainingRows: number }>;
   targetProvider?: string;
   changedSessionFiles?: number;
   skippedLockedRolloutFiles?: string[];
@@ -1024,7 +1048,7 @@ const TOOL_ICONS: Record<string, string> = {
   claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -1055,6 +1079,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "pluginMarket", label: t("Codex 插件市场"), icon: Store, tool: "codex" },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", label: t("AI Agent 缓存清理"), icon: Trash2 },
+  // 跨客户端协作属于应用级能力，各工具下共用同一组任务。
+  { id: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, badge: "实验" },
   { id: "maintenance", label: t("安装维护"), icon: Wrench, tool: "codex" },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
@@ -1082,7 +1108,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
 ];
 
 /** 应用级入口放在最左栏；概览仍随当前 Agent 显示各自的状态。 */
-const globalNavigationRoutes: Route[] = ["agentCache", "about", "settings"];
+const globalNavigationRoutes: Route[] = ["agentCache", "agentCollaboration", "about", "settings"];
 
 const defaultSettings: BackendSettings = {
   ...defaultWhaleBalanceSettings(),
@@ -1097,6 +1123,7 @@ const defaultSettings: BackendSettings = {
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: true,
+  localConfigProviderImported: false,
   enhancementsEnabled: true,
   codexAppStandaloneQuotaUnlock: false,
   codexAppPluginMarketplaceUnlock: true,
@@ -1112,7 +1139,7 @@ const defaultSettings: BackendSettings = {
   codexAppThreadScrollRestore: true,
   codexAppNativeMenuPlacement: true,
   codexAppNativeBrowserRequireIdentification: false,
-  codexAppServiceTierControls: false,
+  codexAppNativeFastUnlock: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
   codexAppCapacityAutoRetry: false,
@@ -1189,6 +1216,7 @@ const defaultSettings: BackendSettings = {
     },
   ],
   relayCommonConfigContents: "",
+  relayPreserveNonproviderSettings: false,
   relayContextConfigContents: "",
   activeRelayId: "default",
   aggregateRelayProfiles: [],
@@ -1311,7 +1339,19 @@ export function App() {
     setSettingsUnsavedDialog(true);
   };
 
-  const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+  const call = <T,>(command: string, args?: Record<string, unknown>) => {
+    const snapshot = args?.settings as BackendSettings | undefined;
+    return invoke<T>(command, command === "save_settings"
+      ? { ...args, expectedRevision: snapshot?.revision || "" }
+      : args).then((result) => {
+        const response = result as { message?: string };
+        if (command === "save_settings" && response?.message?.includes("settings_revision_conflict")) {
+          // 所有保存调用都保留当前草稿，不能把失败响应当成新表单回填。
+          throw new Error(response.message);
+        }
+        return result;
+      });
+  };
 
   const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
@@ -1573,8 +1613,8 @@ export function App() {
     return result;
   };
 
-  const importCcsProviders = async () => {
-    const result = await run(() => call<SettingsResult>("import_ccs_providers"));
+  const importCcsProviders = async (bindings: Record<string, string> = {}) => {
+    const result = await run(() => call<SettingsResult>("import_ccs_providers", { bindings }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
@@ -2590,6 +2630,7 @@ export function App() {
       return saved;
     }
     if (result) showNotice(t("设置保存"), result.message, result.status);
+    // 保留草稿供用户重载后合并，不能拿最新版本号自动重试旧快照。
     return null;
   };
 
@@ -2726,6 +2767,23 @@ export function App() {
     } finally {
       sessionIndexRepairRunning.current = false;
       setSessionIndexRepairActive(false);
+    }
+  };
+
+  const recoverProviderSync = async () => {
+    const backupDir = providerSyncProgress.result?.backupDir;
+    if (providerSyncProgress.active || !backupDir) return;
+    if (!window.confirm(t("恢复这次未完成的修复？期间被其他操作修改的数据会保留，并报告冲突。"))) return;
+    setProviderSyncProgress((current) => ({ ...current, active: true, message: t("正在恢复…") }));
+    try {
+      const result = await run(() => call<CommandResult<ProviderSyncPayload>>("recover_provider_sync", { backupDir }));
+      if (result) {
+        setProviderSyncProgress({ active: false, percent: 100, message: result.message, result });
+        showNotice(t("恢复历史会话修复"), result.message, result.status);
+        await refreshLocalSessions(true);
+      }
+    } finally {
+      setProviderSyncProgress((current) => ({ ...current, active: false }));
     }
   };
 
@@ -3087,6 +3145,7 @@ export function App() {
       }
       const selectedSettings = normalizeSettings(result.settings);
       setSettings({
+        revision: selectedSettings.revision || "",
         status: result.status,
         message: result.message,
         settings: selectedSettings,
@@ -3236,6 +3295,16 @@ export function App() {
       stopListening?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (route !== "sessions") return;
+    let disposed = false;
+    void call<CommandResult<ProviderSyncPayload>>("load_provider_sync_recovery").then((result) => {
+      if (disposed || !result.recoveryJournalPath) return;
+      setProviderSyncProgress((current) => current.active ? current : ({ active: false, percent: 0, message: result.message, result }));
+    }).catch(() => {});
+    return () => { disposed = true; };
+  }, [route]);
 
   useEffect(() => {
     if (route !== "sessions") return;
@@ -3603,6 +3672,7 @@ export function App() {
         }
       },
       syncProvidersNow,
+      recoverProviderSync,
       repairSessionIndex,
       refreshProviderSyncTargets,
       setProviderSyncTarget: (provider: string) => {
@@ -3789,6 +3859,10 @@ export function App() {
               onDelete={actions.deleteLocalSession}
               onDeleteMany={actions.deleteLocalSessions}
               notify={actions.showMessage}
+              repairPanel={<SessionRepairPanel form={settingsForm} providerSyncProgress={providerSyncProgress}
+                sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport}
+                sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets}
+                selectedProviderSyncTarget={selectedProviderSyncTarget} onFormChange={setSettingsForm} actions={actions} />}
             />
           ) : null}
           {route === "context" ? (
@@ -3869,6 +3943,7 @@ export function App() {
           {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
+          {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
@@ -4160,6 +4235,7 @@ type Actions = {
   saveDreamSkinScreenshot: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
+  recoverProviderSync: () => Promise<void>;
   repairSessionIndex: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
@@ -4169,7 +4245,7 @@ type Actions = {
   refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
-  importCcsProviders: () => Promise<void>;
+  importCcsProviders: (bindings?: Record<string, string>) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshScriptMarket: () => Promise<void>;
@@ -4852,6 +4928,7 @@ function RelayScreen({
   const [thirdPartyImportPosition, setThirdPartyImportPosition] = useState<{ top: number; right: number } | null>(null);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
+  const [ccsBindings, setCcsBindings] = useState<Record<string, string>>({});
   useEffect(() => setCcsDbPathDraft(normalized.ccsDbPath), [normalized.ccsDbPath]);
   const saveCcsDbPath = async (path = ccsDbPathDraft) => {
     setCcsPathSaving(true);
@@ -4922,24 +4999,11 @@ function RelayScreen({
       setProviderView("routing");
     }
   }, [normalized.relayProfiles, providerView]);
-  // 分页过滤只作用于列表展示：活动归属与 legacy 根字段保持完整设置的值。
-  // 修复：过去对过滤后的列表跑 syncLegacyRelayFields，当前供应商不在本分页时
-  // activeRelayId 会被改写成列表第一项（假「使用中」）；卡片切换还会把这份缺成员
-  // 的子集直接提交后端——模型聚合因此报「成员不存在」，普通切换则可能用子集覆盖
-  // settings.json，丢掉其它分页的供应商。
-  const listForm: BackendSettings = { ...normalized, relayProfiles: visibleProfiles };
+  // 分页仅控制渲染。卡片的删除、复制和排序必须基于完整配置，避免隐藏的
+  // 当前供应商被 syncLegacyRelayFields 当成不存在，改写成直连列表第一项。
   const switchRelayProfileFromList = (profileId: string) => {
     const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
     void actions.switchRelayProfile(next, normalized.activeRelayId);
-  };
-  const saveVisibleRelaySettings = async (next: BackendSettings) => {
-    const hiddenProfiles = normalized.relayProfiles.filter((profile) => (
-      relayProviderView(profile) !== providerView
-    ));
-    return saveRelaySettings(syncLegacyRelayFields({
-      ...next,
-      relayProfiles: [...next.relayProfiles, ...hiddenProfiles],
-    }));
   };
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
@@ -5083,11 +5147,18 @@ function RelayScreen({
                   <button disabled={ccsPathSaving} onClick={() => void saveCcsDbPath()} type="button">{t("保存路径并刷新")}</button>
                   {ccsProviders && isSuccessStatus(ccsProviders.status) ? <span className="text-xs break-all">{t("实际来源")}：{ccsProviders.dbPath}</span> : null}
                   {ccsProviders?.fallbackReason ? <span className="text-xs break-all">{ccsProviders.fallbackReason}</span> : null}
+                  {ccsProviders?.providers.map((provider) => <label key={provider.sourceId}>
+                    {provider.name}
+                    <select value={ccsBindings[provider.sourceId] || ""} onChange={(event) => setCcsBindings((current) => ({ ...current, [provider.sourceId]: event.currentTarget.value }))}>
+                      <option value="">{t("自动识别来源或新增")}</option>
+                      {normalized.relayProfiles.map((profile) => <option key={profile.id} value={profile.id}>{t("关联已有")}：{profile.name}</option>)}
+                    </select>
+                  </label>)}
                   <button
                     disabled={ccsPathSaving || ccsDbPathDraft.trim() !== normalized.ccsDbPath || !ccsProviders?.providers.length}
                     onClick={() => {
                       setThirdPartyImportOpen(false);
-                      void actions.importCcsProviders();
+                      void actions.importCcsProviders(ccsBindings);
                     }}
                     type="button"
                   >
@@ -5168,9 +5239,10 @@ function RelayScreen({
             </div>
           ) : null}
           <RelayProfileList
-            form={listForm}
+            form={normalized}
+            visibleProfiles={visibleProfiles}
             onEdit={(profileId) => void editRelayProfile(profileId)}
-            onFormChange={saveVisibleRelaySettings}
+            onFormChange={saveRelaySettings}
             onSwitchProfile={switchRelayProfileFromList}
             disabled={actions.relaySwitching}
             actions={actions}
@@ -5825,32 +5897,18 @@ function EnhanceScreen({
     <div className="settings-page enhance-page">
       <div className="enhance-page-controls" id="enhance-page-controls">
         <div className="enhance-page-toolbar">
-          <div className="enhance-primary-switches">
-            <label className="switch-row compact enhance-master-switch">
-              <input
-                checked={form.enhancementsEnabled}
-                onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("启用 Codex增强")}</strong>
-                <small>{t("关闭后暂停增强功能，服务配置会保留。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-            <label className="switch-row compact enhance-master-switch">
-              <input
-                checked={form.codexAppStandaloneQuotaUnlock}
-                onChange={(event) => setEnhanceFlag("codexAppStandaloneQuotaUnlock", event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("独立额度解锁")}</strong>
-                <small>{t("官方登录 + 混入 API Key")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-          </div>
+          <label className="switch-row compact enhance-master-switch">
+            <input
+              checked={form.enhancementsEnabled}
+              onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("启用 Codex增强")}</strong>
+              <small>{t("关闭后暂停增强功能，服务配置会保留。")}</small>
+            </span>
+            <ToggleVisual />
+          </label>
           <div className="enhance-save-actions">
             <span className={dirty ? "is-dirty" : ""} role="status">{dirty ? t("有未保存修改") : t("已保存")}</span>
             <Button disabled={!dirty} onClick={() => void actions.saveSettings()}>
@@ -5890,6 +5948,10 @@ function EnhanceScreen({
         <Panel className="enhance-panel">
           <CardContent className="enhance-content">
             <div className="enhance-feature-groups">
+              {/* 关闭增强时这组是唯一仍会生效的补丁，因此提到最前面；开启增强时它排在最后。 */}
+              {masterEnabled ? null : (
+                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
+              )}
               <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
                 {isWindowsPlatform ? <>
                   <FeatureToggle
@@ -5906,7 +5968,7 @@ function EnhanceScreen({
                 </> : null}
                 <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
                 <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-                <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；根据模型元数据自动识别 Fast 支持，未声明支持的模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
+                <FeatureToggle title={t("原生 Fast 强制解锁")} detail={t("纯 API Key 模式恢复原生 Fast 开关；保存后重新启动 Codex 生效，实际支持与计费由供应商决定。")} checked={form.codexAppNativeFastUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeFastUnlock", value)} />
               </FeatureGroup>
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
@@ -5950,6 +6012,9 @@ function EnhanceScreen({
                 {/* 余额配置独占一整行（CSS: > .settings-block），展开时不会牵动上面的开关卡。 */}
                 <WhaleBalanceSettingsFields form={form} onFormChange={onFormChange} />
               </FeatureGroup>
+              {masterEnabled ? (
+                <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
+              ) : null}
             </div>
             <div className="hint-line enhance-footer-hint">
               <Info className="h-4 w-4" />
@@ -5965,6 +6030,31 @@ function EnhanceScreen({
         <StepwiseSettingsPanel form={form} onFormChange={onFormChange} actions={actions} />
       </div>
     </div>
+  );
+}
+
+// 增强总开关关闭后仍生效的独立补丁。不受总开关禁用，所以不放进 FeatureGroup 的
+// masterEnabled 门控里；位置在该页「常用增强」标签内，关闭增强时提到最前面。
+function StandaloneModeGroup({
+  form,
+  onFormChange,
+  masterEnabled,
+}: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  masterEnabled: boolean;
+}) {
+  return (
+    <FeatureGroup title={t("独立模式")} detail={t("增强总开关关闭后仍会生效的补丁。")}>
+      <FeatureToggle
+        title={t("官方额度解锁")}
+        detail={masterEnabled
+          ? t("增强开启时此能力已自动生效；此开关只在关闭增强后生效。")
+          : t("官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。保存后重启 Codex 生效。")}
+        checked={form.codexAppStandaloneQuotaUnlock}
+        onChange={(value) => onFormChange({ ...form, codexAppStandaloneQuotaUnlock: value })}
+      />
+    </FeatureGroup>
   );
 }
 
@@ -7169,22 +7259,8 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   );
 }
 
-function SessionsScreen({
-  settings,
-  form,
-  sessions,
-  providerSyncProgress,
-  sessionIndexRepairActive,
-  sessionIndexRepairReport,
-  sessionIndexRepairReportError,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
-  onFormChange,
-  actions,
-}: {
-  settings: SettingsResult | null;
+function SessionRepairPanel({ form, providerSyncProgress, sessionIndexRepairActive, sessionIndexRepairReport, sessionIndexRepairReportError, providerSyncTargets, selectedProviderSyncTarget, onFormChange, actions }: {
   form: BackendSettings;
-  sessions: LocalSessionsResult | null;
   providerSyncProgress: ProviderSyncProgress;
   sessionIndexRepairActive: boolean;
   sessionIndexRepairReport: SessionIndexRepairReport | null;
@@ -7194,97 +7270,10 @@ function SessionsScreen({
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
-  const items = sessions?.sessions ?? [];
-  const pageOffset = sessions?.offset ?? 0;
-  const pageSize = sessions?.limit ?? 50;
-  const currentPage = Math.floor(pageOffset / pageSize) + 1;
-  const hasPreviousPage = pageOffset > 0;
-  const hasNextPage = sessions?.hasMore === true;
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
-  const totalCount = sessions?.totalCount ?? items.length;
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
   const providerTargets = providerSyncTargets?.targets ?? [];
-  const selectedProviderTarget = providerTargets.find(
-    (target) => target.id === selectedProviderSyncTarget,
-  );
-  const canRepairProviderSessions = selectedProviderTarget
-    ? isProviderSyncTargetSelectable(selectedProviderTarget)
-    : false;
-
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      <Panel className="sessions-overview-panel">
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
-        <CardContent className="sessions-overview-content">
-          <div className="session-summary-bar">
-            <div>
-              <span>{t("会话总数")}</span>
-              <strong>{tf("{0} 个", [totalCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页会话")}</span>
-              <strong>{tf("{0} 个", [items.length])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页未归档")}</span>
-              <strong>{tf("{0} 个", [activeCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页已归档")}</span>
-              <strong>{tf("{0} 个", [archivedCount])}</strong>
-            </div>
-            <div className="session-summary-path">
-              <span>{t("数据库")}</span>
-              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
-            </div>
-          </div>
-
+  const selectedProviderTarget = providerTargets.find((target) => target.id === selectedProviderSyncTarget);
+  const canRepairProviderSessions = Boolean(selectedProviderTarget && isProviderSyncTargetSelectable(selectedProviderTarget));
+  return <Panel className="sessions-overview-panel"><CardHead title={t("会话修复")} detail={t("预览并修复本地会话与索引")} /><CardContent>
           <div className="session-repair-tools">
             <Field className="session-sync-target" label={t("同步目标")}>
               <AppSelect
@@ -7426,6 +7415,138 @@ function SessionsScreen({
             <Info className="h-4 w-4" />
             <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
           </div>
+    {providerSyncProgress.result?.recoveryJournalPath ? <div>
+      {!providerSyncProgress.active && providerSyncProgress.percent === 0 ? <p role="alert">{providerSyncProgress.message}</p> : null}
+      <p role="alert" className="break-all">{t("恢复记录：")}{providerSyncProgress.result.recoveryJournalPath}</p>
+      {providerSyncProgress.result.syncStatus === "partial_failure" && providerSyncProgress.result.backupDir && providerSyncProgress.result.recoveryAvailable !== false ? <Button
+        disabled={providerSyncProgress.active || sessionIndexRepairActive}
+        onClick={() => void actions.recoverProviderSync()}>{t("恢复未完成修复")}</Button> : null}
+    </div> : null}
+    {providerSyncProgress.result?.recoveryErrors?.map((error, index) => <p role="alert" key={index}>{error}</p>)}
+    {providerSyncProgress.result?.syncStatus === "partial_failure" && Boolean(providerSyncProgress.result.databaseOutcomes?.length || (providerSyncProgress.result.changedSessionFiles ?? 0) > 0 || (providerSyncProgress.result.sqliteRowsUpdated ?? 0) > 0) ? <p role="status">
+      {t("仍有改动：")}{providerSyncProgress.result.changedSessionFiles ?? 0} {t("个会话文件，")}
+      {providerSyncProgress.result.sqliteRowsUpdated ?? 0} {t("行索引。请查看恢复记录处理剩余冲突。")}
+    </p> : null}
+  </CardContent></Panel>;
+}
+
+function SessionsScreen({
+  settings,
+  form,
+  sessions,
+  providerSyncProgress,
+  sessionIndexRepairActive,
+  sessionIndexRepairReport,
+  sessionIndexRepairReportError,
+  providerSyncTargets,
+  selectedProviderSyncTarget,
+  onFormChange,
+  actions,
+}: {
+  settings: SettingsResult | null;
+  form: BackendSettings;
+  sessions: LocalSessionsResult | null;
+  providerSyncProgress: ProviderSyncProgress;
+  sessionIndexRepairActive: boolean;
+  sessionIndexRepairReport: SessionIndexRepairReport | null;
+  sessionIndexRepairReportError: string | null;
+  providerSyncTargets: ProviderSyncTargetsResult | null;
+  selectedProviderSyncTarget: string;
+  onFormChange: (value: BackendSettings) => void;
+  actions: Actions;
+}) {
+  const items = sessions?.sessions ?? [];
+  const pageOffset = sessions?.offset ?? 0;
+  const pageSize = sessions?.limit ?? 50;
+  const currentPage = Math.floor(pageOffset / pageSize) + 1;
+  const hasPreviousPage = pageOffset > 0;
+  const hasNextPage = sessions?.hasMore === true;
+  const activeCount = items.filter((item) => !item.archived).length;
+  const archivedCount = items.length - activeCount;
+  const totalCount = sessions?.totalCount ?? items.length;
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
+  const selectedCount = selectedSessions.length;
+  const allSelected = items.length > 0 && selectedCount === items.length;
+  const providerTargets = providerSyncTargets?.targets ?? [];
+  const selectedProviderTarget = providerTargets.find(
+    (target) => target.id === selectedProviderSyncTarget,
+  );
+  const canRepairProviderSessions = selectedProviderTarget
+    ? isProviderSyncTargetSelectable(selectedProviderTarget)
+    : false;
+
+  useEffect(() => {
+    const itemIds = new Set(items.map((session) => session.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [items]);
+
+  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
+    setSelectedSessionIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(sessionId);
+      } else {
+        next.delete(sessionId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllSessions = () => {
+    setSelectionMode(true);
+    setSelectedSessionIds(new Set(items.map((session) => session.id)));
+  };
+
+  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
+
+  const deleteSelectedSessions = async () => {
+    if (!selectionMode) {
+      setSelectionMode(true);
+      return;
+    }
+    setBulkDeleting(true);
+    try {
+      await actions.deleteLocalSessions(selectedSessions);
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <Panel className="sessions-overview-panel">
+        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
+        <CardContent className="sessions-overview-content">
+          <div className="session-summary-bar">
+            <div>
+              <span>{t("会话总数")}</span>
+              <strong>{tf("{0} 个", [totalCount])}</strong>
+            </div>
+            <div>
+              <span>{t("当前页会话")}</span>
+              <strong>{tf("{0} 个", [items.length])}</strong>
+            </div>
+            <div>
+              <span>{t("当前页未归档")}</span>
+              <strong>{tf("{0} 个", [activeCount])}</strong>
+            </div>
+            <div>
+              <span>{t("当前页已归档")}</span>
+              <strong>{tf("{0} 个", [archivedCount])}</strong>
+            </div>
+            <div className="session-summary-path">
+              <span>{t("数据库")}</span>
+              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
+            </div>
+          </div>
+
+          <SessionRepairPanel form={form} providerSyncProgress={providerSyncProgress} sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport} sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets} selectedProviderSyncTarget={selectedProviderSyncTarget} onFormChange={onFormChange} actions={actions} />
         </CardContent>
       </Panel>
       <Panel className="sessions-list-panel">
@@ -7984,6 +8105,7 @@ function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsRe
 
 function RelayProfileList({
   form,
+  visibleProfiles = form.relayProfiles,
   onFormChange,
   onEdit,
   onSwitchProfile,
@@ -7991,6 +8113,7 @@ function RelayProfileList({
   actions,
 }: {
   form: BackendSettings;
+  visibleProfiles?: RelayProfile[];
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
   onSwitchProfile: (id: string) => void;
@@ -8013,9 +8136,9 @@ function RelayProfileList({
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-      <SortableContext items={form.relayProfiles.map((profile) => profile.id)} strategy={verticalListSortingStrategy}>
+      <SortableContext items={visibleProfiles.map((profile) => profile.id)} strategy={verticalListSortingStrategy}>
         <div className="relay-profile-list">
-          {form.relayProfiles.map((profile, index) => (
+          {visibleProfiles.map((profile, index) => (
             <SortableRelayProfileCard
               actions={actions}
               form={form}
@@ -8170,6 +8293,11 @@ function SortableRelayProfileCard({
             disabled={form.relayProfiles.length <= 1}
             onClick={(event) => {
               event.stopPropagation();
+              const deleteIssue = relayProfileDeleteIssue(form, profile.id);
+              if (deleteIssue) {
+                void actions.showMessage(t("删除供应商"), deleteIssue, "failed");
+                return;
+              }
               onFormChange(removeRelayProfile(form, profile.id));
             }}
             size="icon"
@@ -8801,6 +8929,11 @@ function RelayProfileEditor({
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
   };
+  const normalizedApiKeys = normalizeRelayApiKeys(profile);
+  const updateApiKeys = (apiKeys: RelayApiKey[], activeApiKeyId = normalizedApiKeys.activeApiKeyId) => {
+    const selected = apiKeys.find((entry) => entry.id === activeApiKeyId) || apiKeys[0];
+    updateDraft({ apiKeys, activeApiKeyId: selected?.id || "", apiKey: selected?.apiKey || "" });
+  };
   const selectEditorMode = (mode: RelayEditorMode) => {
     if (mode === "official") {
       updateDraft({ relayMode: "official", officialMixApiKey: false });
@@ -9238,32 +9371,158 @@ function RelayProfileEditor({
                   </UiBadge>
                 </div>
                 <div className="relay-api-fields">
-                  <Field className="relay-field-base-url" label="Base URL">
-                    <Input
-                      value={profile.baseUrl}
-                      onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
-                      placeholder={t("填写供应商的 Base URL")}
-                    />
+                  <div className="relay-api-connection-fields">
+                    <Field className="relay-field-base-url" label="Base URL">
+                      <Input
+                        value={profile.baseUrl}
+                        onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
+                        placeholder={t("填写供应商的 Base URL")}
+                      />
+                    </Field>
+                    <Field className="relay-field-protocol" label={t("上游协议")}>
+                      <AppSelect
+                        ariaLabel={t("上游协议")}
+                        value={profile.protocol}
+                        onChange={(protocol) => updateDraft({ protocol })}
+                        options={[
+                          { value: "responses", label: "Responses API" },
+                          { value: "chatCompletions", label: "Chat Completions" },
+                          { value: "anthropicMessages", label: "Anthropic Messages" },
+                        ]}
+                      />
+                    </Field>
+                  </div>
+                  <Field className="relay-field-key" label="API Keys">
+                    <div className="relay-api-key-list">
+                      {normalizedApiKeys.apiKeys.map((entry) => {
+                        const active = entry.id === normalizedApiKeys.activeApiKeyId;
+                        return (
+                          <div className={`relay-api-key-row ${active ? "active" : ""}`} key={entry.id}>
+                            <button
+                              aria-label={t("设为当前 Key")}
+                              aria-pressed={active}
+                              className="relay-api-key-select"
+                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys, entry.id)}
+                              title={t("设为当前 Key")}
+                              type="button"
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                            </button>
+                            <Input
+                              aria-label={t("Key 名称")}
+                              value={entry.name}
+                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                                key.id === entry.id ? { ...key, name: event.currentTarget.value } : key))}
+                            />
+                            <Input
+                              aria-label={tf("{0} 的 API Key", [entry.name])}
+                              type="password"
+                              value={entry.apiKey}
+                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                                key.id === entry.id ? { ...key, apiKey: event.currentTarget.value } : key))}
+                              placeholder={t("输入供应商的 API Key")}
+                            />
+                            <Button
+                              aria-label={t("删除 Key")}
+                              disabled={normalizedApiKeys.apiKeys.length === 1}
+                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys.filter((key) => key.id !== entry.id))}
+                              size="icon"
+                              title={t("删除 Key")}
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        );
+                      })}
+                      <Button onClick={() => {
+                        const key = createRelayApiKey(normalizedApiKeys.apiKeys);
+                        updateApiKeys([...normalizedApiKeys.apiKeys, key]);
+                      }} size="sm" type="button" variant="secondary">
+                        <Plus className="h-4 w-4" />
+                        {t("添加 Key")}
+                      </Button>
+                    </div>
                   </Field>
-                  <Field className="relay-field-key" label="API Key">
-                    <Input
-                      type="password"
-                      value={profile.apiKey}
-                      onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                      placeholder={t("输入供应商的 API Key")}
-                    />
-                  </Field>
-                  <Field className="relay-field-protocol" label={t("上游协议")}>
-                    <AppSelect
-                      ariaLabel={t("上游协议")}
-                      value={profile.protocol}
-                      onChange={(protocol) => updateDraft({ protocol })}
-                      options={[
-                        { value: "responses", label: "Responses API" },
-                        { value: "chatCompletions", label: "Chat Completions" },
-                      ]}
-                    />
-                  </Field>
+                  {profile.protocol === "anthropicMessages" ? (
+                    <>
+                      <Field className="relay-field-anthropic-auth" label={t("认证字段")}>
+                        <AppSelect
+                          ariaLabel={t("认证字段")}
+                          value={profile.anthropicAuthHeader || "x-api-key"}
+                          onChange={(value) => updateDraft({ anthropicAuthHeader: value })}
+                          options={[
+                            { value: "x-api-key", label: t("x-api-key（Anthropic 原生）") },
+                            { value: "authorization", label: t("Authorization: Bearer") },
+                          ]}
+                        />
+                      </Field>
+                      <Field className="relay-field-anthropic-max-tokens" label={t("最大输出 tokens")}>
+                        <Input
+                          inputMode="numeric"
+                          value={profile.anthropicMaxTokens ? String(profile.anthropicMaxTokens) : ""}
+                          placeholder="8192"
+                          onChange={(event) =>
+                            updateDraft({ anthropicMaxTokens: normalizeAnthropicMaxTokens(Number(event.currentTarget.value)) })
+                          }
+                        />
+                      </Field>
+                      <Field className="relay-field-anthropic-thinking" label={t("思考模式")}>
+                        <AppSelect
+                          ariaLabel={t("思考模式")}
+                          value={profile.anthropicThinkingMode || "auto"}
+                          onChange={(value) =>
+                            updateDraft({ anthropicThinkingMode: value === "auto" ? "" : value })
+                          }
+                          options={[
+                            { value: "auto", label: t("自动（新代模型透传等级）") },
+                            { value: "adaptive", label: t("等级透传（adaptive）") },
+                            { value: "budget", label: t("经典预算（budget_tokens）") },
+                            { value: "off", label: t("关闭思考") },
+                          ]}
+                        />
+                      </Field>
+                      <label className="switch-row compact relay-switch-row relay-field-anthropic-cache">
+                        <input
+                          checked={profile.anthropicPromptCache !== false}
+                          onChange={(event) =>
+                            updateDraft({ anthropicPromptCache: event.currentTarget.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>{t("提示缓存")}</strong>
+                          <small>
+                            {t("给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。")}
+                          </small>
+                        </span>
+                        <ToggleVisual />
+                      </label>
+                      <label className="switch-row compact relay-switch-row relay-field-anthropic-impersonate">
+                        <input
+                          checked={profile.anthropicImpersonateClaudeCode === true}
+                          onChange={(event) =>
+                            updateDraft({ anthropicImpersonateClaudeCode: event.currentTarget.checked })
+                          }
+                          type="checkbox"
+                        />
+                        <span>
+                          <strong>{t("模拟 Claude Code 客户端")}</strong>
+                          <small>
+                            {t("伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。")}
+                          </small>
+                        </span>
+                        <ToggleVisual />
+                      </label>
+                      <div className="hint-line relay-protocol-hint">
+                        <MessageCircle className="h-4 w-4" />
+                        <span>
+                          {t("思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
+                        </span>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               </div>
             ) : (
@@ -9596,6 +9855,11 @@ function RelayProfileEditor({
                               rows={7}
                             />
                             {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
+                            {metadataImportPreview?.contextWindow && row.window.trim() && metadataImportPreview.contextWindow !== row.window.trim() ? (
+                              <div className="relay-model-metadata-import-warning" role="status">
+                                {tf("文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。", [metadataImportPreview.contextWindow, row.window.trim()])}
+                              </div>
+                            ) : null}
                             {metadataImportPreview?.ignoredFields.length ? (
                               <div className="relay-model-metadata-import-warning" role="status">
                                 {tf("以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}", [metadataImportPreview.ignoredFields.join(", ")])}
@@ -9949,10 +10213,14 @@ function RelayProfileEditor({
                 </div>
               </Field>
             ) : null}
-            {showApiFields && profile.protocol === "chatCompletions" ? (
+            {showApiFields && profile.protocol !== "responses" ? (
               <div className="hint-line relay-protocol-hint">
                 <MessageCircle className="h-4 w-4" />
-                <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}</span>
+                <span>
+                  {profile.protocol === "anthropicMessages"
+                    ? t("此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。")
+                    : t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}
+                </span>
               </div>
             ) : null}
             <div className="hint-line relay-protocol-hint">
@@ -10921,7 +11189,7 @@ function RelayFileEditors({
             onProfileChange(deriveRelayProfileFromFiles({
               ...profile,
               configContents,
-            }));
+            }, "config"));
           }}
         />
       </RelayFold>
@@ -10965,6 +11233,11 @@ function RelayFileEditors({
               <Download className="h-4 w-4" />
               {t("提取当前供应商配置")}
             </Button>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.relayPreserveNonproviderSettings === true}
+              onChange={(event) => onFormChange({ ...form, relayPreserveNonproviderSettings: event.currentTarget.checked })} />
+            {t("切换时保留缺失的项目信任设置与通知命令")}
+          </label>
           <SyncedTextarea
             className="relay-file-textarea"
             value={form.relayCommonConfigContents}
@@ -10982,7 +11255,7 @@ function RelayFileEditors({
         <SyncedTextarea
           className="relay-file-textarea"
           value={profile.authContents}
-          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
+          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }, "auth"))}
         />
       </RelayFold>
     </div>
@@ -11529,23 +11802,46 @@ function ClaudeLocalizationScreen() {
   const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const refresh = async () => {
-    try { setStatus(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
-    catch (cause) { setError(stringifyError(cause)); }
+  const mounted = useRef(true);
+  const pending = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const accept = (result: CommandResult<ClaudeLocalizationStatus>) => {
+    if (!mounted.current) return;
+    if (result.status === "ok") setStatus(result);
+    else setError(result.message);
   };
-  useEffect(() => { void refresh(); }, []);
+  const refresh = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setBusy("detect"); setError(null);
+    try { accept(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
+    catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(action); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const toggleVoiceInput = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy("voiceInput"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -11554,12 +11850,16 @@ function ClaudeLocalizationScreen() {
       );
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const toggleLocalization = async (enabled: boolean) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy("localization"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -11568,15 +11868,17 @@ function ClaudeLocalizationScreen() {
       );
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      if (result.status === "ok") setStatus(result);
-      else setError(result.message);
-    } catch (cause) { setError(stringifyError(cause)); }
-    finally { setBusy(null); }
+      accept(result);
+    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    finally {
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
   };
   const s = status;
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
-  const statusText = !s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
+  const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   return (
     <div className="claude-localization-page">
       {/* 左栏：增强项。每一项都跑在右边的受管副本上，汉化只是其中之一。 */}
@@ -11590,7 +11892,7 @@ function ClaudeLocalizationScreen() {
             <label className="switch-row compact">
               <input
                 checked={Boolean(s?.localization)}
-                disabled={busy !== null}
+                disabled={busy !== null || !s?.supported}
                 onChange={(event) => void toggleLocalization(event.currentTarget.checked)}
                 type="checkbox"
               />
@@ -11603,7 +11905,7 @@ function ClaudeLocalizationScreen() {
             <label className="switch-row compact">
               <input
                 checked={Boolean(s?.voiceInput)}
-                disabled={busy !== null}
+                disabled={busy !== null || !s?.supported}
                 onChange={(event) => void toggleVoiceInput(event.currentTarget.checked)}
                 type="checkbox"
               />
@@ -11613,7 +11915,7 @@ function ClaudeLocalizationScreen() {
               </span>
               <ToggleVisual />
             </label>
-            {!s?.prepared ? (
+            {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">
                 {t("副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。")}
               </p>
@@ -11664,7 +11966,7 @@ function ClaudeLocalizationScreen() {
           <div className="claude-l10n-stats">
             <div className="claude-l10n-stat">
               <span>{t("官方版本")}</span>
-              <strong title={s?.sourceVersion || undefined}>{s?.sourceVersion || t("未检测到")}</strong>
+              <strong title={s?.sourceVersion || undefined}>{!s ? t("未检测") : s.sourceVersion || t("未检测到")}</strong>
             </div>
             <div className="claude-l10n-stat">
               <span>{t("副本版本")}</span>
@@ -11676,15 +11978,24 @@ function ClaudeLocalizationScreen() {
             </div>
             <div className="claude-l10n-stat">
               <span>{t("官方词条")}</span>
-              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")}</strong>
+              <strong>{s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}</strong>
             </div>
           </div>
           <div className="claude-l10n-note" role="note">
             <Info className="h-4 w-4" />
             <span>{t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}</span>
           </div>
+          {!s ? (
+            <p className="claude-l10n-hint">{t("点击“检测 Claude”读取安装状态；进入此页不会自动检测或修改应用。")}</p>
+          ) : !s.supported ? (
+            <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
+          ) : null}
           {error ? <div className="inline-error">{error}</div> : null}
           <div className="claude-l10n-actions">
+            <Button disabled={busy !== null} onClick={() => void refresh()} variant="secondary">
+              <RefreshCw className={`h-4 w-4 ${busy === "detect" ? "animate-spin" : ""}`} />
+              {busy === "detect" ? t("检测中…") : t("检测 Claude")}
+            </Button>
             <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
               <PackageOpen className="h-4 w-4" />
               {busy === "prepare"
@@ -12399,6 +12710,7 @@ function routeSubtitle(route: Route) {
     userScripts: t("内置和用户自定义拓展清单"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
+    agentCollaboration: t("连接 Codex、DeepSeek Harness 与 Claude Code，派发任务并查看结果。"),
     maintenance: t("入口检查与修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
@@ -13174,7 +13486,9 @@ function normalizeStepwiseProtocol(value: StepwiseProtocol | undefined): Stepwis
 }
 
 function backendSettingsEqual(left: BackendSettings, right: BackendSettings): boolean {
-  return JSON.stringify(normalizeSettings(left)) === JSON.stringify(normalizeSettings(right));
+  const { revision: _leftRevision, ...leftValues } = normalizeSettings(left);
+  const { revision: _rightRevision, ...rightValues } = normalizeSettings(right);
+  return JSON.stringify(leftValues) === JSON.stringify(rightValues);
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -13252,7 +13566,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
     upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
-    protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
+    protocol: normalizeRelayProtocol(profile.protocol),
     relayMode,
     sessionProvider: relaySessionProvider(profile),
     officialMixApiKey,
@@ -13278,8 +13592,15 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+    anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
+    anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
+    anthropicPromptCache: profile.anthropicPromptCache !== false,
+    anthropicImpersonateClaudeCode: profile.anthropicImpersonateClaudeCode === true,
+    anthropicThinkingMode: normalizeAnthropicThinkingMode(profile.anthropicThinkingMode),
   };
-  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  const derived = relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  return derived.noAuth || (derived.relayMode === "official" && !derived.officialMixApiKey)
+    ? derived : relayProfileWithNormalizedApiKeys(derived);
 }
 
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
@@ -13311,8 +13632,39 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
   );
 }
 
+/** 协议取值归一化：认不出的值一律回退 Responses，避免脏数据把上游写成直连。 */
+function normalizeRelayProtocol(value: RelayProtocol | undefined): RelayProtocol {
+  if (value === "chatCompletions" || value === "anthropicMessages") return value;
+  return "responses";
+}
+
+/** Anthropic 认证字段：只允许 `x-api-key` 与 `authorization`，缺省用前者。 */
+function normalizeAnthropicAuthHeader(value: string | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "authorization" || normalized === "bearer") return "authorization";
+  if (normalized === "x-api-key" || normalized === "x_api_key" || normalized === "api_key") return "x-api-key";
+  return "";
+}
+
+/** 思考模式：只认四个取值，其余（含空串）按 auto。 */
+function normalizeAnthropicThinkingMode(value: string | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "adaptive" || normalized === "budget" || normalized === "off") {
+    return normalized;
+  }
+  return "";
+}
+
+/** Anthropic 的 `max_tokens` 兜底值：空/非法按 0（用内置 8192），上限 200000。 */
+function normalizeAnthropicMaxTokens(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(200000, Math.round(value));
+}
+
 function relayProtocolLabel(protocol: RelayProtocol): string {
-  return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
+  if (protocol === "chatCompletions") return t("Chat Completions 转 Responses");
+  if (protocol === "anthropicMessages") return t("Anthropic Messages 转 Responses");
+  return "Responses API";
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {
@@ -13493,7 +13845,7 @@ function buildRelayConfigToml(
     && profile.protocol === "responses"
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol === "chatCompletions" || searchHistoryCompat
+  const baseUrl = profile.protocol !== "responses" || searchHistoryCompat
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -13528,26 +13880,37 @@ function buildOfficialRelayAuthJson(contents: string): string {
   if (!trimmed) return "";
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return contents;
+    const knownOAuth = String(parsed.auth_mode || "").toLowerCase() === "chatgpt" && parsed.tokens && typeof parsed.tokens === "object";
+    if (!knownOAuth && Object.keys(parsed).some((key) => key !== "OPENAI_API_KEY")) return contents;
     delete parsed.OPENAI_API_KEY;
     return `${JSON.stringify(parsed, null, 2)}\n`;
   } catch {
-    return "";
+    return contents;
   }
 }
 
-function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
+function deriveRelayProfileFromFiles(profile: RelayProfile, editedFile?: "config" | "auth"): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return normalizeAggregateRelayProfile(profile, null);
   }
+  if (editedFile === "auth") {
+    try {
+      JSON.parse(profile.authContents || "{}");
+    } catch {
+      return profile;
+    }
+  }
   let configContents = profile.configContents || "";
-  const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
+  let authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
-  const apiKey = profile.relayMode === "official"
+  const apiKey = editedFile === "config" ? configApiKey
+    : editedFile === "auth" && profile.relayMode === "pureApi" ? codexApiKeyFromAuth(authContents)
+    : profile.relayMode === "official"
     ? configApiKey || profile.apiKey || ""
     : codexApiKeyFromAuth(authContents) || configApiKey || "";
   if (profile.relayMode === "pureApi") {
@@ -13557,12 +13920,16 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
       : apiKey && configContents.trim()
         ? setCodexExperimentalBearerToken(configContents, apiKey, { requiresOpenAiAuth: false })
         : configContents;
+    if (editedFile && !profile.noAuth) {
+      if (editedFile === "config") authContents = setAuthOpenAiApiKey(authContents, apiKey);
+      if (!apiKey) configContents = removeCodexExperimentalBearerToken(configContents);
+    }
   }
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
   const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
-  return {
+  const derived = {
     ...profile,
     model,
     sessionProvider: relaySessionProviderFromConfig(configContents),
@@ -13574,6 +13941,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     configContents,
     authContents,
   };
+  return editedFile ? relayProfileWithUpdatedApiKey(derived, apiKey) : derived;
 }
 
 function applyRelayProfilePatchToFiles(
@@ -13614,6 +13982,7 @@ function applyRelayProfilePatchToFiles(
     next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
+    next = relayProfileWithUpdatedApiKey(next, patch.apiKey || "");
     if (next.relayMode === "pureApi") {
       next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
       next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "", { requiresOpenAiAuth: false });
@@ -13632,7 +14001,7 @@ function applyRelayProfilePatchToFiles(
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
+    const baseUrlForConfig = next.protocol !== "responses" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -14186,7 +14555,7 @@ function relaySettingsWithDraft(
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
-  return profile.relayMode !== "official" || profile.officialMixApiKey;
+  return profile.relayMode !== "official" || profile.officialMixApiKey || !!profile.configContents.trim();
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {
@@ -14416,6 +14785,7 @@ function reorderRelayProfiles(settings: BackendSettings, sourceId: string, targe
 }
 
 function removeRelayProfile(settings: BackendSettings, id: string): BackendSettings {
+  if (relayProfileDeleteIssue(settings, id)) return settings;
   const profiles = settings.relayProfiles.filter((profile) => profile.id !== id);
   const scrubbedProfiles = profiles.map((profile) =>
     isAggregateRelayProfile(profile)
@@ -14444,6 +14814,30 @@ function removeRelayProfile(settings: BackendSettings, id: string): BackendSetti
     relayProfiles: scrubbedProfiles.length ? scrubbedProfiles : defaultSettings.relayProfiles,
     activeRelayId: settings.activeRelayId === id ? scrubbedProfiles[0]?.id || "default" : settings.activeRelayId,
   });
+}
+
+function relayProfileDeleteIssue(settings: BackendSettings, id: string): string | null {
+  if (settings.activeRelayId === id) {
+    return t("当前正在使用该供应商，请先切换到其他供应商后再删除。");
+  }
+  const existingProfileIds = new Set(settings.relayProfiles.map((profile) => profile.id));
+  for (const aggregateProfile of settings.relayProfiles.filter(isAggregateRelayProfile)) {
+    const aggregate = normalizeAggregateConfig(aggregateProfile.aggregate, [], existingProfileIds);
+    if (!aggregate.members.some((member) => member.profileId === id)) continue;
+    if (aggregate.defaultRelayId === id) {
+      return tf("供应商「{0}」是聚合配置「{1}」的默认成员，请先调整聚合配置后再删除。", [
+        settings.relayProfiles.find((profile) => profile.id === id)?.name || id,
+        aggregateProfile.name || aggregateProfile.id,
+      ]);
+    }
+    if (aggregate.members.length <= 1) {
+      return tf("供应商「{0}」是聚合配置「{1}」的最后成员，请先调整聚合配置后再删除。", [
+        settings.relayProfiles.find((profile) => profile.id === id)?.name || id,
+        aggregateProfile.name || aggregateProfile.id,
+      ]);
+    }
+  }
+  return null;
 }
 
 const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: string; description: string }> = [
@@ -14479,7 +14873,7 @@ function relayProviderView(profile: RelayProfile): ProviderViewKind {
   if (isAggregateRelayProfile(profile)) {
     return profile.aggregate?.modelAggregationEnabled === true ? "modelAggregation" : "failover";
   }
-  return profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length
+  return profile.protocol !== "responses" || normalizeRelayModelRoutes(profile.modelRoutes).length
     ? "routing"
     : "direct";
 }

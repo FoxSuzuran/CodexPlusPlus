@@ -61,6 +61,7 @@
     }
   }
 
+  installCodexConfigReadDeadline();
   installCodexPlusForceChineseLocale();
   installCodexPlusInstanceIdentity();
   runScanStep(installCodexPlusTypingEffects);
@@ -95,4 +96,3 @@
   // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   window.codexPlus = buildCodexPlusExtensionApi();
-  installCodexFastCommandControls();

@@ -9,7 +9,6 @@
       button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
-    refreshCodexServiceTierControls();
     document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
       select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
       select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
@@ -81,25 +80,6 @@
   }
 
   let codexPlusBackendSettingsLoaded = false;
-  let codexServiceTierState = {
-    status: "loading",
-    serviceTier: null,
-    configServiceTier: null,
-    serviceTierSource: null,
-    message: "正在读取…",
-    fastTierValue: "priority",
-    controlMode: "inherit",
-    defaultMode: "inherit",
-    activeThreadId: "",
-    threadMode: "inherit",
-    effectiveServiceTier: null,
-    effectiveMode: "standard",
-    fastModelName: "",
-    fastSupported: false,
-  };
-  const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
-  const codexServiceTierFallbackFastValue = "priority";
-  const codexServiceTierReadTimeoutMs = 5000;
   const codexServiceTierModulePromises = new Map();
   // namePart -> { at, attempts, error }，见 loadCodexAppModule 里的说明。
   // 挂在 window 上跨重注入保留：否则每次重注入都会清空失败记录，重新全量 fetch asset
@@ -111,8 +91,6 @@
   const codexAppModuleRetryCooldownMs = 30000;
   const codexAppModuleMaxAttempts = 8;
   const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
-  const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast", "ultrafast"]);
-  const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "global-ultrafast", "custom"]);
   // Only the original offline compatibility fallback remains above.
   // Current and future models follow their capability metadata.
 
@@ -122,6 +100,8 @@
 
   function codexAppAssetCandidateUrls() {
     return uniqueCodexAppAssetUrls([
+      // Fast 的 import map 让实际加载记录指向 Blob；定位原生类仍需要原资产 URL。
+      window.__codexPlusNativeFastCompiled === "v1" ? window.__codexPlusNativeFastModuleDiagnostics?.url : null,
       ...Array.from(document.scripts || []).map((script) => script.src),
       ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
       ...performance.getEntriesByType("resource").map((entry) => entry.name),
@@ -404,50 +384,6 @@
     throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
   }
 
-  async function getCodexServiceTierSetting() {
-    try {
-      const read = (async () => {
-        const settingStorage = await codexSettingStorageModule();
-        return await settingStorage.n(codexDefaultServiceTierSetting);
-      })();
-      return await Promise.race([
-        read,
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Codex 应用设置读取超时")), codexServiceTierReadTimeoutMs)),
-      ]);
-    } catch (error) {
-      if (typeof codexStateCall === "function") {
-        const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
-        const result = await Promise.race([
-          fallbackRead,
-          new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
-        ]);
-        return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
-      }
-      throw error;
-    }
-  }
-
-  function isFastServiceTierValue(value) {
-    const normalized = String(value || "").trim().toLowerCase();
-    return normalized === "fast" || normalized === "priority";
-  }
-
-  function codexFastServiceTierValue() {
-    return codexServiceTierState.fastTierValue || codexServiceTierFallbackFastValue;
-  }
-
-  function codexServiceTierLabel(value) {
-    if (isFastServiceTierValue(value)) return "Fast";
-    if (value === "ultrafast") return "Ultrafast";
-    if (value === "inherit") return "继承默认";
-    return value == null || ["standard", "default"].includes(value) ? "Standard" : String(value);
-  }
-
-  function codexServiceTierFastModelListLabel() {
-    const models = typeof codexPlusModelNames === "function" ? codexPlusModelNames() : [];
-    return models.filter(codexServiceTierFastSupportedForModel).join(" / ") || "模型元数据声明支持 Fast 的模型";
-  }
-
   function normalizeCodexServiceTierModelName(model) {
     return String(model || "").trim().toLowerCase();
   }
@@ -515,47 +451,17 @@
   }
 
   function codexServiceTierFastSupportedForModel(modelName) {
-    return codexServiceTierSupportedForModel(modelName, "fast");
-  }
-
-  function codexServiceTierSupportedForModel(modelName, mode) {
-    if (mode === "standard" || mode === "inherit") return true;
     const normalized = normalizeCodexServiceTierModelName(modelName);
     if (!normalized) return false;
-    // 用户明确声明优先；内置空能力数组仍允许已验证模型的兼容回退。
     try {
       const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-      if (mode === "fast" && typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
+      if (typeof metadata?.prioritySupportOverride === "boolean") return metadata.prioritySupportOverride;
       const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
       const speeds = metadata?.additionalSpeedTiers ?? metadata?.additional_speed_tiers;
-      const matches = (tier) => mode === "fast" ? isFastServiceTierValue(tier?.id || tier) : (tier?.id || tier) === mode;
+      const matches = (tier) => ["priority", "fast"].includes(String(tier?.id || tier).trim().toLowerCase());
       if ((Array.isArray(tiers) && tiers.some(matches)) || (Array.isArray(speeds) && speeds.some(matches))) return true;
     } catch {}
-    return mode === "fast" && codexServiceTierSupportedFastModels.has(normalized);
-  }
-
-  function codexServiceTierValueForModel(mode, modelName) {
-    if (mode !== "fast") return mode === "ultrafast" ? mode : null;
-    const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-    const tiers = metadata?.serviceTiers ?? metadata?.service_tiers;
-    const tier = Array.isArray(tiers) ? tiers.find((tier) => isFastServiceTierValue(tier?.id || tier)) : null;
-    return (tier?.id || tier) || codexFastServiceTierValue();
-  }
-
-  function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型，${modelText}；可在供应商的模型配置中设置 Fast 支持`;
-  }
-
-  function codexServiceTierMaybeLoadModelCatalog(force = false) {
-    if (codexModelCatalogPromise) return;
-    if (!force && codexModelCatalog.status === "failed") return;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return;
-    loadCodexModelCatalog(force).then(() => {
-      refreshCodexServiceTierControls();
-    }).catch(() => {
-      refreshCodexServiceTierControls();
-    });
+    return codexServiceTierSupportedFastModels.has(normalized);
   }
 
   // UI 侧「Fast 是否可用」的唯一判据。这里必须复用 codexServiceTierFastSupportedForModel，
@@ -573,41 +479,4 @@
       modelName: modelName || "",
       supported: !!normalizedModel && codexServiceTierFastSupportedForModel(modelName),
     };
-  }
-
-  function codexServiceTierInheritedValue() {
-    if (codexServiceTierState.serviceTier != null) return codexServiceTierState.serviceTier;
-    return codexServiceTierState.configServiceTier ?? null;
-  }
-
-  function codexServiceTierValueForMode(mode) {
-    if (mode === "fast" || mode === "ultrafast") return codexServiceTierValueForModel(mode, codexServiceTierUiModelName());
-    if (mode === "standard") return null;
-    return codexServiceTierInheritedValue();
-  }
-
-  function codexServiceTierDefaultModeForControlMode(controlMode, fallback = "inherit") {
-    if (controlMode === "global-fast") return "fast";
-    if (controlMode === "global-ultrafast") return "ultrafast";
-    if (controlMode === "global-standard") return "standard";
-    if (controlMode === "inherit") return "inherit";
-    return normalizeCodexThreadServiceTierMode(fallback);
-  }
-
-  function codexServiceTierEffectiveThreadMode(threadMode = "inherit", defaultMode = "inherit") {
-    const normalizedThreadMode = normalizeCodexThreadServiceTierMode(threadMode);
-    if (normalizedThreadMode !== "inherit") return normalizedThreadMode;
-    return normalizeCodexThreadServiceTierMode(defaultMode);
-  }
-
-  function codexServiceTierValueForControlMode(controlMode, threadMode = "inherit", defaultMode = "inherit") {
-    if (controlMode === "global-fast") return codexFastServiceTierValue();
-    if (controlMode === "global-ultrafast") return "ultrafast";
-    if (controlMode === "global-standard") return null;
-    if (controlMode === "custom") return codexServiceTierValueForMode(codexServiceTierEffectiveThreadMode(threadMode, defaultMode));
-    return codexServiceTierInheritedValue();
-  }
-
-  function codexServiceTierEffectiveMode(value) {
-    return isFastServiceTierValue(value) ? "fast" : value === "ultrafast" ? "ultrafast" : "standard";
   }

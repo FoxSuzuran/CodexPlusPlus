@@ -79,26 +79,29 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   assert.equal(syncs, 2, "failed reads retain the current effect");
 });
 
-test("backend heartbeat refreshes speed controls only on effective health transitions", () => {
+test("backend health transitions update their indicators without rebuilding retired speed controls", () => {
   let refreshes = 0;
+  const indicator = { dataset: {} as Record<string, string>, title: "" };
   const context = vm.createContext({
     codexPlusBackendStatus: { status: "ok", version: "1.9.0" },
     codexPlusBridgeFailureCount: 0, CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD: 3,
     codexPlusVersion: "", codexPlusSidebarNavId: "nav",
-    document: { querySelector: () => null, querySelectorAll: () => [] },
+    document: { querySelector: () => null, querySelectorAll: (selector: string) =>
+      selector === "[data-codex-backend-indicator]" ? [indicator] : [] },
     refreshCodexServiceTierControls: () => { refreshes++; },
   });
   const source = fragment("40-backend-settings.js");
-  const start = source.indexOf("  let renderedBackendStatus = ");
+  const start = source.indexOf("  function renderBackendStatus(");
   const end = source.indexOf("  function withBackendTimeout(", start);
   assert.ok(start >= 0 && end > start);
   vm.runInContext(source.slice(start, end), context);
   for (let i = 0; i < 100; i++) context.renderBackendStatus();
-  assert.equal(refreshes, 1);
+  assert.equal(indicator.dataset.status, "ok");
   context.codexPlusBridgeFailureCount = 3;
   context.renderBackendStatus();
-  assert.equal(refreshes, 2, "bridge degradation must refresh controls");
+  assert.equal(indicator.dataset.status, "degraded");
   context.codexPlusBridgeFailureCount = 0;
   context.renderBackendStatus();
-  assert.equal(refreshes, 3, "recovery must refresh controls");
+  assert.equal(indicator.dataset.status, "ok");
+  assert.equal(refreshes, 0, "native speed controls do not depend on backend heartbeat rendering");
 });

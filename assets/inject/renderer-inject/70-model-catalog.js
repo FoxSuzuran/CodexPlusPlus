@@ -44,18 +44,6 @@
       dispatchMessage: (dispatcher, type, payload) => dispatchCodexPlusMessage(dispatcher, type, payload),
       requestOverride: (message) => codexServiceTierRequestOverride(message),
       diagnostics: () => [...(window.__codexPlusServiceTierTestDiagnostics || [])],
-      statusSummary: (state = {}) => {
-        const summaryState = { ...codexServiceTierState, ...state };
-        return serviceTierStatusMessage(
-          summaryState.controlMode,
-          summaryState.threadMode,
-          summaryState.effectiveMode,
-          summaryState.defaultMode,
-          summaryState.effectiveServiceTier,
-          summaryState.serviceTierSource
-        );
-      },
-      resolveInheritedServiceTier: () => resolveInheritedServiceTier(),
       currentModelName: () => codexServiceTierCurrentModelName(),
       fastAvailability: (modelName = codexServiceTierCurrentModelName()) => codexServiceTierFastAvailability(modelName),
       modelDescriptor: (modelName) => codexPlusModelDescriptor(modelName),
@@ -88,18 +76,6 @@
       },
       providerPatchEnabled: () => codexRemoteSessionProviderPatchEnabled(),
       providerNormalizationEnabled: () => codexRemoteSessionProviderNormalizationEnabled(),
-      setServiceTierState: (state = {}) => {
-        codexServiceTierState = { ...codexServiceTierState, ...state };
-      },
-      setThreadState: (state = {}) => {
-        localStorage.setItem(codexThreadServiceTierKey, JSON.stringify({
-          version: codexThreadServiceTierVersion,
-          mode: "inherit",
-          defaultMode: "inherit",
-          entries: {},
-          ...state,
-        }));
-      },
       settingStorageFromModule: codexSettingStorageFromModule,
       stateApiFromModule: codexStateApiFromModule,
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
@@ -190,8 +166,9 @@
     const metadata = codexPlusModelMetadata(modelName);
     if (!descriptor || !metadata) return false;
     let changed = false;
-    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
-      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+    for (const key of ["displayName", "description", "defaultReasoningEffort", "contextWindow", "maxContextWindow", "context_window", "max_context_window"]) {
+      const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
+      if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
         changed = true;
       }
@@ -651,6 +628,9 @@
   }
 
   function codexThreadModelRequestState(method, params, result) {
+    if (method === "send-cli-request-for-host" && params?.method) {
+      return codexThreadModelRequestState(String(params.method), params.params, result);
+    }
     const requestMethod = String(method || "");
     const threadId = String(
       params?.threadId
@@ -664,13 +644,25 @@
   }
 
   async function refreshCodexThreadModelBeforeTurn(client, originalSendRequest, method, params, options) {
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return null;
+      return refreshCodexThreadModelBeforeTurn(client,
+        (nestedMethod, nestedParams, nestedOptions) => originalSendRequest(method,
+          { ...params, method: nestedMethod, params: nestedParams }, nestedOptions),
+        String(params.method), params.params, options);
+    }
     if (String(method || "") !== "turn/start" || !codexPerModelContextEnabled()) return null;
     const { threadId, model } = codexThreadModelRequestState(method, params);
     if (!threadId || !model) return null;
     const previousModel = client.__codexPlusThreadModels?.get(threadId) || "";
     if (!previousModel || previousModel === model) return null;
+    if (client.hostId === "local" && codexManagedSessionConnection()
+        && window.__codexPlusConnectionRecoveryPending?.has(threadId)) {
+      throw new Error("此会话正在检查连接，请稍后重新发送");
+    }
     let resumeParams = { threadId, model };
     resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
+    resumeParams = applyCodexManagedSessionConnection("thread/resume", resumeParams, client.hostId);
     try {
       await originalSendRequest("thread/resume", resumeParams, options);
       client.__codexPlusThreadModels.set(threadId, model);
@@ -712,7 +704,7 @@
       return false;
     }
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
-    const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
+    const originalSendRequest = (client.__codexPlusModelOriginalSendRequest || client.sendRequest).bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
@@ -721,9 +713,12 @@
       if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
+      const managedAggregateTurn = requestMethod === "turn/start"
+        && client.hostId === "local" && !!codexManagedSessionConnection();
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
+          && window.__codexSessionDeleteBridge
+          && !managedAggregateTurn) {
         const settingsLoaded = await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
         providerRefreshFailed = !settingsLoaded;
         if (providerRefreshFailed) {
@@ -737,6 +732,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
+        providerParams, client.hostId, originalSendRequest);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -744,17 +741,12 @@
         providerParams,
         options
       );
-      const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)(requestMethod, providerParams);
-      const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
-      let result;
-      try {
-        result = await originalSendRequest(method, nextParams, options);
-      } catch (error) {
-        (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, null, true, serviceTierRequest);
-        throw error;
-      }
-      (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, result, false, serviceTierRequest);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest,
+        String(method || ""), nextParams, options, modelContextRefresh);
+      if (managedTurn) return managedTurn.result;
+      const result = await originalSendRequest(method, nextParams, options);
+      noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
+      const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
@@ -764,12 +756,11 @@
       return patchAppServerModelResult(requestMethod, result, modelResponseHostId(params, client));
     };
     if (typeof client.prewarmThreadStart === "function") {
-      const originalPrewarmThreadStart = client.__codexPlusServiceTierOriginalPrewarmThreadStart
-        || client.prewarmThreadStart.bind(client);
+      const originalPrewarmThreadStart = (client.__codexPlusServiceTierOriginalPrewarmThreadStart
+        || client.prewarmThreadStart).bind(client);
       client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)("thread/start", params);
-        return originalPrewarmThreadStart(nextParams, options);
+        return await prewarmCodexManagedSession(client, originalPrewarmThreadStart, params, options);
       };
     }
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
@@ -865,7 +856,6 @@
     const wanted = codexPlusModelUnlockEnabled()
       || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().serviceTierControls
       || codexPlusSettings().sessionDelete;
     if (!wanted) return false;
     const klass = window.__codexPlusAppServerClientClass;
@@ -897,9 +887,12 @@
       if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
+      const managedAggregateTurn = requestMethod === "turn/start"
+        && client.hostId === "local" && !!codexManagedSessionConnection();
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
           && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
+          && window.__codexSessionDeleteBridge
+          && !managedAggregateTurn) {
         const settingsLoaded = await loadBackendSettingsState(codexAppServerPreparationTimeoutMs);
         providerRefreshFailed = !settingsLoaded;
         if (providerRefreshFailed) {
@@ -913,6 +906,8 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
+        providerParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -920,17 +915,12 @@
         providerParams,
         options
       );
-      const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)(requestMethod, providerParams);
-      const serviceTierRequest = (window.__codexPlusFastRequestHandlers?.begin || beginCodexServiceTierRequest)(requestMethod, nextParams);
-      let result;
-      try {
-        result = await originalSendRequest.call(client, method, nextParams, options);
-      } catch (error) {
-        (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, null, true, serviceTierRequest);
-        throw error;
-      }
-      (window.__codexPlusFastRequestHandlers?.observe || observeCodexServiceTierRequestResult)(requestMethod, nextParams, result, false, serviceTierRequest);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      const managedTurn = await sendCodexManagedSessionTurn(client, originalSendRequest.bind(client),
+        String(method || ""), nextParams, options, modelContextRefresh);
+      if (managedTurn) return managedTurn.result;
+      const result = await originalSendRequest.call(client, method, nextParams, options);
+      noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
+      const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
@@ -944,8 +934,7 @@
         || proto.prewarmThreadStart;
       proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
       proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = await (window.__codexPlusFastRequestHandlers?.prepare || prepareCodexServiceTierRequest)("thread/start", params);
-        return originalPrewarmThreadStart.call(this, nextParams, options);
+        return await prewarmCodexManagedSession(this, originalPrewarmThreadStart.bind(this), params, options);
       };
     }
     proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
@@ -1115,10 +1104,7 @@
       const client = originalForHost.call(this, hostId);
       if (hostId !== "local" || !client) return client;
       const cached = codexCollaborationModeRuntime.clients.get(client);
-      if (cached) {
-        window.__codexPlusFastRequestHandlers?.manager?.(cached);
-        return cached;
-      }
+      if (cached) return cached;
       if (typeof client.updateThreadSettingsForNextTurn !== "function" || typeof client.startTurn !== "function"
           || typeof client.getConversation !== "function") return client;
       // RPC 方法不可写；在可写注册表返回的外层保留原生 RPC 与生命周期。
@@ -1126,9 +1112,7 @@
       const wrapper = new Proxy({}, {
         get(_target, key) {
           if (key === "updateThreadSettingsForNextTurn") return (threadId, settings, condition) => {
-            const sendSettings = () => client.updateThreadSettingsForNextTurn(threadId, settings, condition);
-            const update = () => window.__codexPlusFastRequestHandlers?.settings
-              ? window.__codexPlusFastRequestHandlers.settings(threadId, settings, sendSettings) : sendSettings();
+            const update = () => client.updateThreadSettingsForNextTurn(threadId, settings, condition);
             const mode = settings?.collaborationMode;
             if (!["plan", "default"].includes(mode?.mode) || !mode.settings || typeof mode.settings.model !== "string") {
               const pending = update();
@@ -1164,14 +1148,7 @@
           if ((key === "startTurn" || key === "startEmptyTurn")
               && typeof client[key] === "function") return async (threadId, operation, ...args) => {
             const emptyTurn = key === "startEmptyTurn";
-            const send = async (next) => {
-              const request = emptyTurn ? next : next?.request;
-              if (request && next.context?.inheritThreadSettings !== false && window.__codexPlusFastRequestHandlers?.prepare) {
-                const params = await window.__codexPlusFastRequestHandlers.prepare("turn/start", request, threadId);
-                if (params !== request) next = emptyTurn ? params : { ...next, request: params };
-              }
-              return client[key](threadId, next, ...args);
-            };
+            const send = (next) => client[key](threadId, next, ...args);
             if (!operation || (!emptyTurn && !operation.request) || operation.context?.inheritThreadSettings === false) {
               return client[key](threadId, operation, ...args);
             }
@@ -1227,18 +1204,11 @@
             }
             return result;
           };
-          if (key === "getConversation") return async (threadId, ...args) => {
-            const read = window.__codexPlusFastRequestHandlers?.read?.(threadId);
-            const conversation = await client.getConversation(threadId, ...args);
-            window.__codexPlusFastRequestHandlers?.conversation?.(threadId, conversation, read);
-            return conversation;
-          };
           const value = Reflect.get(client, key, client);
           return typeof value === "function" ? Function.prototype.bind.call(value, client) : value;
         },
       });
       codexCollaborationModeRuntime.clients.set(client, wrapper);
-      window.__codexPlusFastRequestHandlers?.manager?.(wrapper);
       return wrapper;
     };
     codexCollaborationModeRuntime.registries.add(registry);
@@ -1342,8 +1312,7 @@
     if (codexPlusModelUnlockEnabled()
         || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-        || codexPlusSettings().serviceTierControls
-        || codexPlusSettings().sessionDelete) {
+          || codexPlusSettings().sessionDelete) {
       installAppServerModelRequestPatch();
       void installCodexAppServerClientCapture().catch(() => {});
     }

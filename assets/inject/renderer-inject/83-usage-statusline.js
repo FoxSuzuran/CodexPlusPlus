@@ -39,6 +39,7 @@
     inFlight: false,
     lastFingerprint: "",
     cache: new Map(),
+    observer: null,
   };
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
@@ -311,29 +312,63 @@
       && codexPlusSettings().usageStatusLine === true;
   }
 
+  /** 挂载与取数分开：切换时先恢复栏位，网络请求只更新数值。 */
   function codexPlusUsageSyncPlacement() {
-    if (!codexPlusUsageEnabled() || document.hidden) {
-      if (!document.hidden) codexPlusUsageHide();
-      return null;
-    }
-    const card = codexPlusUsageComposerCard();
+    if (document.hidden) return null;
+    const card = codexPlusUsageEnabled() ? codexPlusUsageComposerCard() : null;
     const threadId = codexPlusUsageThreadId(card);
     if (!card || !threadId) {
       codexPlusUsageHide();
       codexPlusUsageState.threadId = "";
       return null;
     }
-    codexPlusUsageInstallStyle();
+    const changed = codexPlusUsageState.threadId !== threadId;
     const node = codexPlusUsageEnsureNode(card);
     if (!node) return null;
-    if (codexPlusUsageState.threadId !== threadId) {
+    if (changed) {
       codexPlusUsageState.threadId = threadId;
       codexPlusUsageState.failures = 0;
       codexPlusUsageState.lastFingerprint = "";
     }
     codexPlusUsageShow(node);
     codexPlusUsageRender(codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId)));
-    return threadId;
+    return { card, threadId, changed };
+  }
+
+  function codexPlusUsageRemember(threadId, events) {
+    if (!events?.length) return;
+    codexPlusUsageState.cache.delete(threadId);
+    codexPlusUsageState.cache.set(threadId, events.slice(-24));
+    if (codexPlusUsageState.cache.size > 32) {
+      codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
+    }
+  }
+
+  /** 只观察输入框结构和会话标识，忽略状态栏自身的写入，避免自喂循环。 */
+  function codexPlusUsageObserve() {
+    if (!document.body || typeof MutationObserver !== "function") return;
+    const selector = "[data-codex-composer-root], [data-composer-surface-variant], [data-above-composer-conversation-id]";
+    codexPlusUsageState.observer = new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.target?.closest?.("[data-codex-plus-ext]")) return false;
+        if (record.type === "attributes") return true;
+        return [...record.addedNodes, ...record.removedNodes].some((node) =>
+          node.nodeType === 1 && !node.matches?.("[data-codex-plus-ext]")
+          && (node.matches?.(selector) || node.querySelector?.(selector)));
+      });
+      if (!relevant) return;
+      const placement = codexPlusUsageSyncPlacement();
+      if (placement?.changed) codexPlusUsageSchedule(0);
+    });
+    codexPlusUsageState.observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: [
+        "data-above-composer-conversation-id", "data-composer-placement",
+        "data-app-action-sidebar-thread-selected", "data-app-action-sidebar-thread-id",
+      ],
+    });
   }
 
   async function codexPlusUsageRefresh(threadId) {
@@ -346,7 +381,7 @@
       }
       codexPlusUsageState.failures = 0;
       codexPlusUsageState.cache.delete(threadId);
-      codexPlusUsageState.cache.set(threadId, result.events);
+      codexPlusUsageState.cache.set(threadId, result.events.slice(-24));
       while (codexPlusUsageState.cache.size > 32) {
         codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
       }
@@ -358,17 +393,26 @@
 
   async function codexPlusUsageTick() {
     if (codexPlusUsageState.disposed) return;
-    const threadId = codexPlusUsageSyncPlacement();
-    if (codexPlusUsageState.inFlight) return;
-    if (!threadId) {
+    // 页面不可见时不拉数据，但保留轮询，切回来下一拍就会刷新。
+    if (document.hidden) {
       codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
+      return;
+    }
+    const placement = codexPlusUsageSyncPlacement();
+    if (!placement) {
+      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
+      return;
+    }
+    const { threadId } = placement;
+    if (codexPlusUsageState.inFlight) {
+      codexPlusUsageSchedule(codexPlusUsageActiveIntervalMs);
       return;
     }
     let events = null;
     try {
       events = await codexPlusUsageRefresh(threadId);
     } catch (error) {
-      codexPlusUsageState.failures += 1;
+      if (codexPlusUsageState.threadId === threadId) codexPlusUsageState.failures += 1;
       if (codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
         sendCodexPlusDiagnostic("usage_statusline_bridge_failed", {
           errorName: error?.name || "",
@@ -377,20 +421,22 @@
       }
     }
     if (codexPlusUsageState.disposed) return;
-    if (!codexPlusUsageEnabled() || document.hidden
-      || codexPlusUsageThreadId(codexPlusUsageComposerCard()) !== threadId) {
-      codexPlusUsageSyncPlacement();
-      codexPlusUsageSchedule(0);
+    if (document.hidden) {
+      codexPlusUsageSchedule(codexPlusUsageIdleIntervalMs);
       return;
     }
-    codexPlusUsageSyncPlacement();
-    const snapshot = codexPlusUsageSnapshot(events || codexPlusUsageState.cache.get(threadId));
+    codexPlusUsageRemember(threadId, events);
+    const current = codexPlusUsageSyncPlacement();
+    if (!current || current.threadId !== threadId) {
+      codexPlusUsageSchedule(current ? 0 : codexPlusUsageIdleIntervalMs);
+      return;
+    }
+    const snapshot = codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId));
     if (snapshot) {
       codexPlusUsageRender(snapshot);
     }
     if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
-      // 保留已有读数；无缓存时隐藏占位符，等桥接恢复。
-      if (!snapshot) codexPlusUsageHide();
+      // 保留栏位和已有读数，等桥接恢复，避免网络异常时反复闪烁。
       codexPlusUsageSchedule(30000);
       return;
     }
@@ -406,18 +452,21 @@
   }
 
   codexPlusUsageInstallStyle();
+  codexPlusUsageObserve();
+  codexPlusUsageSyncPlacement();
   codexPlusUsageSchedule(600);
   window.__codexPlusUsageStatusLineRuntime = {
-    version: 1,
+    version: 2,
     sync: () => codexPlusUsageSchedule(0),
     dispose() {
       codexPlusUsageState.disposed = true;
       clearTimeout(codexPlusUsageState.timer);
       codexPlusUsageState.timer = 0;
+      codexPlusUsageState.observer?.disconnect();
+      codexPlusUsageState.cache.clear();
       // 卸载时把节点整个摘掉：注入会被重跑，留一个隐藏节点等于每次重注入多挂一个。
       document.getElementById(codexPlusUsageStatusLineId)?.remove();
       codexPlusUsageState.lastFingerprint = "";
-      codexPlusUsageState.cache.clear();
       globalThis.__CODEX_PLUS_USAGE_STATUSLINE_SYNC__ = undefined;
     },
   };

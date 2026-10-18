@@ -87,12 +87,7 @@ pub fn close_process_tree(process_id: u32, force: bool) -> bool {
         return request_process_close(process_id);
     }
     let output = std::process::Command::new("taskkill")
-        .args([
-            "/PID",
-            process_id.to_string().as_str(),
-            "/T",
-            "/F",
-        ])
+        .args(["/PID", process_id.to_string().as_str(), "/T", "/F"])
         .output();
     matches!(output, Ok(output) if output.status.success())
 }
@@ -408,6 +403,11 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
         return None;
     }
     let _guard = HandleGuard(handle);
+    process_birth_id_from_handle(handle)
+}
+
+#[cfg(windows)]
+fn process_birth_id_from_handle(handle: HANDLE) -> Option<u64> {
     let mut creation_time = FILETIME::default();
     let mut exit_time = FILETIME::default();
     let mut kernel_time = FILETIME::default();
@@ -448,6 +448,11 @@ pub fn process_command_line(process_id: u32) -> Option<String> {
         return None;
     }
     let _guard = HandleGuard(handle);
+    process_command_line_from_handle(handle)
+}
+
+#[cfg(windows)]
+fn process_command_line_from_handle(handle: HANDLE) -> Option<String> {
     let peb = query_peb_base_address(handle)?;
     // 先按 x64 / ARM64 布局读；32 位（WOW64）进程再退回 32 位布局重试一次。
     if let Some(command_line) = read_command_line_at(
@@ -467,6 +472,150 @@ pub fn process_command_line(process_id: u32) -> Option<String> {
         X86_COMMAND_LINE_OFFSET,
         true,
     )
+}
+
+#[cfg(windows)]
+pub(crate) fn child_process_birth_id(child: &std::process::Child) -> Option<u64> {
+    use std::os::windows::io::AsRawHandle;
+    // Child 保持句柄所有权；这里只借用，不交给 HandleGuard。
+    process_birth_id_from_handle(HANDLE(child.as_raw_handle()))
+}
+
+/// 校验与终止共用同一句柄，检查后即使 PID 被系统回收也不会转而终止新进程。
+#[cfg(windows)]
+pub(crate) fn terminate_verified_multi_worker(
+    process_id: u32,
+    options_path: &std::path::Path,
+    expected_birth: Option<u64>,
+) -> anyhow::Result<bool> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::UI::Shell::CommandLineToArgvW;
+    if process_id == std::process::id() || expected_birth.is_none() {
+        return Ok(false);
+    }
+    let Ok(handle) = (unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            process_id,
+        )
+    }) else {
+        return Ok(false);
+    };
+    if handle.is_invalid() {
+        return Ok(false);
+    }
+    let _guard = HandleGuard(handle);
+    let actual_birth = process_birth_id_from_handle(handle);
+    if actual_birth != expected_birth { return Ok(false); }
+    let Some(command_line) = process_command_line_from_handle(handle) else { return Ok(false); };
+    let wide = wide_null(&command_line);
+    let mut count = 0;
+    let argv = unsafe { CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut count) };
+    if argv.is_null() { return Ok(false); }
+    let arguments = if count == 3 {
+        unsafe { std::slice::from_raw_parts(argv, count as usize) }.iter()
+            .map(|value| unsafe { value.to_string() }.ok()).collect::<Option<Vec<_>>>()
+    } else { None };
+    // CommandLineToArgvW 分配的 argv 必须用 LocalFree 释放。
+    unsafe { LocalFree(HLOCAL(argv.cast())) };
+    let Some(arguments) = arguments else {
+        return Ok(false);
+    };
+    if !crate::multi_worker::worker_identity_matches(
+        expected_birth,
+        actual_birth,
+        &arguments,
+        options_path,
+    ) {
+        return Ok(false);
+    }
+    let Some(image) = process_image_path_from_handle(handle) else { return Ok(false); };
+    let Ok(expected_image) = std::env::current_exe().and_then(|path| path.canonicalize())
+        else { return Ok(false); };
+    if image.canonicalize().ok().as_ref() != Some(&expected_image) { return Ok(false); }
+    unsafe { TerminateProcess(handle, 0) }.context("结束已验证的多开 worker 失败")?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn command_line_arguments(command_line: &str) -> Option<Vec<String>> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::UI::Shell::CommandLineToArgvW;
+    let wide = wide_null(command_line);
+    let mut count = 0;
+    let argv = unsafe { CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut count) };
+    if argv.is_null() {
+        return None;
+    }
+    let arguments = if (1..=32768).contains(&count) {
+        unsafe { std::slice::from_raw_parts(argv, count as usize) }
+            .iter()
+            .map(|value| unsafe { value.to_string() }.ok())
+            .collect()
+    } else {
+        None
+    };
+    unsafe { LocalFree(HLOCAL(argv.cast())) };
+    arguments
+}
+
+#[cfg(windows)]
+pub(crate) fn process_arguments(process_id: u32) -> Option<Vec<String>> {
+    command_line_arguments(&process_command_line(process_id)?)
+}
+
+/// 命令行、创建时间、映像与终止共用同一句柄，拒绝按端口或 PID 猜测归属。
+#[cfg(windows)]
+pub(crate) fn terminate_verified_codex_instance(
+    identity: &crate::multi_worker::CodexInstanceIdentity,
+) -> anyhow::Result<bool> {
+    if identity.process_id == std::process::id() || identity.process_birth_id == 0 {
+        return Ok(false);
+    }
+    let Ok(handle) = (unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            identity.process_id,
+        )
+    }) else {
+        return Ok(false);
+    };
+    if handle.is_invalid() {
+        return Ok(false);
+    }
+    let _guard = HandleGuard(handle);
+    if process_birth_id_from_handle(handle) != Some(identity.process_birth_id) {
+        return Ok(false);
+    }
+    let Some(image) = process_image_path_from_handle(handle) else {
+        return Ok(false);
+    };
+    let normalize = |path: &std::path::Path| {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_ascii_lowercase()
+    };
+    if normalize(&image) != normalize(&identity.executable) {
+        return Ok(false);
+    }
+    let Some(arguments) =
+        process_command_line_from_handle(handle).and_then(|line| command_line_arguments(&line))
+    else {
+        return Ok(false);
+    };
+    if !crate::multi_worker::codex_arguments_match(
+        &arguments,
+        &identity.user_data_dir,
+        identity.debug_port,
+    ) || unique_listener_process_id(&loopback_listener_process_ids(identity.debug_port)?)?
+        != Some(identity.process_id)
+    {
+        return Ok(false);
+    }
+    unsafe { TerminateProcess(handle, 0) }.context("结束已验证的多开 Codex 实例失败")?;
+    Ok(true)
 }
 
 /// `ProcessBasicInformation` / `ProcessWow64Information`。
@@ -1015,6 +1164,11 @@ fn query_process_image_path(process_id: u32) -> Option<PathBuf> {
         return None;
     }
     let _guard = HandleGuard(handle);
+    process_image_path_from_handle(handle)
+}
+
+#[cfg(windows)]
+fn process_image_path_from_handle(handle: HANDLE) -> Option<PathBuf> {
     let mut buffer = vec![0u16; MAX_PATH as usize * 4];
     let mut len = buffer.len() as u32;
     unsafe {

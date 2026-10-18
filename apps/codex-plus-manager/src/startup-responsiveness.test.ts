@@ -231,7 +231,8 @@ test("updater displays real progress, unknown totals and writing stages, then re
   let removed = 0;
   let cleared = 0;
   const update = action("performUpdate", {
-    updateInstallProgress: progress, update: null,
+    updateInstallProgress: progress, updateInstallPending: { current: false },
+    update: { latestVersion: "v1.11.0", assetName: "update.exe", assetUrl: "https://example.test/update.exe" },
     setUpdateInstallProgress: (next: any) => { progress = typeof next === "function" ? next(progress) : next; },
     window: { setTimeout: () => 1, clearTimeout: () => cleared++ },
     listen: async (_: string, handler: typeof listener) => { listener = handler; return () => removed++; },
@@ -258,8 +259,10 @@ test("updater displays real progress, unknown totals and writing stages, then re
 test("updater listener failure clears pending state and allows a retry", async () => {
   let progress: any = { active: false };
   const notices: string[] = [];
+  const pending = { current: false };
   const update = action("performUpdate", {
-    updateInstallProgress: progress, update: null,
+    updateInstallProgress: progress, updateInstallPending: pending,
+    update: { latestVersion: "v1.11.0", assetName: "update.exe", assetUrl: "https://example.test/update.exe" },
     setUpdateInstallProgress: (next: any) => { progress = next; },
     window: { setTimeout: () => 1, clearTimeout: () => {} },
     listen: async () => { throw Error("event bridge unavailable"); },
@@ -268,7 +271,10 @@ test("updater listener failure clears pending state and allows a retry", async (
   });
   await update();
   assert.equal(progress.active, false);
+  assert.equal(pending.current, false);
   assert.deepEqual(notices, ["Error: event bridge unavailable"]);
+  await update();
+  assert.equal(notices.length, 2, "the next attempt is not blocked by a failed listener");
 });
 
 for (const name of ["launch", "restart"]) {

@@ -137,19 +137,20 @@ fn validates_package_inside_one_top_level_directory() {
 }
 
 #[test]
-fn supports_dream_skin_1_5_18_without_accepting_future_clients() {
+fn supports_dream_skin_1_5_20_without_accepting_future_clients() {
     let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
-    for version in ["0.0.0", "1.5.12", "1.5.18"] {
+    for version in ["0.0.0", "1.5.12", "1.5.18", "1.5.19", "1.5.20"] {
         let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         validate_and_read_package(&bytes, "windows").unwrap();
     }
-    for version in ["1.5.19", "1.6.0", "2.0.0"] {
+    for version in ["1.5.21", "1.6.0", "2.0.0"] {
         let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         let error = validate_and_read_package(&bytes, "windows")
-            .unwrap_err()
+            .err()
+            .expect("future clients must be rejected")
             .to_string();
         assert!(error.contains(version), "{error}");
-        assert!(error.contains("当前支持 1.5.18"), "{error}");
+        assert!(error.contains("当前支持 1.5.20"), "{error}");
     }
 }
 

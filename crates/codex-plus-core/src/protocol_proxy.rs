@@ -3106,6 +3106,54 @@ pub fn ensure_web_search_tool_for_history(request_json: &mut Value) -> bool {
     true
 }
 
+/// 请求是否完全没有声明工具（含 Responses Lite 的 `additional_tools` 输入项）。
+/// 只在这类请求上自动补搜索声明，避免改变正常轮次能调用的工具集合。
+fn request_declares_no_tools(body: &Value) -> bool {
+    let tools_absent = match body.get("tools") {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(tools)) => tools.is_empty(),
+        _ => false,
+    };
+    tools_absent
+        && !body
+            .get("input")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item["type"] == "additional_tools"))
+}
+
+fn strip_reasoning_parameters(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        for key in ["reasoning", "reasoning_effort", "thinking", "enable_thinking", "reasoning_split", "thinking_budget"] {
+            object.remove(key);
+        }
+        if let Some(include) = object.get_mut("include").and_then(Value::as_array_mut) {
+            include.retain(|entry| entry.as_str() != Some("reasoning.encrypted_content"));
+        }
+    }
+}
+
+/// 用户明确选择严格上游契约时才投影请求；不修改 rollout，也不验证/伪造账号密文。
+fn project_strict_reasoning_history(body: &mut Value) -> anyhow::Result<()> {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else { return Ok(()); };
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("reasoning")
+            || !item.get("content").and_then(Value::as_array).is_some_and(|parts| !parts.is_empty())
+            || !item.get("encrypted_content").is_some_and(|value| !value.is_null())
+        { continue; }
+        let raw = item.get("encrypted_content").and_then(Value::as_str).unwrap_or("");
+        let decoded = base64::engine::general_purpose::URL_SAFE.decode(raw)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw));
+        let recognized_envelope = decoded.is_ok_and(|bytes| bytes.len() >= 73
+            && bytes[0] == 0x80 && (bytes.len() - 57) % 16 == 0);
+        if !recognized_envelope {
+            anyhow::bail!("incompatible_reasoning_history: 推理同时包含明文与无法识别的加密项；请求未发出，本地历史保持原样。请使用原供应商继续，或在新会话中切换模型。");
+        }
+        // 仅检查信封格式；真正的认证/解密仍由选定上游完成，失败不重放或降级。
+        item["content"] = json!([]);
+    }
+    Ok(())
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -3135,6 +3183,14 @@ async fn upstream_request_parts(
     {
         request_json["model"] = json!(model);
     }
+    let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
+    let compatibility_enabled = relay.request_compatibility_enabled();
+    let reasoning_mode = if compatibility_enabled { relay.model_reasoning_parameters(model) } else { "auto" }.to_string();
+    let requested_effort = request_json.pointer("/reasoning/effort").cloned();
+    if reasoning_mode == "omit" { strip_reasoning_parameters(&mut request_json); }
+    if relay.protocol == RelayProtocol::Responses && relay.strict_responses_reasoning && compatibility_enabled {
+        project_strict_reasoning_history(&mut request_json)?;
+    }
     let mut body = match relay.protocol {
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
@@ -3149,14 +3205,33 @@ async fn upstream_request_parts(
             )?
         }
     };
+    if reasoning_mode == "omit" {
+        strip_reasoning_parameters(&mut body);
+    } else if reasoning_mode == "passthrough" && relay.protocol == RelayProtocol::ChatCompletions {
+        strip_reasoning_parameters(&mut body);
+        if let Some(effort) = requested_effort { body["reasoning_effort"] = effort; }
+    }
     if relay.protocol == RelayProtocol::Responses {
-        if relay.web_search_history_compat_enabled()
-            && !is_responses_compact_proxy_path(request_path)
-            && ensure_web_search_tool_for_history(&mut body)
+        let legacy_compact_path = is_responses_compact_proxy_path(request_path);
+        // 官方登录上游（chatgpt.com 后端）自 2026-10 起要求：请求回放
+        // `web_search_call` 历史时必须声明 web_search 工具，否则流式返回
+        // `response protection is unavailable`。Codex 对自定义 provider 走本地压缩
+        // （`tools` 为空），所以官方成员的每个压缩请求都会被拒。
+        // 这里只对「完全没有声明工具」的官方登录请求自动补齐：补完 tool_choice 会被
+        // 置为 none（模型不能真正调用搜索），带工具的普通轮次保持原样。
+        let official_auto_repair = official_base.is_some()
+            && !legacy_compact_path
+            && request_declares_no_tools(&body);
+        let opt_in_repair = relay.web_search_history_compat_enabled() && !legacy_compact_path;
+        if (opt_in_repair || official_auto_repair) && ensure_web_search_tool_for_history(&mut body)
         {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.web_search_history_compat",
-                json!({"action": "declare_web_search", "inputContainsWebSearchCall": true}),
+                json!({
+                    "action": "declare_web_search",
+                    "source": if official_auto_repair { "official_login" } else { "provider_opt_in" },
+                    "inputContainsWebSearchCall": true
+                }),
             );
         }
         normalize_responses_item_ids(&mut body);

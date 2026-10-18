@@ -154,7 +154,11 @@ impl BackupStore {
             &serde_json::to_vec_pretty(&payload)?,
         )?;
         pending.committed = true;
-        File::open(self.path_for(&token))?.sync_all()?;
+        // Windows 刷盘需要可写句柄；只打开已有文件，不创建或截断备份。
+        OpenOptions::new()
+            .write(true)
+            .open(self.path_for(&token))?
+            .sync_all()?;
         Ok((token, entries))
     }
 
@@ -428,7 +432,7 @@ mod tests {
         let path = temp.path().join("rollout");
         fs::write(&path, b"before").unwrap();
         let store = BackupStore::new(temp.path().join("backups"));
-        let (_, entries) = store
+        let (token, entries) = store
             .write_backup_with_files(
                 "fixture",
                 Path::new("fake.db"),
@@ -439,8 +443,42 @@ mod tests {
                 }],
             )
             .unwrap();
+        assert_eq!(
+            store.read_backup(&token).unwrap()["tables"]["__files"],
+            json!(entries)
+        );
         fs::write(&path, b"concurrent append").unwrap();
         assert!(store.source_file_unchanged(&entries[0]).is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn read_only_source_is_backed_up_without_changing_its_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("rollout");
+        fs::write(&source, b"read-only source").unwrap();
+        let original_permissions = fs::metadata(&source).unwrap().permissions();
+        let mut permissions = original_permissions.clone();
+        permissions.set_readonly(true);
+        fs::set_permissions(&source, permissions).unwrap();
+        let store = BackupStore::new(temp.path().join("backups"));
+        let result = store.write_backup_with_files(
+            "fixture",
+            Path::new("fake.db"),
+            json!({}),
+            &[BackupFileSource {
+                path: source.clone(),
+                original_path: source.to_string_lossy().into(),
+            }],
+        );
+        let still_read_only = fs::metadata(&source).unwrap().permissions().readonly();
+        fs::set_permissions(&source, original_permissions).unwrap();
+        let (token, entries) = result.unwrap();
+        assert!(still_read_only);
+        assert_eq!(fs::read(&source).unwrap(), b"read-only source");
+        assert_eq!(
+            fs::read(store.blob_path(&token, &entries[0]).unwrap()).unwrap(),
+            b"read-only source"
+        );
     }
     #[test]
     fn failed_manifest_does_not_leave_blob_data_or_delete_source() {

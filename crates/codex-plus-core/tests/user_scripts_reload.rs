@@ -119,7 +119,7 @@ const fresh = { location: window.location, electronBridge: {},
     if (!keyListeners.includes(listener)) keyListeners.push(listener);
   },
   __codexSessionDeleteBridge(path) {
-    assert.equal(path, '/user-scripts/load'); assert.equal(keyListeners.length, 1);
+    assert.equal(path, '/user-scripts/load'); assert.equal(keyListeners.length, 0);
     requests++; return Promise.resolve({});
   } };
 fresh.self = fresh.top = fresh;
@@ -127,14 +127,7 @@ const startup = vm.createContext({window: fresh, document: {readyState: 'complet
 vm.runInContext(bundles.bootstrap, startup);
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
-assert.equal(keyListeners.length, 1);
-let fastKeys = 0;
-fresh.__codexPlusFastKeydown = () => { fastKeys++; };
-keyListeners[0]({});
-assert.equal(fastKeys, 1);
-fresh.__codexPlusFastKeydown = () => { fastKeys += 2; };
-keyListeners[0]({});
-assert.equal(fastKeys, 3); // 保留注册顺序，同时使用重载后的核心处理函数。
+assert.equal(keyListeners.length, 0); // 原生 Fast 接管，bootstrap 不再注册旧按键处理器。
 fresh.__codexPlusUserScriptsBootstrap = false;
 fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);

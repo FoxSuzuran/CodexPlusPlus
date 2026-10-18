@@ -938,6 +938,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     removeLegacyCodexServiceTierBadges();
+    refreshCodexNativeFastShortcuts();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }

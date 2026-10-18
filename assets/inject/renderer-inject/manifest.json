@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2597
+      "lines": 2621
     },
     {
       "name": "20-menu.js",
@@ -88,7 +88,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 911
+      "lines": 1024
     },
     {
       "name": "91-extension-api.js",
@@ -113,7 +113,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 962
+      "lines": 963
     },
     {
       "name": "96-whale-compat.js",
@@ -128,7 +128,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 193
+      "lines": 194
     },
     {
       "name": "98-avatar-overlay-layout.js",

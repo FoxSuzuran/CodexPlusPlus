@@ -6,6 +6,30 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      [data-codex-native-fast-shortcut] {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-height: 28px;
+        padding: 3px 8px;
+        border: 1px solid var(--color-token-border-light, currentColor);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-token-text-secondary, inherit);
+        font: inherit;
+        font-size: 12px;
+        line-height: 20px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      [data-codex-native-fast-shortcut]:hover,
+      [data-codex-native-fast-shortcut]:focus-visible {
+        background: var(--color-token-bg-tertiary, rgba(127,127,127,.12));
+      }
+      [data-codex-native-fast-shortcut]:disabled {
+        cursor: default;
+        opacity: .5;
+      }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);

@@ -34,6 +34,7 @@
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
+      "[data-codex-intelligence-trigger]",
       "[data-ds-part='composer-toolbar']",
       "[data-composer-footer-responsive]",
       selectors.appHeader,

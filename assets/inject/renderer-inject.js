@@ -1917,6 +1917,30 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      [data-codex-native-fast-shortcut] {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-height: 28px;
+        padding: 3px 8px;
+        border: 1px solid var(--color-token-border-light, currentColor);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-token-text-secondary, inherit);
+        font: inherit;
+        font-size: 12px;
+        line-height: 20px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      [data-codex-native-fast-shortcut]:hover,
+      [data-codex-native-fast-shortcut]:focus-visible {
+        background: var(--color-token-bg-tertiary, rgba(127,127,127,.12));
+      }
+      [data-codex-native-fast-shortcut]:disabled {
+        cursor: default;
+        opacity: .5;
+      }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);
@@ -14902,6 +14926,119 @@
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 
+  function codexNativeFastMenuProps(trigger) {
+    const key = Object.keys(trigger).find((name) => name.startsWith("__reactFiber$"));
+    const ancestors = new Set();
+    let fiber = trigger[key];
+    for (let depth = 0; fiber && depth < 512; depth += 1, fiber = fiber.return) {
+      ancestors.add(fiber);
+      if (fiber.alternate) ancestors.add(fiber.alternate);
+      if (fiber.tag === 3) break;
+    }
+    // DOM 的 fiber 引用可能落在旧分支；只读取 root.current 上已提交的菜单。
+    let current = fiber?.stateNode?.current, props = null, budget = 1024;
+    while (current && ancestors.has(current) && budget-- > 0) {
+      const candidate = current.memoizedProps;
+      if (Array.isArray(candidate?.serviceTierOptions)
+          && Object.hasOwn(candidate, "selectedServiceTier")) props = candidate;
+      if (current.stateNode === trigger) return props;
+      let child = current.child;
+      while (child && !ancestors.has(child) && budget-- > 0) child = child.sibling;
+      current = child;
+    }
+    return null;
+  }
+
+  function codexNativeFastShortcutState(trigger) {
+    if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger]")
+        || !trigger.closest("[data-codex-composer-root], .composer-footer, .composer-surface-chrome")
+        || !trigger.getClientRects().length) return null;
+    // shortcut: 依赖原生菜单 props；上游变更接口时隐藏入口，再更新适配。
+    const props = codexNativeFastMenuProps(trigger);
+    if (!props || typeof props.onSelectServiceTier !== "function") return null;
+    const options = props.serviceTierOptions.filter((option) => option && option.disabled !== true
+      && (option.value == null || option.iconKind === "fast" || option.iconKind === "ultrafast"));
+    const index = options.findIndex((option) => option.value === props.selectedServiceTier);
+    if (options.length < 2 || index < 0) return null;
+    return {
+      props, selected: options[index], next: options[(index + 1) % options.length],
+      disabled: trigger.disabled || trigger.getAttribute("aria-busy") === "true"
+        || props.disabled === true || props.serviceTierOptionsLoading === true,
+    };
+  }
+
+  function activateCodexNativeFastShortcut(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false) return;
+    const badge = event.currentTarget;
+    const state = codexNativeFastShortcutState(badge.previousElementSibling);
+    if (!state || state.disabled) return;
+    try {
+      // 沿用原生菜单回调，由原生处理权限、乐观更新、持久化和失败回退。
+      Promise.resolve(state.props.onSelectServiceTier(state.next.value)).catch(() => {
+        showToast("速度切换失败，请在原生模型菜单中重试");
+      }).finally(scheduleScan);
+    } catch {
+      showToast("速度切换失败，请在原生模型菜单中重试");
+    }
+  }
+
+  function refreshCodexNativeFastShortcuts() {
+    const selector = "[data-codex-native-fast-shortcut]";
+    const retained = new Set();
+    if (codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) {
+      document.querySelectorAll("[data-codex-intelligence-trigger]").forEach((trigger) => {
+        const state = codexNativeFastShortcutState(trigger);
+        if (!state) return;
+        let badge = trigger.nextElementSibling;
+        if (!badge?.matches(selector)) {
+          badge = document.createElement("button");
+          badge.type = "button";
+          badge.className = codexServiceTierBadgeClass;
+          badge.setAttribute("data-codex-native-fast-shortcut", "");
+          badge.setAttribute("data-codex-plus-ext", "native-fast-shortcut");
+          badge.addEventListener("pointerdown", (event) => event.preventDefault());
+          badge.addEventListener("click", activateCodexNativeFastShortcut);
+          badge.addEventListener("focus", refreshCodexNativeFastShortcuts);
+          trigger.after(badge);
+        }
+        const label = state.selected.iconKind === "ultrafast" ? "Ultrafast"
+          : state.selected.iconKind === "fast" ? "Fast" : "Standard";
+        const nextLabel = state.next.iconKind === "ultrafast" ? "Ultrafast"
+          : state.next.iconKind === "fast" ? "Fast" : "Standard";
+        const text = `⚡ ${label}`;
+        const title = `当前速度：${label}；点击切换至 ${nextLabel}`;
+        if (badge.textContent !== text) badge.textContent = text;
+        if (badge.title !== title) {
+          badge.title = title;
+          badge.setAttribute("aria-label", title);
+        }
+        if (badge.disabled !== !!state.disabled) badge.disabled = !!state.disabled;
+        retained.add(badge);
+      });
+    }
+    document.querySelectorAll(selector).forEach((badge) => {
+      if (!retained.has(badge)) badge.remove();
+    });
+  }
+
+  window.__codexPlusNativeFastShortcutCleanup?.();
+  const onCodexNativeFastMenuAction = (event) => {
+    if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
+    if (event.target?.closest?.('[role="menuitem"], [role="menuitemradio"], [role="option"]')
+        && document.querySelector("[data-codex-native-fast-shortcut]")) scheduleScan();
+  };
+  for (const type of ["pointerup", "click", "keydown"]) {
+    document.addEventListener(type, onCodexNativeFastMenuAction, true);
+  }
+  window.__codexPlusNativeFastShortcutCleanup = () => {
+    for (const type of ["pointerup", "click", "keydown"]) {
+      document.removeEventListener(type, onCodexNativeFastMenuAction, true);
+    }
+    document.querySelectorAll("[data-codex-native-fast-shortcut]").forEach((badge) => badge.remove());
+  };
+
   function conversationViewRememberOriginals(el) {
     if (!el) return;
     conversationViewState.elements.add(el);
@@ -17676,6 +17813,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     removeLegacyCodexServiceTierBadges();
+    refreshCodexNativeFastShortcuts();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
   }
@@ -18331,6 +18469,7 @@
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
+      "[data-codex-intelligence-trigger]",
       "[data-ds-part='composer-toolbar']",
       "[data-composer-footer-responsive]",
       selectors.appHeader,

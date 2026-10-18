@@ -245,3 +245,5 @@ Bennett 修复文件：`D:\Programming\Projects\CodexPlusPlus\target\temp\math-f
 最初的 Rust 过滤命令没有限定 `--lib`，额外链接了无关集成测试，其中三个出现 MSVC `LNK1318: PDB LIMIT (12)`。随后明确限定目标，相关资源及 CDP 回归全部通过。排查时 D 盘仅剩约 158MiB，尚未运行本节 `cargo xrelease`，未覆盖上一份已验证发布 EXE。没有清理、移动缓存或修改发布配置。
 
 空间核对（2026-10-17）：`D:\Programming\Projects\CodexPlusPlus\target\debug\incremental` 为 5.39GiB 的 Debug 增量缓存；`target\debug\deps` 为 14.23GiB 的 Debug 依赖 / 测试产物；`target\release` 为 5.26GiB 的固定发布构建缓存，保留。依照本地 AGENTS.md，目录清理须由用户手动执行或明确授权。待腾出空间后，继续固定发布构建、验证、合入 main 并推送个人 fork 的 origin。
+
+2026-10-18 续：该首页修复已随 1.10 整合完成固定 Windows 构建，源码 `26c6b1a1`，新 EXE 已通过嵌入及哈希校验并覆盖 `dist/windows/latest`。首页 24 场景再次通过；原目录及固定构建参数保持。最终整合、测试和交付记录见 `docs/reports/2026-10-18-v1.10-integration.md`，本段不再处于空间阻塞状态。

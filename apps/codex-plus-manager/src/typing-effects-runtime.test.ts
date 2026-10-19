@@ -15,6 +15,7 @@ function fixture(initialMode = "rainbow") {
   const created: FakeElement[] = [];
   const drawing: string[] = [];
   const settings = { typingEffect: initialMode };
+  const measurements = { geometry: 0 };
   let now = 100, frameId = 0, rootZoom = 1;
   const add = (map: Map<string, Set<Listener>>, name: string, handler: Listener) => {
     if (!map.has(name)) map.set(name, new Set());
@@ -77,6 +78,7 @@ function fixture(initialMode = "rainbow") {
       return null;
     }
     getBoundingClientRect() {
+      measurements.geometry++;
       if (this.tagName === "CANVAS") return { left: 0, top: 0, width: 1024, height: 768, right: 1024, bottom: 768 };
       if (this.style.left === "-100000px") {
         const width = parseFloat(this.style.width);
@@ -146,7 +148,10 @@ function fixture(initialMode = "rainbow") {
       ...node.style,
     }),
     codexPlusSettings: () => settings,
-    visibleElement: (node: FakeElement) => node.rect.width > 0 && node.rect.height > 0,
+    visibleElement: (node: FakeElement) => {
+      measurements.geometry++;
+      return node.rect.width > 0 && node.rect.height > 0;
+    },
     isExtensionUiNode: (node: FakeElement) => node.extension || !!node.closest("[data-codex-plus-ext]"),
     registerCodexPlusExtensionSelector: (selector: string) => { assert.equal(selector, '[data-codex-plus-ext="builtin-typing-effects"]'); },
     performance: { now: () => now },
@@ -177,7 +182,7 @@ function fixture(initialMode = "rainbow") {
   api.install();
   return {
     api, load, window, document, editor, composer, body, created, drawing, frames, documentListeners, windowListeners, mediaListeners,
-    FakeElement, dispatch, insert, frame, settings,
+    FakeElement, dispatch, insert, frame, settings, measurements,
     advance: (milliseconds: number) => { now += milliseconds; },
     flush: () => { while (microtasks.length) microtasks.shift()!(); },
     reduced: (value: boolean) => { media.matches = value; for (const listener of mediaListeners) listener({}); },
@@ -292,6 +297,39 @@ test("all effects originate at the caret, preserve editing state, and only anima
     assert.equal(f.api.state.particles.length, 0);
     assert.equal(f.api.state.canvas, null);
     assert.equal(f.frames.size, 0);
+  }
+});
+
+test("typing effects read geometry only for a burst, never for disabled input or animation frames", () => {
+  for (const mode of ["off", "rainbow", "fireworks", "stars"]) {
+    const f = fixture(mode);
+    f.insert("a");
+    if (mode === "off") {
+      assert.equal(f.measurements.geometry, 0);
+      assert.equal(f.api.state.particles.length, 0);
+    } else {
+      const reads = f.measurements.geometry;
+      assert.ok(reads > 0);
+      for (let i = 0; i < 20; i++) f.frame();
+      assert.equal(f.measurements.geometry, reads, mode);
+      f.insert("b");
+      assert.ok(f.measurements.geometry > reads, "a new burst reads the current caret");
+    }
+  }
+  const hidden = fixture();
+  hidden.editor.rect.width = 0;
+  hidden.insert("a");
+  assert.equal(hidden.api.state.canvas, null, "an editor without geometry cannot start a burst");
+  for (const reason of ["disabled", "inert", "detached", "focus"]) {
+    const f = fixture(); f.insert("a");
+    if (reason === "disabled") f.editor.disabled = true;
+    if (reason === "inert") f.composer.attrs.inert = "";
+    if (reason === "detached") f.editor.remove();
+    if (reason === "focus") f.document.activeElement = f.body;
+    const reads = f.measurements.geometry;
+    f.frame();
+    assert.equal(f.api.state.canvas, null, reason);
+    assert.equal(f.measurements.geometry, reads, reason);
   }
 });
 

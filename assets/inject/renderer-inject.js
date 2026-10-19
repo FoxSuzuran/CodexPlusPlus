@@ -16525,7 +16525,7 @@
   function codexPlusTypingEffectEditor(target) {
     const editor = target?.closest?.('.ProseMirror[contenteditable="true"], textarea, [role="textbox"][contenteditable="true"]');
     if (!editor?.isConnected || editor.matches(':disabled, [readonly], [contenteditable="false"]')
-        || isExtensionUiNode(editor) || editor.closest('[inert], [aria-hidden="true"]') || !visibleElement(editor)) return null;
+        || isExtensionUiNode(editor) || editor.closest('[inert], [aria-hidden="true"]')) return null;
     // 新版有明确 composer 标记；旧版必须与 composer-footer 同属一个局部容器。
     let composer = editor.closest('[data-codex-composer-root], [data-composer-surface-variant]');
     if (!composer) {
@@ -16586,6 +16586,7 @@
 
   function codexPlusTypingEffectCaret(editor) {
     const box = editor.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0)) return null;
     let point;
     if (editor instanceof HTMLTextAreaElement) point = codexPlusTypingEffectTextareaCaret(editor);
     else {
@@ -16770,6 +16771,8 @@
 
   function codexPlusTypingEffectInput(event) {
     if (event.isTrusted !== true) return;
+    if (codexPlusTypingEffectMode() === "off" || codexPlusTypingEffects.disposed
+        || codexPlusTypingEffects.media?.matches || document.hidden) return;
     const backwardDeletion = ["deleteContentBackward", "deleteWordBackward", "deleteSoftLineBackward", "deleteHardLineBackward"].includes(event.inputType);
     if (!backwardDeletion && !["insertText", "insertLineBreak", "insertParagraph", "insertCompositionText", "insertFromComposition"].includes(event.inputType)) return;
     const editor = codexPlusTypingEffectEditor(event.target);

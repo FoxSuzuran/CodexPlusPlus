@@ -114,3 +114,53 @@ Rust 首次并行测试编译曾触及系统分页内存上限，使用 `cargo t
 新 EXE 为 72392192 字节，SHA-256：`fcb25e4c3367def5729da3b3fe9c5ae965dccc793368b4d3490d3915302b5144`。已核对 x64 PE、三份完整注入源码、生产 HTML/JS/CSS 的实际嵌入。
 
 通过构建及 x64 PE、注入源码与生产前端嵌入校验后，覆盖固定发布目录的 `codex-plus-plus.exe`、README、manifest 和校验信息。准确哈希和 Git 提交以 `dist/windows/latest/manifest.json` 为准。安装目录中的 EXE 仍由用户手动替换；本次没有发布 Release 或向 upstream 写入。
+
+## 后续：侧栏展开与输入卡顿
+
+用户替换了上一轮 EXE 后仍反馈卡顿。本轮检查安装文件的 SHA-256，确认已是上述 `fcb25e…5144`，排除了“旧 EXE 尚未替换”的解释。没有覆盖安装目录、修改用户持久设置或提交测试消息；遇到已有输入草稿即停止自动输入。
+
+### 确认的触发链与修复
+
+1. `managed_dream_skin_css` 在 Rust 中追加 `dream-skin-community-compat.css`，但构建时的谓词清单只读取基础皮肤和 Windows 兼容 CSS，遗漏了社区兼容规则中的 `:has(:is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]))`。真实输入的 invalidation trace 记录该规则的 6104 条失效匹配，输入内容变化也会牵动整片祖先范围。现在生成清单时同时读取运行时追加的原生和社区兼容 CSS，沿用原缓存及清理流程，并补上 Composer 类名变化的失效条件。没有改 vendor 子模块。
+2. 侧栏调整触发原生根节点样式更新；皮肤的 `[style*="--ds-upload-panel-alpha:"]` 规则因此跟着失效。缓存前一问题后的两次侧栏点击中，其中两条规则各出现 6381 条失效匹配。现在基础皮肤使用既有 `data-dream-upload-alpha="true"` 标记，保留透明度变量、声明和选择器权重。真实页面六组规则的命中节点逐个核对一致。
+3. 星光等输入特效的每个动画帧都经编辑器定位调用 `visibleElement → getBoundingClientRect`。现在仅在产生新粒子、读取当前光标时测量尺寸，复用原有尺寸结果拒绝不可见编辑器；动画仍检查连接、焦点、禁用和 inert 状态。关闭特效时的原生 input 提前返回，不再读取几何。粒子、中文输入、退格、选区及输入内容行为保留。
+
+上游检索记录为 `target/temp/sidebar-input-upstream*.json`。已检查 CodexPlusPlus #2266、#2267、#2327、#2309、#2428、#2187 及 Dream Skin #35；没有找到覆盖上述两处遗漏的可直接吸纳修复。Dream Skin #35 是旧 macOS 视觉/观察器方案，未合并，不替代当前 Windows 的现场证据。
+
+### 三轮轻量对照
+
+同一真实会话、同一皮肤/外置脚本、相同文本和两次侧栏点击，交替采样三轮。只临时应用与候选等价的两处 CSS/标记变换，每轮结束恢复；未改用户配置。每轮标题相同，DOM 6685–6699 节点。该对照**不包含最终星光 JS 修复的增益，也不是新 EXE 安装后的整机复测**。CPU 和 invalidation tracing 均未用于这张验收表。
+
+| 指标，中位数 | 原规则 | 两处样式修复 |
+| --- | ---: | ---: |
+| 整组操作经过时间 | 5219 ms | 3984 ms |
+| 主线程 TaskDuration | 5013 ms | 3716 ms |
+| 样式重算 | 2443 ms | 1101 ms |
+| 布局计算 | 42.1 ms | 40.5 ms |
+| 长任务总时长 | 3571 ms | 1848 ms |
+| 每轮最长任务 | 626 ms | 562 ms |
+| 每轮最大键盘事件等待 | 79.3 ms | 49.6 ms |
+| 每轮最大键盘处理时间 | 203.4 ms | 65.2 ms |
+
+样式重算下降约 55%，长任务总时长下降约 48%，整组主线程占用下降约 26%；这些百分比只适用于上述操作窗口。原始结果：`target/temp/sidebar-input-final-comparison.json`，汇总：`target/temp/sidebar-input-summary.json`。原先缺皮肤的无效对照仍保持作废。
+
+### 未解决的侧栏峰值
+
+两处样式修复生效后，独立同步 CPU/trace 仍捕获两次超过 500 ms 的侧栏点击任务。Perfetto 本地读取 41.67 MB 时间线，`pid=1944, tid=6580`：
+
+| RunTask 时间戳 μs / Perfetto slice | 任务时长 | 样式重算 | 同步 CPU 栈 |
+| --- | ---: | ---: | --- |
+| `28639418540` / `67231` | 607.960 ms | 250.715 ms，4765 元素 | 原生 `wzc → Array.filter → kSc → getClientRects`；末端尺寸读取采样 264.500 ms |
+| `28643769899` / `158236` | 578.414 ms | 254.976 ms，4765 元素 | 同一原生路径；末端尺寸读取采样 268.155 ms |
+
+按运行时 blob 行列核对，`wzc` 从原生侧栏导航注册表筛选 `[data-sidebar-cycle-item]`，调用 `kSc` 检查可见性，再排序并更新选中项。原生 atom watch 和 DOM 观察回调会进入该函数。`codexPluginBuildFlavorFilterPatch` 出现在中间，是既有 `Array.filter` 包装器；大耗时发生在它调用的原生回调内，不能把整个耗时归给插件过滤补丁。
+
+这两次属于同步界面处理，没有证据指向网络等待。未取得可以保持键盘侧栏导航、焦点和注册表状态语义的原生替换，本轮未改该压缩组件，也没有通过延时拆分任务或关闭皮肤掩盖峰值。不能宣称侧栏已完全流畅。原始时间线/CPU、逐任务栈和 Perfetto 复核在 `target/temp/sidebar-input-candidate.*`、`sidebar-input-candidate-attribution.json`、`sidebar-input-perfetto.log`。
+
+### 后续验证与交付
+
+59 项 Node 相关测试、8 项 Rust assets 测试通过；真实 Edge 新夹具验证运行时追加规则缓存、类名变化后清除/恢复标记、无关根样式更新、清理和星光逐帧零几何读取。新夹具为 `node scripts/test-dream-skin-hotpaths.cjs`，复用已安装 Playwright/Edge，不新增依赖。小闪电布局 27 个场景/81 次档位检查、图片与侧栏 48 个浏览器测试通过。完整生成器校验及注入组装校验通过，没有重跑整个工作区。
+
+皮肤运行时修订更新为 `31-sidebar-input-hotpath`。构建和固定产物的准确耗时、哈希、提交及新增浏览器回归结果以 `dist/windows/latest/manifest.json` 为准。新 EXE 仍需退出应用后手动替换，临时 A/B 变换已恢复。
+
+本次完整 Vite 命令耗时 9.38 秒，`cargo xrelease` 377.58 秒，均成功；固定发布参数不变。前端整个目录的 14 文件内容与集合一致后恢复时间戳。新 EXE 72392192 字节，SHA-256 `7f206896141e10259fa003d59775d8f5943bfc2ef3bfe3f89d3da90109279f3f`；x64 PE、三份注入源码、Windows 完整皮肤 CSS、运行时修订和生产前端实际嵌入均已核对。

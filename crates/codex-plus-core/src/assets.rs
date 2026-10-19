@@ -144,7 +144,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "30-v110-native-fast";
+const DREAM_SKIN_RENDERER_REVISION: &str = "31-sidebar-input-hotpath";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT

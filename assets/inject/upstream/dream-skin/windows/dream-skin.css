@@ -1584,7 +1584,7 @@ html[data-dream-skin="active"]:is([data-dream-shell="light"][data-theme="dark"],
   :is([role="menu"], [data-ds-part="dialog"]) {
   background-color: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha, 1)) !important;
 }
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] {
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] {
   --ds-immersive-composer-solid: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
   --color-surface: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
   --color-surface-secondary: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
@@ -1593,31 +1593,31 @@ html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] {
   --color-surface-elevated-secondary: rgb(var(--ds-panel-2-rgb) / var(--ds-upload-panel-alt-alpha, var(--ds-upload-panel-alpha)));
   --color-token-dropdown-background: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
 }
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"]
+html[data-dream-skin="active"][data-dream-upload-alpha="true"]
   [class~="group/settings"] [class~="rounded-2xl"][class~="border"],
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] [data-ds-part="dialog"],
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] [role="menu"] {
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] [data-ds-part="dialog"],
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] [role="menu"] {
   background-color: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha)) !important;
 }
 
 /* Work and Codex place the same composer body at different depths. Paint the
    public root once; nested body/action-bar surfaces must not cover its alpha. */
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] [data-ds-part="composer"] {
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] [data-ds-part="composer"] {
   background: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha)) !important;
 }
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"]
+html[data-dream-skin="active"][data-dream-upload-alpha="true"]
   [data-ds-part="composer"] [class*="_ComposerLayoutBody_"],
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"]
+html[data-dream-skin="active"][data-dream-upload-alpha="true"]
   [data-ds-part="composer"] [data-ds-part="composer-toolbar"] {
   background: transparent !important;
 }
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] {
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] {
   --color-background-composer: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
   --color-background-composer-action-bar: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
   --color-background-panel: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
   --color-token-diff-surface: rgb(var(--ds-panel-2-rgb) / var(--ds-upload-panel-alt-alpha, var(--ds-upload-panel-alpha)));
 }
-html[data-dream-skin="active"][style*="--ds-upload-panel-alpha:"] {
+html[data-dream-skin="active"][data-dream-upload-alpha="true"] {
   --color-background-other-user-message: rgb(var(--ds-panel-rgb) / var(--ds-upload-panel-alpha));
 }
 

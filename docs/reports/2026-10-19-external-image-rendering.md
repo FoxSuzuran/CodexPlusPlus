@@ -8,6 +8,8 @@
 
 这足以解释该对话中多个有效 HTTPS 图片地址全部显示失败。另有两项独立问题：两个地址在本机 HEAD 探测中连接被重置；后一次回复虽然声称改成图片卡片，实际正文没有任何图片或卡片内容。
 
+继续研究 Codex++ 的现有能力后，找到应优先验证的路径：使用已有“官方登录 + API”接入方式，保留真实 ChatGPT 登录态，模型请求继续发给 API 供应商，让图片重新具备进入原生网址安全检查的条件。配置层的相关测试与原生鉴权到图片组件的隔离检查均通过，但尚未验证真实登录刷新、安全接口响应与图片加载，不能称为已修复。
+
 ## 原生源码与运行状态
 
 - 原生应用：`OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0`。
@@ -120,6 +122,71 @@ async function l$s(url) {
 
 ### 自动内嵌预览仍需解决的问题
 
-此次检索未找到官方支持 API Key 的网址安全接口，也没有找到现成的桌面许可能力可替代当前 ChatGPT 身份检查。要恢复自动内嵌预览，需要上游提供可用的安全检查能力，或在产品层设计明确且受支持的独立许可流程。仅凭网址返回 200、Content-Type 是图片或 HTTPS 协议，不能当作网址已获准预览。
+此次检索未找到官方支持 API Key 的网址安全接口。对于完全没有 ChatGPT 登录态的纯 API 场景，要恢复自动内嵌预览，仍需适用的安全检查能力或明确且受支持的独立许可流程。仅凭网址返回 200、Content-Type 是图片或 HTTPS 协议，不能当作网址已获准预览。
 
 这与“点击查看原图”是两个验收目标：前者恢复自动预览，后者改善预览不可用时的操作。此次完成上游核对与原生组件验证，没有将任一方案接入运行程序，没有改动 EXE。
+
+## 复用现有登录与模型路由修复
+
+同日继续检查本仓库的供应商切换、官方登录、模型代理与原生补丁。前述“没有纯 API 许可接口”不等于必须新造图片代理：有真实官方账号时，已有混合接入方式可以保留图片组件需要的身份，是目前改动最小的候选。
+
+### 优先路径：官方登录 + API
+
+管理器供应商编辑页已经提供“接入方式 → 官方登录 + API”，说明为保留官方账号、使用配置的 API 连接。相关实现：
+
+| 位置 | 现有行为 | 对本问题的意义 |
+| --- | --- | --- |
+| `apps/codex-plus-manager/src/App.tsx`，`relayEditorMode` 与接入方式选择器 | 已区分官方、混合、纯 API | 不需要新增图片开关或重复的接入模式 |
+| `crates/codex-plus-core/src/relay_config.rs`，`official_profile_auth_for_switch` | 从选定供应商快照或 live auth 取凭据，移除 auth 中的 `OPENAI_API_KEY`，保留官方 OAuth | 让客户端使用真实官方身份；不是改写 `authMethod` |
+| 同文件，`upsert_model_provider_config_with_session_provider` | API 凭据与模型供应商配置由现有配置生成流程维护 | 保留当前 API 供应商的模型接入 |
+| `crates/codex-plus-core/src/protocol_proxy.rs`，`upstream_request_builder`、`with_relay_auth` | 代理新建上游请求，按实际供应商注入 API 认证；官方模型成员使用另一条 OAuth 分支 | 模型路由与客户端官方身份可以分开，不应把官方凭据直接转发给普通 API 供应商 |
+| `crates/codex-plus-core/src/official_login.rs`，`resolve_official_credential_with` | 已有凭据过期判断、同账号刷新锁、刷新与持久化流程，用于官方登录成员 | 后续若确需独立的官方服务适配，可复用凭据管理；不能把它当作混合模式图片已经刷新成功的证据 |
+
+原生 `XIn` / `ZIn` 将 app-server 的 `account.type === "chatgpt"` 映射为 `authMethod: "chatgpt"`。这与图片组件的检查条件直接衔接；仅把配置中的会话身份写成 `openai`、改 `requires_openai_auth` 或启用插件按钮，均不能凭空产生真实官方凭据。
+
+上游 [#2173](https://github.com/BigPizzaV3/CodexPlusPlus/issues/2173) 也记录了类似的浏览器插件鉴权问题：有效 ChatGPT 登录态与 API 模型路由需要分别保留。本仓库的 `pure_api_auth_contents_with_live_login` 已修复会话身份为 OpenAI 时切换供应商抹掉 live OAuth 的问题。该修复只保留已有登录，不会从其他账号快照自动恢复凭据，也不是外链图片修复的实机证明。
+
+另有现成的“官方额度解锁”处理混合模式下官方额度提示影响 API 发送的问题：增强开启时已有能力自动生效；增强关闭后有独立开关。它只处理客户端发送状态，不改变真实用量、计费或网址许可，不应为图片功能额外改造。
+
+### 其他相似补丁的适用边界
+
+- `assets/inject/native-fast-unlock.js` 及 `bridge/native_fast.rs`：原生模块匹配、唯一性校验、匹配失败时不改写等机制可借鉴；Fast 状态解锁不能提供图片安全服务要求的身份与许可。
+- `renderer-inject/60-plugin-marketplace.js` 与 `62-plugin-market-adapter.js`：认证失败后使用已有公开或本地插件索引，并限制拦截范围；公开目录可回退，不代表图片安全检查可以合成成功结果。
+- 原生 `rod` / `HF`：可以改善失败提示与打开原地址，但与恢复内嵌预览分别验收，前者不能代替后者。
+
+### 本机条件与新增验证
+
+只读核对本机配置与凭据元数据，未输出凭据、账号标识或邮箱，未切换配置、刷新账号或重启程序：
+
+- 当前选定供应商仍是纯 API、Responses 协议；live auth 有 API Key，没有官方 access / refresh token。配置中的模型会话身份已是 OpenAI，但当前运行客户端仍报告 `apikey`，说明身份配置本身不够。
+- 管理器保存的快照中有两份包含官方 access / refresh token；按 JWT 的到期时间判断，两个 access token 均已过期。refresh token 是否仍有效、应选择哪个账号，本次未验证或代选。过期不能直接等同于无法刷新。
+
+执行现有配置测试：
+
+```powershell
+cargo test --locked --offline -p codex-plus-core --test relay_config official_mix -- --test-threads=1
+```
+
+结果为 **12 passed，0 failed**。测试在临时目录使用合成凭据，覆盖混合模式保留官方登录、移除 auth 中的 API Key、保留供应商 API 凭据，以及只修复受管理的 OpenAI 端点等行为；没有修改真实配置或请求真实服务。
+
+另从当前原生模块提取 `XIn` / `ZIn`，串联前述媒体组件隔离夹具执行 **7 项断言**：
+
+| 输入身份 / 条件 | 映射的鉴权 | 启用安全查询 | 输出 |
+| --- | --- | --- | --- |
+| API Key | apikey | 否 | 不可用占位 |
+| ChatGPT，安全结果 true | chatgpt | 是 | 图片组件 |
+| ChatGPT，安全结果 false | chatgpt | 是 | 不可用占位 |
+| ChatGPT，未取得肯定安全结果 | chatgpt | 是 | 不可用占位 |
+| ChatGPT，媒体受限 | chatgpt | 否 | 不可用占位 |
+| Copilot 覆盖身份 | copilot | 否 | 不可用占位 |
+| 无账号 | null | 否 | 不可用占位 |
+
+脚本位于 `target/temp/external-image-auth-contract-check.cjs`。七项全部通过，没有使用真实凭据或网络。这证明真实 ChatGPT 身份与肯定安全结果可以通过当前原生控制流，不证明任意账号或图片一定获准。
+
+### 后续实施与验收
+
+先用用户选定且有效的官方登录，通过管理器现有混合接入方式保留当前 API 模型配置，再重启客户端核对实际鉴权、图片安全接口以及图片 GET。同步确认模型请求仍发往指定供应商、Fast 和现有发送行为正常，不能只看界面登录标识就判定完成。
+
+如果真实混合登录后仍失败，再按安全接口的实际鉴权错误、拒绝结果和图片请求错误分别处理，复用上述配置或凭据管理的对应职责；没有证据前不加第二套代理与原生补丁。若坚持完全不登录官方账号，则本次找到的混合路径不适用。
+
+本次只补充研究记录，没有改程序、依赖或运行配置，因此不重建或替换 Windows EXE。

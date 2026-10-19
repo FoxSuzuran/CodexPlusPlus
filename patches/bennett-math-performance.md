@@ -24,3 +24,15 @@ Get-FileHash -LiteralPath $env:BENNETT_SCRIPT -Algorithm SHA256
 `C:\Users\29035\AppData\Roaming\Codex++\user_scripts\market-bennett-ui-improvements.js`
 
 安装文件若已被市场更新，先比较哈希，不盲目覆盖新版。回退使用上述基线文件，保留本地存储。该补丁修复重复读取和重试开销，不保证每个未来原生版本都暴露兼容的 KaTeX 模块；找不到时仍给出原有错误并按需重试。
+
+## 2026-10-19 设置搜索热点
+
+现场源码及 DOM 插桩确认设置搜索仍逐个测量全页 `div`。本次增加 `bennett-settings-search-performance.patch`，在文字条件命中后才测量尺寸；精确侧栏选择器、文字匹配及尺寸约束保留。它仍会查询全页和读取文字，尚未验证安装后的整体响应改善。
+
+合并 KaTeX 与设置搜索修复的当前候选：
+
+`D:\Programming\Projects\CodexPlusPlus\target\temp\settings-fixed-market-bennett-ui-improvements.js`
+
+SHA-256：`6b9512b99ae4bd1905b3db7d75c7e4474df094269beb4c69fb1dd77dd822ec85`
+
+在原基线副本上依次应用 `bennett-math-performance.patch`、`bennett-settings-search-performance.patch`，再运行原四组测试及 `scripts/test-bennett-settings-search.cjs`，共 22 项通过。没有替换 AppData 文件；安装和回退仍遵循上面的流程。完整证据见 `docs/reports/2026-10-19-hotpath-profiling.md`。

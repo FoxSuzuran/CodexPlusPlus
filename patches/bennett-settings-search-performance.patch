@@ -1,0 +1,21 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -6247,13 +6247,13 @@
+         (node) => {
+           if (!(node instanceof HTMLElement)) return false;
+-          const rect = node.getBoundingClientRect();
+-          if (rect.width < 180 || rect.width > 420 || rect.height < 240) return false;
+           const text = compact(node.textContent);
+-          return (
++          if (!(
+             text.includes("general") &&
+             text.includes("appearance") &&
+             (text.includes("configuration") || text.includes("account"))
+-          );
++          )) return false;
++          const rect = node.getBoundingClientRect();
++          return rect.width >= 180 && rect.width <= 420 && rect.height >= 240;
+         },
+       );
+       return candidates[0] instanceof HTMLElement ? candidates[0] : null;

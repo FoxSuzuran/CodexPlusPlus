@@ -30,6 +30,14 @@
         cursor: default;
         opacity: .5;
       }
+      span:has(> [data-codex-intelligence-trigger] + [data-codex-native-fast-shortcut]) {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        max-width: 100%;
+        vertical-align: middle;
+      }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);

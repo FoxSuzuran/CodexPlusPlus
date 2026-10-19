@@ -348,7 +348,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "36";
+  const codexDeleteStyleVersion = "37";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1940,6 +1940,14 @@
       [data-codex-native-fast-shortcut]:disabled {
         cursor: default;
         opacity: .5;
+      }
+      span:has(> [data-codex-intelligence-trigger] + [data-codex-native-fast-shortcut]) {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        max-width: 100%;
+        vertical-align: middle;
       }
       .${actionGroupClass} {
         position: absolute;

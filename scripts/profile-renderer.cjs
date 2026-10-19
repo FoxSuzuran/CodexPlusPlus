@@ -10,6 +10,8 @@ assert.ok(Number.isInteger(seconds) && seconds >= 3 && seconds <= 60, "Duration 
 const folder = path.resolve(__dirname, "../target/temp");
 fs.mkdirSync(folder, { recursive: true });
 const output = path.join(folder, `renderer-${mode}-${Date.now()}`);
+const markPrefix = path.basename(output);
+const sampled = mode !== "baseline";
 const pending = new Map();
 let socket, serial = 0, profiling = false, tracing = false;
 
@@ -44,7 +46,7 @@ async function main() {
     "A renderer recording is already active");
   try {
     await send("Performance.enable");
-    if (mode === "cpu") {
+    if (sampled) {
       await send("Profiler.enable");
       await send("Profiler.setSamplingInterval", { interval: 2000 });
       // Profiler startup can pause V8; keep it outside the measured observer window.
@@ -66,7 +68,15 @@ async function main() {
       }); tracing = true;
     }
     await evaluate(`(() => {
-      const p={started:performance.now(),tasks:[],events:[],frames:[]}, observers=[];
+      const p={started:performance.now(),timeOrigin:performance.timeOrigin,tasks:[],events:[],frames:[],
+        marks:[${JSON.stringify(`${markPrefix}:start`)},${JSON.stringify(`${markPrefix}:end`)}]}, observers=[];
+      p.surface=()=>{
+        const skin=window.__CODEX_DREAM_SKIN_STATE__||window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        return {skinActive:!!skin,skinTheme:skin?.themeId||null,skinVersion:skin?.version||null,
+          scripts:Object.values(window.__codexPlusUserScripts?.scripts||{}).map(({key,status})=>({key,status}))};
+      };
+      p.surfaceAtStart=p.surface();
+      performance.mark(p.marks[0]);
       function observe(type,receive,extra={}) {
         if(!PerformanceObserver.supportedEntryTypes.includes(type))return;
         const o=new PerformanceObserver(list=>list.getEntries().forEach(receive));
@@ -81,7 +91,10 @@ async function main() {
       function tick(now){if(now-last>50&&p.frames.length<1000)p.frames.push({at:now,gap:now-last});
         last=now;frame=requestAnimationFrame(tick)}
       frame=requestAnimationFrame(tick);
-      p.cleanup=()=>{observers.forEach(o=>o.disconnect());cancelAnimationFrame(frame)};
+      p.cleanup=()=>{
+        observers.forEach(o=>o.disconnect());cancelAnimationFrame(frame);
+        performance.mark(p.marks[1]);p.marks.forEach(name=>performance.clearMarks(name));
+      };
       window.__codexPlusProfileProbe=p;
     })()`);
     const before = await send("Performance.getMetrics");
@@ -90,7 +103,8 @@ async function main() {
     const after = await send("Performance.getMetrics");
     const probe = await evaluate(`(() => {
       const p=window.__codexPlusProfileProbe;p.cleanup();delete window.__codexPlusProfileProbe;
-      return {started:p.started,ended:performance.now(),tasks:p.tasks,events:p.events,frames:p.frames,
+      return {started:p.started,ended:performance.now(),timeOrigin:p.timeOrigin,marks:p.marks,
+        tasks:p.tasks,events:p.events,frames:p.frames,surfaceAtStart:p.surfaceAtStart,surfaceAtEnd:p.surface(),
         visible:document.visibilityState,nodes:document.getElementsByTagName("*").length};
     })()`);
     assert.ok(probe.ended > probe.started);
@@ -122,7 +136,7 @@ async function main() {
     await evaluate(`(()=>{window.__codexPlusProfileProbe?.cleanup();delete window.__codexPlusProfileProbe})()`).catch(() => {});
     if (profiling) await send("Profiler.stop").catch(() => {});
     if (tracing) await send("Tracing.end").catch(() => {});
-    if (mode === "cpu") await send("Profiler.disable").catch(() => {});
+    if (sampled) await send("Profiler.disable").catch(() => {});
     await send("Performance.disable").catch(() => {});
     assert.equal(await evaluate("Object.hasOwn(window,'__codexPlusProfileProbe')"), false);
     socket.close();

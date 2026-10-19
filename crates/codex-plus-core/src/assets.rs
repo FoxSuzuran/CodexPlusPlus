@@ -558,6 +558,12 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = dream_skin_runtime_theme_json(settings);
     let dream_skin_target_runtime = dream_skin_target_runtime_script(settings, false);
+    let dream_skin_target_runtime = if dream_skin_target_runtime.is_empty() {
+        dream_skin_target_runtime
+    } else {
+        // 新文档注入时根节点尚未创建，皮肤变量与运行时必须一起等待 DOM。
+        renderer_after_document_ready(&dream_skin_target_runtime)
+    };
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);

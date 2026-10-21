@@ -65,5 +65,71 @@ function functions(script) {
     const candidate = await run(source);
     assert.equal(candidate.streamScans, 0, "streamed descendants must not trigger full scans");
     console.log(JSON.stringify({ candidate, structuralCases: 5 }));
+
+    await page.setContent(`<div id="host"><div data-codex-composer-root data-composer-placement="thread">
+      <div data-above-composer-conversation-id="local:thread-fixture"></div>
+      <div data-composer-surface-variant><textarea></textarea></div></div></div>`);
+    const proxyStatus = await page.evaluate(async script => {
+      const intervals = [];
+      let requests = [], rectReads = 0;
+      const originalRect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function () { rectReads++; return originalRect.call(this); };
+      const scope = {
+        setInterval: callback => (intervals.push(callback), intervals.length),
+        clearInterval() {}, setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window),
+      };
+      const runtime = new Function("window", "registerCodexPlusExtensionSelector", "postJson",
+        "recordCodexPlusBridgeFailure", script + "\nreturn window.__codexPlusProxyRequestStatusRuntime;")(
+        scope, () => {}, async () => ({ status: "ok", requests }), () => {},
+      );
+      const observer = new MutationObserver(() => {});
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+      const tick = intervals[1];
+      try {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        await runtime.refresh();
+        observer.takeRecords();
+        const idleReads = rectReads;
+        for (let i = 0; i < 5; i++) tick();
+        const idleWrites = observer.takeRecords().length;
+        if (rectReads !== idleReads || idleWrites) throw new Error("idle proxy status scans layout or writes DOM");
+
+        requests = [{ threadId: "thread-fixture", phase: "waiting", model: "fixture" }];
+        await runtime.refresh();
+        let node = document.getElementById("codex-plus-proxy-request-status");
+        if (!node || node.dataset.hidden === "true") throw new Error("active request is missing");
+        observer.takeRecords();
+        for (let i = 0; i < 5; i++) tick();
+        if (observer.takeRecords().length) throw new Error("unchanged proxy status rewrites DOM");
+
+        requests[0] = { ...requests[0], phase: "retrying", autoRetries: 2 };
+        await runtime.refresh();
+        if (!node.querySelector(".codex-plus-proxy-phase").textContent.includes("2")) {
+          throw new Error("retry count did not update");
+        }
+        node.remove();
+        tick();
+        node = document.getElementById("codex-plus-proxy-request-status");
+        if (!node || !node.querySelector(".codex-plus-proxy-phase")) throw new Error("status did not remount");
+        document.querySelector("[data-above-composer-conversation-id]")
+          .setAttribute("data-above-composer-conversation-id", "local:other-thread");
+        tick();
+        if (node.dataset.hidden !== "true") throw new Error("request leaked into another conversation");
+        observer.takeRecords();
+        for (let i = 0; i < 5; i++) tick();
+        if (observer.takeRecords().length) throw new Error("hidden proxy status repeats attribute writes");
+        runtime.dispose();
+        if (document.getElementById("codex-plus-proxy-request-status")) throw new Error("status survived disposal");
+        if (/\bnode\s*:/.test(script.match(/const codexPlusProxyStatusState = \{[^]*?\n  \};/)[0])) {
+          throw new Error("persistent state retains a DOM reference");
+        }
+        return { idleLayoutReads: 0, idleWrites, stableWrites: 0, remount: true, threadIsolation: true, disposal: true };
+      } finally {
+        observer.disconnect();
+        runtime.dispose();
+        Element.prototype.getBoundingClientRect = originalRect;
+      }
+    }, fs.readFileSync(path.join(root, "assets/inject/renderer-inject/84-proxy-request-status.js"), "utf8"));
+    console.log(JSON.stringify({ proxyStatus }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

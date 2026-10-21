@@ -29,6 +29,7 @@ for (const tab of ["home", "extensions", "userScripts", "sponsor"]) {
       codexPlusExtensionsQuery: "", codexPlusExtensionsSelected: null, codexPlusExtensionsFilter: "market",
       codexPlusPageClass: "codex-plus-page-overlay", codexPlusVersion: "test", codexPlusBuild: "test",
       codexPlusExtensionsTab: "extensions", codexPlusIsWindowsPlatform: true,
+      codexPlusSupportsPetRealMouseLook: true,
       codexPlusDiscoveryIcons: { search: "", refresh: "" },
       capacityAutoRetryIntervalCeilingSeconds: () => 60, capacityAutoRetryIntervalSeconds: () => 5,
       capacityAutoRetryMaxAttemptsCeiling: () => 10, capacityAutoRetryMaxAttempts: () => 3,

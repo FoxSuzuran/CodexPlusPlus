@@ -91,7 +91,12 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
     let models = relay_profile_model_ids(profile);
     let model = profile.model.trim().to_string();
     let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
-    let default_model = models.first().cloned().unwrap_or_default();
+    let configured_model = crate::relay_config::relay_profile_model(profile);
+    let default_model = if models.iter().any(|item| item == &configured_model) {
+        configured_model
+    } else {
+        models.first().cloned().unwrap_or_default()
+    };
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
     } else {
@@ -855,7 +860,7 @@ pub async fn fetch_relay_profile_model_ids(
         anyhow::bail!("Base URL 不能为空");
     }
     let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client(&profile.user_agent)?;
+    let client = crate::http_client::proxied_client_for_profile(&profile.user_agent, &profile.id)?;
     let (models, status) = fetch_models_from_source(&client, &source).await;
     if models.is_empty() {
         let message = status
@@ -877,7 +882,7 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
-    let client = crate::http_client::proxied_client(&profile.user_agent)?;
+    let client = crate::http_client::proxied_client_for_profile(&profile.user_agent, &profile.id)?;
     let mut request = client
         .get(&endpoint)
         .query(&[("client_version", OFFICIAL_MODELS_CLIENT_VERSION)])
@@ -1233,6 +1238,20 @@ mod model_fetch_tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn relay_profile_model_catalog_keeps_configured_default_after_model_list_sorting() {
+        let profile = RelayProfile {
+            model: "qwen3-coder".into(),
+            model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".into(),
+            config_contents: "model = \"qwen3-coder\"\n".into(),
+            ..RelayProfile::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+
+        assert_eq!(catalog["default_model"], "qwen3-coder");
     }
 
     #[test]

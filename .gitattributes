@@ -13,6 +13,10 @@
 # on the Windows runner only (macOS/Linux check out LF either way).
 *.rs text eol=lf
 
+# Vite preserves source HTML newlines when generating the checked-in web preview.
+apps/codex-plus-manager/web-preview/index.html text eol=lf
+site/manager-preview/index.html text eol=lf
+
 # First-party scripts are embedded with include_str! and inspected by source-contract tests.
 assets/inject/*.js text eol=lf
 assets/inject/**/*.js text eol=lf

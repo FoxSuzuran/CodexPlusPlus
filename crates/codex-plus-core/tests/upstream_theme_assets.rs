@@ -28,22 +28,23 @@ fn assert_sha256(relative_path: &str, expected: &str) {
 
 #[test]
 fn bundled_target_renderers_and_styles_match_verified_hashes() {
+    // Dream Skin hashes include the verified personal hotpath patches in source.json.
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "88F913FF498BA85B633EE2F30E5151FDD093D11F98634F37E2EB5C0809586D98",
+            "1C3BE0BC3DD1D6DB8901EA812A40C5C30A95A8766772C8054CAF5CC3BA2F56CB",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",
-            "679558F3593E57CBDD6F29E2BB1F9086F87693A49C6826B28E79C82A4BF45D03",
+            "4812B8713BC9F52FE1CC90C4C78A5264A157196F8429D18FEB6F0A980569A170",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/renderer-inject.js",
-            "88F913FF498BA85B633EE2F30E5151FDD093D11F98634F37E2EB5C0809586D98",
+            "1C3BE0BC3DD1D6DB8901EA812A40C5C30A95A8766772C8054CAF5CC3BA2F56CB",
         ),
         (
             "assets/inject/upstream/dream-skin/macos/dream-skin.css",
-            "04C15844DDCA795157E2DCF81F184D04798DC32895BC5EB3697660522BF7343E",
+            "14F866B81D87D7986E6C843609B34A5A2C643F364BCA47D728C7CAE5B42DFCE1",
         ),
         (
             "assets/inject/upstream/cidala-tiger/windows/renderer-inject.js",

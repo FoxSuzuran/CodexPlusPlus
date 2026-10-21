@@ -83,7 +83,7 @@ async function main() {
       const selectors={conversationViewContentAnchor:"[data-thread-user-message-navigation-content]",
         conversationViewScrollContainer:".thread-scroll-container",conversationViewFooter:"[data-thread-scroll-footer]"};
       const sendCodexPlusDiagnostic=()=>{};
-      ${block(renderer, "  // 旧版（26.9xx 之前）内容容器类名清单", "  function codexServiceTierBadgeVisibleElement(")}
+      ${block(renderer, "  // 旧版（26.9xx 之前）内容容器类名清单", "  function codexNativeFastMenuProps(")}
       ${block(renderer, "  function conversationViewRememberOriginals(", "  window.__codexPlusConversationViewCleanup")}
       ${block(renderer, "  function ensureConversationViewRuntime(", "  function refreshConversationView(")}
       ensureConversationViewRuntime();

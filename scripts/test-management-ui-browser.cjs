@@ -57,6 +57,8 @@ async function main() {
   const record = (name, data) => { results.push({ name, ...data }); console.log(`PASS ${name}: ${JSON.stringify(data)}`); };
   try {
     const page = await browser.newPage({ viewport: { width: 1180, height: 820 } });
+    await page.route("https://fixture.invalid/**", route => route.fulfill({ contentType: "text/html", body: "<div></div>" }));
+    await page.goto("https://fixture.invalid/");
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     const load = async mode => {
@@ -73,8 +75,8 @@ async function main() {
           if (command === "preview_mcp_servers_json") return await new Promise((resolve, reject) => {
             window.testPreviewRequests.push({ json: args.json, resolve, reject });
           });
-          const payload = { status: "ok", message: "", skills: [], repoErrors: [], repos: [] };
-          if (command === "list_installed_skills") return payload;
+          const payload = { status: "ok", message: "", skills: [], repoErrors: [], repos: [], repositorySkills: [], repoCounts: {} };
+          if (command === "list_installed_skills" || command === "refresh_skill_catalog") return payload;
           if (command === "upsert_skill_repo") {
             if (window.testSaveMode === "reject") throw new Error("write failed");
             return { ...payload, status: window.testSaveMode, message: "fixture save" };
@@ -120,21 +122,24 @@ async function main() {
     }
 
     await load("skills");
-    await page.getByRole("button", { name: "添加仓库", exact: true }).click();
-    const owner = page.getByRole("textbox", { name: "所有者", exact: true });
+    await page.getByRole("button", { name: "管理仓库", exact: true }).click();
+    const repository = page.getByRole("dialog", { name: "管理 Skills 仓库", exact: true });
+    await repository.getByRole("button", { name: "添加仓库", exact: true }).click();
+    const editor = repository.getByRole("region", { name: "添加仓库", exact: true });
+    const owner = editor.getByRole("textbox", { name: "所有者", exact: true });
     await owner.fill("fixture-owner");
-    await page.getByRole("textbox", { name: "仓库名", exact: true }).fill("fixture-repo");
+    await editor.getByRole("textbox", { name: "仓库名", exact: true }).fill("fixture-repo");
     for (const mode of ["failed", "reject"]) {
       await page.evaluate(mode => { window.testSaveMode = mode; window.testNotice = null; }, mode);
-      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await editor.getByRole("button", { name: "添加仓库", exact: true }).click();
       await page.waitForFunction(() => window.testNotice?.[2] === "failed");
-      assert.equal(await page.getByRole("dialog").count(), 1);
+      assert.equal(await editor.count(), 1);
       assert.equal(await owner.inputValue(), "fixture-owner");
     }
     await page.evaluate(() => { window.testSaveMode = "ok"; });
-    await page.getByRole("button", { name: "保存", exact: true }).click();
-    await page.getByRole("dialog").waitFor({ state: "detached" });
-    record("repository draft", { businessFailureRetained: true, rejectedWriteRetained: true, successCloses: true });
+    await editor.getByRole("button", { name: "添加仓库", exact: true }).click();
+    await editor.waitFor({ state: "detached" });
+    record("repository draft", { businessFailureRetained: true, rejectedWriteRetained: true, successClosesEditor: true });
 
     await load("mcp");
     const trigger = page.getByRole("button", { name: "更多操作", exact: true }).last();

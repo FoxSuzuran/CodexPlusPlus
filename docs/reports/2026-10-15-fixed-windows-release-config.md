@@ -66,3 +66,13 @@ cargo xrelease
 - release 当前 12,473,900,846 字节，相对上轮 12,385,655,766 字节净增 88,245,080 字节，主要保留了变更库输出后的新管理器产物；旧输出仍按约定保留。后续修改仍会占用必要缓存，不能宣称构建目录永不增长。
 
 未运行测试、TypeScript 检查、安装后实测或 macOS/Linux 实机构建，没有推送。修改/新增/删除前端输出的分支没有通过专门回归测试验证，按实现检查会保留新时间戳；本轮验证覆盖的是内容相同的真实生产构建。
+
+## 2026-10-21：降低开发和测试缓存体积
+
+用户要求先修改编译配置，再自行清理缓存。本次只调整 `.cargo/config.toml` 的 `dev` profile：`debug=0`、`incremental=true`；Cargo 的 `test` profile 继承 `dev`，不重复定义。关闭完整调试符号以降低 PDB、目标文件及相关缓存占用，保留本地代码增量编译。断言、溢出检查、优化级别、panic 和测试范围均不变；原生源码调试的符号信息会减少。
+
+发布 profile、4 个编译任务、原 `target`、`cargo xrelease`、Sherpa 静态库及前端构建流程均不改。`release.incremental=false` 禁用的是 Rust 函数级增量缓存，不妨碍 Cargo 复用未变化的依赖产物；没有通过临时环境变量切换 profile。已搜索上游构建缓存相关 Issue/PR，未发现可直接吸纳的对应修复。
+
+修改前按文件长度统计，`target` 为 55.58 GiB：`target/debug` 47.88 GiB（其中 PDB 22.77 GiB、incremental 12.31 GiB）、`target/release` 5.59 GiB、`target/temp` 1.12 GiB、Sherpa 静态库 0.99 GiB。旧产物不会随配置修改自动缩小；配置变化或清理后的首次测试需要重建。增量缓存仍会占空间，不能保证构建目录体积固定。
+
+本次仅做 TOML 配置断言、Cargo 离线 metadata 解析和差异检查，不运行编译、Rust/前端测试或重新打包，不更新固定 EXE 与其构建 manifest。没有删除或移动目录，`target/release` 和 `target/sherpa-onnx-prebuilt` 应保留；缓存清理由用户后续手动执行。本地 `AGENTS.md` 同步开发/测试约定，不纳入 Git。

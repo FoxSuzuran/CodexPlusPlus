@@ -9,6 +9,11 @@ jobs = 4
 target-dir = "target"
 rustflags = []
 
+# test 继承 dev；不生成完整调试符号，保留本地代码增量编译。
+[profile.dev]
+debug = 0
+incremental = true
+
 # 固定发布配置，避免临时参数变化留下多套依赖缓存。
 [profile.release]
 opt-level = 3

@@ -16,6 +16,8 @@ const TRAY_ID: &str = "codex_plus_tray";
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+/// 退出清理的等待上限（秒）：超过就直接退出，避免卡在托盘里退不掉（#2611）。
+const SHUTDOWN_WATCHDOG: u64 = 10;
 const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
@@ -57,18 +59,23 @@ pub fn run() {
             }
         }
     }
-    if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load()
-        && let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
+    if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
+        // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
+        // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。
+        codex_plus_core::launcher::set_http_body_limit_bytes(
+            settings.helper_max_request_body_bytes(),
+        );
+        if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
             settings.enhancements_enabled
                 && settings.codex_app_dream_skin_enabled
                 && !settings.codex_app_dream_skin_paused,
             &settings.codex_app_dream_skin_theme_config,
-        )
-    {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "manager.dream_skin_base_theme_sync_failed",
-            serde_json::json!({ "message": error.to_string() }),
-        );
+        ) {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.dream_skin_base_theme_sync_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+        }
     }
     let show_update = commands::startup_should_show_update();
     let autostart = std::env::args().any(|arg| arg == "--autostart");
@@ -148,6 +155,7 @@ pub fn run() {
             commands::claude_localization_action,
             commands::claude_localization_set_voice_input,
             commands::claude_localization_set_localization,
+            commands::claude_localization_set_computer_use,
             commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
@@ -296,6 +304,23 @@ pub fn run() {
                     api.prevent_exit();
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
+                        auto_takeover::stop_supervisor();
+                        // 退出清理里任何一步卡住（例如等待启动器或常驻代理），
+                        // 进程就会停在「已阻止退出、尚未完成」的状态：托盘菜单点了没反应，
+                        // 再点也不会重来（SHUTDOWN_STARTED 已经是 true），任务管理器里也
+                        // 只能强杀（#2611）。这里给清理设一个上限，到点直接退出，
+                        // 先写日志留下是超时退出的证据。
+                        std::thread::spawn(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(SHUTDOWN_WATCHDOG));
+                            if SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                                "app.shutdown_watchdog_forced",
+                                serde_json::json!({ "waitedSeconds": SHUTDOWN_WATCHDOG }),
+                            );
+                            std::process::exit(0);
+                        });
                         let app = app_handle.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             let started = std::time::Instant::now();
@@ -303,7 +328,6 @@ pub fn run() {
                                 "app.shutdown_started",
                                 serde_json::json!({}),
                             );
-                            auto_takeover::stop_supervisor();
                             // 退出前先等待自有 CLI 任务清理，避免进程退出后遗留执行器。
                             tauri::async_runtime::block_on(
                                 codex_plus_core::agent_collaboration::executor::shutdown_owned_tasks(),
@@ -314,6 +338,8 @@ pub fn run() {
                                     serde_json::json!({ "message": error.to_string() }),
                                 );
                             }
+                            // 常驻本地代理只在 Codex++ 退出时停止。
+                            codex_plus_core::resident_helper::stop_resident_helper();
                             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                 "app.shutdown_complete",
                                 serde_json::json!({ "elapsed_ms": started.elapsed().as_millis() }),

@@ -6,6 +6,12 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      /* Keep image-preview actions clear of the native Windows caption buttons. */
+      html[data-codex-os="win32"][data-codex-window-type="electron"]
+        .codex-dialog:has([data-testid="image-preview-dismiss-area"])
+        [data-testid="viewer-header"] {
+        margin-top: calc(max(40px, env(titlebar-area-height, 0px)) / var(--codex-window-zoom, 1));
+      }
       [data-codex-native-fast-shortcut] {
         display: inline-flex;
         flex: 0 0 auto;

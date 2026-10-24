@@ -130,6 +130,15 @@ function installRendererStyle(renderer: string) {
   return appended;
 }
 
+it("keeps Windows image preview controls below the native caption buttons", async () => {
+  const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+  const css = installRendererStyle(renderer)[0].textContent!;
+  const rule = css.match(/html\[data-codex-os="win32"\]\[data-codex-window-type="electron"\]\s+\.codex-dialog:has\(\[data-testid="image-preview-dismiss-area"\]\)\s+\[data-testid="viewer-header"\]\s*\{([^}]+)\}/);
+  assert.ok(rule, "only the Windows desktop image-preview header needs caption clearance");
+  assert.match(rule[1], /margin-top:\s*calc\(max\(40px, env\(titlebar-area-height, 0px\)\) \/ var\(--codex-window-zoom, 1\)\)/);
+  assert.doesNotMatch(rule[1], /position:|z-index:|pointer-events:|display:/);
+});
+
 describe("renderer injection header compatibility", () => {
   it("does not supplement native plugin lists from retired snapshots and still refreshes after installation", async () => {
     const [navigation, plugin] = await Promise.all([

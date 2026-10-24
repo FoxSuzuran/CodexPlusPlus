@@ -406,7 +406,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "37";
+  const codexDeleteStyleVersion = "38";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -1975,6 +1975,12 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      /* Keep image-preview actions clear of the native Windows caption buttons. */
+      html[data-codex-os="win32"][data-codex-window-type="electron"]
+        .codex-dialog:has([data-testid="image-preview-dismiss-area"])
+        [data-testid="viewer-header"] {
+        margin-top: calc(max(40px, env(titlebar-area-height, 0px)) / var(--codex-window-zoom, 1));
+      }
       [data-codex-native-fast-shortcut] {
         display: inline-flex;
         flex: 0 0 auto;

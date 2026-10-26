@@ -31,6 +31,7 @@
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
       '[data-content-search-turn-key]',
+      '[data-tab-id^="sidechat:"]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
@@ -113,6 +114,8 @@
   }
 
   function scheduleScan(mutations) {
+    // 隐藏页面和已排队的扫描也要清理，不能让孤立菜单等待下一次可见扫描。
+    const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
     window.__codexSessionDeleteLastMutations = mutations;
     // 原生菜单可能晚于 input 的 RAF 挂载或整体替换；自身插入不触发布局补扫。
     if (mutations && document.querySelector("[data-codex-fast-editor]") && mutations.some((mutation) => {
@@ -126,7 +129,8 @@
         node.matches?.(selector) || node.querySelector?.(selector));
     })) scheduleCodexFastSlashMenu();
     if (window.__codexSessionDeleteScanPending) return;
-    if (!shouldScheduleScan(mutations)) return;
+    // 原生页面可能只移除带归属标记的按钮组；所属行仍在时需要补回操作入口。
+    if (!sessionActionsNeedScan && !shouldScheduleScan(mutations)) return;
     window.__codexSessionDeleteScanPending = true;
     if (document.hidden) return;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);

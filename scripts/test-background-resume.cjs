@@ -33,6 +33,8 @@ const context = vm.createContext({
   installDictationSupportPatch() { counters.dictation++; },
   scanLightweight() { counters.light++; },
   scanDeferred() { counters.deferred++; },
+  pruneSessionMoreMenus() {},
+  pruneRemovedSessionActions() { return false; },
 });
 vm.runInContext(`${init}\n${runStep}\n${scan}\n${scheduling}`, context);
 const flush = queue => {

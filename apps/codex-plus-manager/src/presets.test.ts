@@ -41,14 +41,9 @@ test("DeepSeek preset uses the official Responses integration", () => {
   assert.deepEqual(preset.modelList, ["deepseek-v4-flash", "deepseek-v4-pro"]);
 });
 
-test("GrooRoute preset keeps its API configuration and uses a neutral registration link", () => {
-  const preset = PRESETS.find((candidate) => candidate.id === "grooroute");
-  assert.ok(preset);
-  assert.equal(preset.name, "GrooRoute");
-  assert.equal(preset.baseUrl, "https://grooroute.com");
-  assert.equal(preset.protocol, "responses");
-  assert.equal(preset.model, "gpt-5.5");
-  assert.equal(preset.apiKeyUrl, "https://grooroute.com/register");
+// GrooRoute 赞助已于 2026-10-15 到期：预设与推广链接一并下线。
+test("expired GrooRoute sponsor preset is removed", () => {
+  assert.equal(PRESETS.some((candidate) => candidate.id === "grooroute"), false);
 });
 
 test("built-in provider links contain no referral parameters or invitation paths", () => {

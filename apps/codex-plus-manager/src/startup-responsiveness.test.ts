@@ -47,7 +47,7 @@ function settingsContext() {
     settingsDraftRef: ref,
     normalizeSettings: (value: unknown) => value,
     backendSettingsEqual: (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right),
-    whaleBalanceSettingsIssue: () => null, whaleBalanceValidationMessage: () => "",
+    agentPetSettingsIssue: () => null, agentPetValidationMessage: () => "",
     dictationSettingsIssue: () => null, dictationSettingsValidationMessage: () => "",
     setSettings: (value: unknown) => changes.push(value),
     setSettingsForm: (value: unknown) => changes.push(value),
@@ -318,6 +318,7 @@ test("startup requests no advertisements and a stalled overview does not delay l
       return { showUpdate: false };
     },
     consumePendingManagerNavigation: async () => false,
+    releaseMainWindowWhenHidden: () => {},
     setRoute: () => {},
   };
   for (const name of [

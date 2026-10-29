@@ -295,7 +295,8 @@ export function normalizeDreamSkinTheme(
     name: textOr(value?.name, fallback.name),
     brandSubtitle: textOr(value?.brandSubtitle, fallback.brandSubtitle),
     tagline: textOr(value?.tagline, fallback.tagline),
-    projectPrefix: textOr(value?.projectPrefix, fallback.projectPrefix),
+    projectPrefix: typeof value?.projectPrefix === "string" && value.projectPrefix.trim()
+      ? value.projectPrefix : fallback.projectPrefix,
     projectLabel: textOr(value?.projectLabel, fallback.projectLabel),
     statusText: textOr(value?.statusText, fallback.statusText),
     quote: textOr(value?.quote, fallback.quote),

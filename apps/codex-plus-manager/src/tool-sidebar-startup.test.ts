@@ -26,6 +26,7 @@ it("健康探测持续未完成时，侧栏工具列表仍能加载", async () =
     refreshProviderSyncTargets: noOp,
     refreshPendingProviderImport: noOp,
     refreshPendingDreamSkinCommunity: noOp,
+    releaseMainWindowWhenHidden: () => {},
   };
   // 仅去掉 TS 泛型，让实际启动 effect 在受控异步依赖中运行。
   new Function(...Object.keys(dependencies), startup.replace(/call<StartupResult>/g, "call"))(

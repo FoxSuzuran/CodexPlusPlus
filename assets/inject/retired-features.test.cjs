@@ -18,7 +18,7 @@ test("retired project enhancements have no UI, dispatch or scanner entry", () =>
   assert.match(source, /function retireSessionSharing\(/);
   assert.doesNotMatch(source, /function installSessionShareButton\(/);
   assert.doesNotMatch(source, /\/share\/create|\/session\/export|\/session\/import/);
-  assert.match(source, /function activateSessionCopyMenuItem\(/);
+  assert.doesNotMatch(source, /function (?:activateSessionCopyMenuItem|activateSessionAutoRenameMenuItem)\(/);
 });
 
 test("old backend switches cannot enable retired features", () => {

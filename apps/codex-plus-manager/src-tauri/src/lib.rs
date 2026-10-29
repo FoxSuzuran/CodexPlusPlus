@@ -1,11 +1,18 @@
-mod auto_takeover;
 mod agent_collaboration_commands;
+mod agent_launch_commands;
+mod agent_mcp_commands;
+mod agent_pet_commands;
+mod auto_takeover;
+pub mod commands;
 mod computer_use_commands;
 mod cu_pip;
+mod gateway_commands;
 mod global_dictation;
-pub mod commands;
 pub mod install;
+mod lightweight;
+mod provider_lookup_commands;
 mod runtime_health;
+mod tray_panel;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,7 +20,11 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
-const TRAY_ID: &str = "codex_plus_tray";
+pub(crate) const TRAY_ID: &str = "codex_plus_tray";
+/// 主窗口的标签。轻量模式下主窗口会被销毁、按需重建（#2677），统一按这个标签查找。
+pub(crate) const MAIN_WINDOW_LABEL: &str = "main";
+/// 主窗口按需重建时加载的页面（启动时的 `?showUpdate=1` 只在首次启动用）。
+const MAIN_WINDOW_URL: &str = "/index.html";
 
 static APP_EXITING: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
@@ -30,6 +41,11 @@ pub(crate) fn app_is_exiting() -> bool {
 
 pub fn run_agent_collaboration_mcp(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     agent_collaboration_commands::run_mcp(args)
+}
+
+/// 卸载清理：把走网关的 Agent 恢复成直连（见 [`gateway_commands::restore_for_uninstall`]）。
+pub fn restore_gateway_for_uninstall() {
+    gateway_commands::restore_for_uninstall();
 }
 
 /// Computer Use 诊断入口。只给命令行与排障使用，不经过 GUI，也不注册到路由。
@@ -51,17 +67,23 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
         .first()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "status".to_string());
-    let target = args.get(1).map(|value| value.to_string_lossy().into_owned());
+    let target = args
+        .get(1)
+        .map(|value| value.to_string_lossy().into_owned());
     let output = match action.as_str() {
         "status" => serde_json::to_value(codex_plus_core::computer_use::status()?)?,
         "check" => serde_json::to_value(codex_plus_core::computer_use::check())?,
         "install" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("install 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let id = target.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "install 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy"
+                )
+            })?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::install(parsed)?)?
         }
         "uninstall" => {
-            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / codex / dsh / zcode / workBuddy"))?;
+            let id = target.as_deref().ok_or_else(|| anyhow::anyhow!("uninstall 需要 target：claudeCode / claudeDesktop / dsh / zcode / workBuddy（codex：移除旧版本留在 Codex 里的条目）"))?;
             let parsed = codex_plus_core::computer_use::Target::parse(id)?;
             serde_json::to_value(codex_plus_core::computer_use::uninstall(parsed)?)?
         }
@@ -121,7 +143,8 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
                             })
                         }
                         Err(error) => {
-                            let reason = thread_error.unwrap_or_else(|| "（线程没有留下原因）".into());
+                            let reason =
+                                thread_error.unwrap_or_else(|| "（线程没有留下原因）".into());
                             anyhow::bail!("20 秒内没有拿到帧：{error}；线程报告：{reason}")
                         }
                     }
@@ -184,8 +207,7 @@ pub fn run() {
     }
     let show_update = commands::startup_should_show_update();
     let autostart = std::env::args().any(|arg| arg == "--autostart");
-    let start_minimized = autostart
-        && codex_plus_core::watcher::watcher_start_minimized();
+    let start_minimized = autostart && codex_plus_core::watcher::watcher_start_minimized();
     let start_codex_at_login = autostart && codex_plus_core::watcher::watcher_start_codex();
     let start_codex_on_open = !autostart && codex_plus_core::watcher::watcher_start_codex_on_open();
     let app_result = tauri::Builder::default()
@@ -194,20 +216,15 @@ pub fn run() {
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
-                "/index.html"
+                MAIN_WINDOW_URL
             };
-            let mut main_window_builder =
-                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
-                    .title("Codex++")
-                    .visible(!start_minimized)
-                    .focused(!start_minimized)
-                    .inner_size(1180.0, 820.0)
-                    .min_inner_size(960.0, 720.0);
-            if let Some(icon) = app.default_window_icon().cloned() {
-                main_window_builder = main_window_builder.icon(icon)?;
-            }
-            let main_window = main_window_builder.build()?;
+            lightweight::install_ready_listener(app.handle());
+            build_main_window(app.handle(), url, !start_minimized)?;
             install_tray(app)?;
+            gateway_commands::set_app_handle(app.handle().clone());
+            codex_plus_core::settings::set_external_settings_change_listener(
+                gateway_commands::notify_settings_changed,
+            );
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }
@@ -224,11 +241,13 @@ pub fn run() {
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
             cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
-            register_main_window_events(main_window);
             commands::resume_existing_codex_background(
                 app.handle().clone(),
                 start_codex_at_login || start_codex_on_open,
             );
+            // 网关模式：有 Agent 走网关时常驻 helper 必须在线。
+            gateway_commands::start_from_saved_state();
+            gateway_commands::start_model_watch();
             // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
             auto_takeover::start_supervisor();
             if let Err(error) = global_dictation::apply_config() {
@@ -251,6 +270,7 @@ pub fn run() {
             commands::stop_codex_multi_instance,
             commands::restart_codex_multi_instance,
             commands::restart_codex_plus,
+            commands::stop_codex_plus,
             commands::load_settings,
             commands::load_request_logs,
             commands::clear_request_logs,
@@ -290,16 +310,67 @@ pub fn run() {
             commands::save_settings,
             commands::list_tools,
             commands::test_vlm,
-            commands::load_grok_config,
-            commands::save_grok_config,
-            commands::load_grok_providers,
-            commands::apply_grok_relay_profile,
-            commands::load_claude_providers,
-            commands::save_claude_provider,
-            commands::delete_claude_provider,
-            commands::switch_claude_provider,
-            commands::import_claude_live_provider,
-            commands::import_claude_providers_from_cc_switch,
+            provider_lookup_commands::fetch_provider_models,
+            provider_lookup_commands::lookup_model_prices,
+            agent_pet_commands::agent_pet_catalog,
+            agent_pet_commands::agent_pet_image,
+            agent_pet_commands::agent_pet_sounds,
+            agent_pet_commands::agent_pet_sound_catalog,
+            agent_pet_commands::agent_pet_sound,
+            agent_pet_commands::agent_pet_import_sound,
+            agent_launch_commands::open_agent_terminal,
+            agent_mcp_commands::load_agent_mcp,
+            agent_mcp_commands::save_agent_mcp,
+            gateway_commands::load_gateway,
+            gateway_commands::save_gateway_binding,
+            gateway_commands::disable_gateway_binding,
+            gateway_commands::rotate_gateway_token,
+            gateway_commands::save_gateway_model_suffix,
+            gateway_commands::save_gateway_auto_group,
+            gateway_commands::save_gateway_auto_models,
+            gateway_commands::save_gateway_favorites,
+            gateway_commands::save_gateway_options,
+            gateway_commands::reset_gateway_key_health,
+            gateway_commands::create_gateway_provider,
+            gateway_commands::update_gateway_provider,
+            gateway_commands::delete_gateway_provider,
+            gateway_commands::check_gateway_provider_models,
+            gateway_commands::fetch_gateway_provider_models,
+            gateway_commands::save_gateway_provider_models,
+            gateway_commands::refresh_gateway_quota,
+            gateway_commands::sync_gateway_provider_prices,
+            gateway_commands::set_gateway_provider_enabled,
+            gateway_commands::reorder_gateway_providers,
+            gateway_commands::save_gateway_group,
+            gateway_commands::delete_gateway_group,
+            gateway_commands::reveal_gateway_agent_config,
+            gateway_commands::load_gateway_usage,
+            gateway_commands::clear_gateway_usage,
+            gateway_commands::load_gateway_balances,
+            gateway_commands::list_agent_sessions,
+            gateway_commands::resume_agent_session,
+            gateway_commands::delete_agent_session,
+            gateway_commands::login_gateway_chatgpt,
+            gateway_commands::start_gateway_copilot_login,
+            gateway_commands::finish_gateway_copilot_login,
+            gateway_commands::login_gateway_grok,
+            gateway_commands::login_gateway_chatgpt_api,
+            gateway_commands::cancel_gateway_login,
+            gateway_commands::import_gateway_providers,
+            gateway_commands::save_gateway_provider_extras,
+            gateway_commands::save_gateway_provider_windows,
+            gateway_commands::save_gateway_provider_metadata,
+            gateway_commands::gateway_provider_reasoning,
+            gateway_commands::save_gateway_image_model,
+            gateway_commands::save_gateway_image_inline,
+            tray_panel::tray_panel_action,
+            tray_panel::tray_panel_enabled,
+            tray_panel::set_tray_panel_enabled,
+            tray_panel::refresh_tray_mode,
+            lightweight::lightweight_mode_enabled,
+            lightweight::set_lightweight_mode_enabled,
+            lightweight::main_window_prepare,
+            lightweight::main_window_release_when_hidden,
             commands::weixin_connect_qr_start,
             commands::weixin_connect_qr_status,
             commands::weixin_connect_status,
@@ -351,6 +422,7 @@ pub fn run() {
             commands::refresh_script_market,
             commands::refresh_plugin_market,
             commands::install_plugin_market_item,
+            commands::uninstall_plugin_market_item,
             commands::plugin_market_install_status,
             commands::refresh_user_script_inventory,
             commands::reload_user_scripts,
@@ -362,9 +434,11 @@ pub fn run() {
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
             commands::import_ccs_skills,
+            commands::import_local_skills,
             commands::install_skill,
             commands::update_skill,
             commands::set_skill_enabled,
+            commands::set_skill_enabled_for,
             commands::uninstall_skill,
             commands::restore_skill_backup,
             commands::delete_skill_backup,
@@ -374,6 +448,7 @@ pub fn run() {
             commands::open_external_url,
             commands::repair_shortcuts,
             commands::check_update,
+            commands::skip_update_version,
             commands::perform_update,
             commands::load_watcher_state,
             commands::set_watcher_enabled,
@@ -435,8 +510,13 @@ pub fn run() {
         .build(tauri::generate_context!());
     match app_result {
         Ok(app) => app.run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                if !SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                if code.is_none() && !APP_EXITING.load(Ordering::SeqCst) {
+                    // 不带退出码的退出请求来自「最后一个窗口被销毁」：轻量模式销毁主窗口后
+                    // 后端、网关和托盘要继续运行，这不是用户要退出（#2677）。
+                    // 真正的退出（托盘退出、app.exit）都会带退出码并先置 APP_EXITING。
+                    api.prevent_exit();
+                } else if !SHUTDOWN_COMPLETE.load(Ordering::SeqCst) {
                     api.prevent_exit();
                     if !SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) {
                         APP_EXITING.store(true, Ordering::SeqCst);
@@ -474,7 +554,9 @@ pub fn run() {
                                     serde_json::json!({ "message": error.to_string() }),
                                 );
                             }
-                            // 常驻本地代理只在 Codex++ 退出时停止。
+                            // 常驻本地代理只在 Codex++ 退出时停止；Codex 会话结束
+                            // 不会关它（见 core::resident_helper）。
+                            gateway_commands::restore_for_exit();
                             codex_plus_core::resident_helper::stop_resident_helper();
                             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                 "app.shutdown_complete",
@@ -556,6 +638,10 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
+            // 快捷面板打开时左键单击交给面板；关掉时保持原来的行为。
+            if tray_panel::handle_tray_event(tray.app_handle(), &event) {
+                return;
+            }
             if tray_event_shows_main_window(&event) {
                 show_main_window(tray.app_handle());
             }
@@ -586,6 +672,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     // Tauri 的资源表持有托盘对象，局部句柄释放不会移除菜单栏入口。
     let _ = tray_builder.build(app)?;
+    tray_panel::apply_tray_mode(app.handle(), TRAY_ID);
     Ok(())
 }
 
@@ -661,9 +748,15 @@ mod tray_tests {
     #[test]
     fn tray_left_click_restores_the_main_window_only_on_windows() {
         #[cfg(windows)]
-        assert!(super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
         #[cfg(not(windows))]
-        assert!(!super::tray_event_shows_main_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(!super::tray_event_shows_main_window(&click(
+            MouseButton::Left,
+            MouseButtonState::Up
+        )));
         assert!(!super::tray_event_shows_main_window(&click(
             MouseButton::Right,
             MouseButtonState::Up
@@ -676,13 +769,72 @@ mod tray_tests {
             MouseButton::Left,
             MouseButtonState::Down
         )));
-        assert!(super::tray_event_shows_main_window(&double_click(MouseButton::Left)));
-        assert!(!super::tray_event_shows_main_window(&double_click(MouseButton::Right)));
-        assert!(!super::tray_event_shows_main_window(&TrayIconEvent::Enter {
-            id: TrayIconId::new(super::TRAY_ID),
-            position: PhysicalPosition::default(),
-            rect: Rect::default(),
-        }));
+        assert!(super::tray_event_shows_main_window(&double_click(
+            MouseButton::Left
+        )));
+        assert!(!super::tray_event_shows_main_window(&double_click(
+            MouseButton::Right
+        )));
+        assert!(!super::tray_event_shows_main_window(
+            &TrayIconEvent::Enter {
+                id: TrayIconId::new(super::TRAY_ID),
+                position: PhysicalPosition::default(),
+                rect: Rect::default(),
+            }
+        ));
+    }
+}
+
+/// 按 tauri.conf.json 里 main 窗口的配置创建主窗口（标题、尺寸、最小尺寸、图标），并挂上窗口事件。
+/// 启动时和轻量模式下按需重建（#2677）都走这里，保证重建后的窗口与首次启动一致。
+fn build_main_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    url: &str,
+    visible: bool,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    let mut main_window_builder = tauri::WebviewWindowBuilder::new(
+        app,
+        MAIN_WINDOW_LABEL,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("Codex++")
+    .visible(visible)
+    .focused(visible)
+    .inner_size(1180.0, 820.0)
+    .min_inner_size(960.0, 720.0);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        main_window_builder = main_window_builder.icon(icon)?;
+    }
+    lightweight::mark_main_window_loading();
+    let main_window = main_window_builder.build()?;
+    register_main_window_events(main_window.clone());
+    Ok(main_window)
+}
+
+/// 取主窗口；轻量模式下已销毁时按原配置重建（保持隐藏，由调用方决定是否显示）。
+/// 返回窗口以及它是不是刚建的。必须在主线程调用。
+pub(crate) fn ensure_main_window<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+) -> Option<(tauri::WebviewWindow<R>, bool)> {
+    if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        return Some((window, false));
+    }
+    match build_main_window(app_handle, MAIN_WINDOW_URL, false) {
+        Ok(window) => {
+            lightweight::restore_geometry(&window);
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.main_window_recreated",
+                serde_json::json!({}),
+            );
+            Some((window, true))
+        }
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.main_window_recreate_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+            None
+        }
     }
 }
 
@@ -694,11 +846,16 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
 
     event_window.on_window_event(move |event| match event {
         WindowEvent::Focused(true) => {
+            // 窗口被唤起（含外部实例直接 ShowWindow）：取消轻量模式尚未执行的销毁。
+            lightweight::cancel_pending_release();
             // 外部实例通过 Win32 ShowWindow 唤起时，Tao 的 VISIBLE 标记可能仍为 false。
             // 同步框架状态，否则后续 hide() 会被当作重复操作而跳过。
             #[cfg(windows)]
             let _ = focus_event_window.show();
             let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
+        }
+        WindowEvent::Destroyed => {
+            lightweight::mark_main_window_loading();
         }
         WindowEvent::CloseRequested { api, .. } => {
             if APP_EXITING.load(Ordering::SeqCst) {
@@ -706,6 +863,7 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             }
 
             api.prevent_close();
+            lightweight::remember_geometry(&close_event_window);
             // Windows 上 Tao 的 VISIBLE 标记可能停在 false（窗口曾被 Win32 直接显示
             // 或隐藏），此时 hide() 会被框架当成重复操作跳过，窗口既不关闭也不隐藏
             // （issue #1542）。先强制同步为可见再隐藏，保证 hide() 真正执行。
@@ -713,6 +871,8 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             let _ = close_event_window.show();
             let _ = close_event_window.hide();
             set_manager_activation_policy(&close_event_app, false);
+            // 轻量模式：先隐藏，稍后销毁窗口释放 WebView 内存；关掉开关时只隐藏（#2677）。
+            lightweight::schedule_release(&close_event_app);
         }
         _ => {}
     });
@@ -727,8 +887,10 @@ fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     let app_handle = window.app_handle();
+    lightweight::remember_geometry(&window);
     let _ = window.hide();
     set_manager_activation_policy(&app_handle, false);
+    lightweight::schedule_release(app_handle);
 }
 
 #[tauri::command]
@@ -747,18 +909,38 @@ fn update_tray_labels<R: tauri::Runtime>(
             }
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.set_title(&window_title);
     }
 }
 
+/// 托盘快捷面板的「打开 Codex++」。
+pub(crate) fn show_main_window_from<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    show_main_window(app_handle);
+}
+
+/// 托盘快捷面板的「退出」：与托盘菜单的退出一致。
+pub(crate) fn request_app_exit<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    APP_EXITING.store(true, Ordering::SeqCst);
+    app_handle.exit(0);
+}
+
+/// 所有「打开主窗口」的入口（托盘、Dock、二次启动、导航请求、快捷面板）都走这里：
+/// 窗口在就显示并聚焦，轻量模式下已销毁就按原配置重建再显示（#2677）。必须在主线程调用。
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        set_manager_activation_policy(app_handle, true);
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    lightweight::cancel_pending_release();
+    // 主窗口销毁后，Windows 上二次启动按进程找窗口时可能把隐藏的快捷面板翻出来，这里顺手收起。
+    tray_panel::hide(app_handle);
+    let Some((window, created)) = ensure_main_window(app_handle) else {
+        return;
+    };
+    set_manager_activation_policy(app_handle, true);
+    let _ = window.unminimize();
+    let _ = window.show();
+    if created && lightweight::was_maximized() {
+        let _ = window.maximize();
     }
+    let _ = window.set_focus();
 }
 
 #[cfg(target_os = "macos")]

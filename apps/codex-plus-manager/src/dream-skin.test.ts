@@ -34,6 +34,14 @@ describe("dream skin theme helpers", () => {
     assert.equal(theme.colors!.accent, "#E25563");
   });
 
+  it("keeps theme normalization stable and preserves project prefix spacing", () => {
+    for (const input of [undefined, {}, defaultDreamSkinTheme(), { projectPrefix: "Project · " }]) {
+      const theme = normalizeDreamSkinTheme(input);
+      assert.deepEqual(normalizeDreamSkinTheme(theme), theme);
+      assert.equal(theme.projectPrefix, input?.projectPrefix ?? defaultDreamSkinTheme().projectPrefix);
+    }
+  });
+
   it("maps legacy market themes to their layout presets", () => {
     assert.equal(resolveDreamSkinStylePreset("preset-cyber-neon", undefined), "cyber-neon");
     assert.equal(resolveDreamSkinStylePreset("codex-snow-skin", "dream-original"), "codex-snow");

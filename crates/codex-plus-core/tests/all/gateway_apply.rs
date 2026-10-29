@@ -907,6 +907,39 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
 }
 
+/// #2760：网关供应商可以设成「不使用代理（直连）」：存成 `direct`（不分大小写），
+/// 解析出的代理就是它（不退回系统代理或进程级代理），建 client 时关掉所有代理。
+#[test]
+fn gateway_provider_proxy_can_be_direct() {
+    let fixture = fixture(57402);
+    let ctx = &fixture.ctx;
+    let mut input = deepseek_input();
+    input.name = "直连测试".into();
+    input.proxy = Some(" Direct ".into());
+    let (_, id) = create_provider(&ctx.gateway, &input, "preset:deepseek", None).unwrap();
+    let loaded = ctx.gateway.load().unwrap();
+    let provider = loaded.provider(&id).unwrap();
+    assert_eq!(provider.proxy, codex_plus_core::relay_proxy::DIRECT_PROXY);
+    assert_eq!(
+        codex_plus_core::relay_proxy::proxy_for_relay(&provider.relay).as_deref(),
+        Some(codex_plus_core::relay_proxy::DIRECT_PROXY)
+    );
+    assert!(
+        codex_plus_core::http_client::proxied_client_for_relay("test", &provider.relay).is_ok(),
+        "直连不能被当成代理地址去解析"
+    );
+    // 详情里单独改代理也认直连。
+    let mut input = deepseek_input();
+    input.proxy = Some(String::new());
+    update_provider(&ctx.gateway, &id, &input).unwrap();
+    input.proxy = Some("DIRECT".into());
+    update_provider(&ctx.gateway, &id, &input).unwrap();
+    assert_eq!(
+        ctx.gateway.load().unwrap().provider(&id).unwrap().proxy,
+        codex_plus_core::relay_proxy::DIRECT_PROXY
+    );
+}
+
 /// 网关供应商的独立代理存在 gateway.json，载入后只用它（不按 id 查直连模式的代理表）；
 /// 编辑时不传表示不改，空串表示清掉，写错的地址拦下。
 #[test]
@@ -1637,4 +1670,93 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     let off = ProviderInput { strip_image_generation_tool: Some(false), ..input };
     update_provider(&store, &id, &off).unwrap();
     assert!(!relay(&store).strip_image_generation_tool);
+}
+
+/// #2746：Codex 没登录 ChatGPT 时，托管网关供应商要和直连模式手加的纯 API 供应商一样
+/// 显式声明 `requires_openai_auth = false`：原生 Fast 只认这个明确声明的本机 API 配置，
+/// 缺这一行时 Fast 按钮整个不显示；支持 Fast 的模型在目录里照样带 priority 档。
+#[test]
+fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
+    let fixture = fixture(57391);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Relay".into(),
+            base_url: "https://relay.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            keys: vec!["sk-relay".into()],
+            model: "gpt-6-astra".into(),
+            model_list: "gpt-6-astra".into(),
+            price: None,
+            model_prices: None,
+            proxy: None,
+            strip_image_generation_tool: None,
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let config = || std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config()).unwrap();
+    assert_eq!(
+        parsed["model_provider"].as_str(),
+        Some("custom"),
+        "{}",
+        config()
+    );
+    let provider = &parsed["model_providers"]["custom"];
+    assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+    assert_eq!(
+        provider["requires_openai_auth"].as_bool(),
+        Some(false),
+        "没登录时要显式声明本机 API 身份：{}",
+        config()
+    );
+    assert!(
+        provider["base_url"]
+            .as_str()
+            .is_some_and(|url| url.contains("/gw/codex/v1")),
+        "{}",
+        config()
+    );
+    assert_eq!(
+        codex_plus_core::gateway::drift::check(ctx, &ToolId::Codex),
+        None,
+        "刚接入不算被改"
+    );
+    let catalog = codex_catalog(ctx);
+    let astra = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "gpt-6-astra")
+        .cloned()
+        .unwrap_or_else(|| panic!("目录里没有 gpt-6-astra：{catalog}"));
+    assert!(
+        astra["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority")),
+        "支持 Fast 的模型要带 priority 档：{astra}"
+    );
+
+    // 之后登录了 ChatGPT：改成 openai 会话身份，不再带这条本机 API 声明。
+    std::fs::write(
+        ctx.codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"id_token":"x","access_token":"at","refresh_token":"rt","account_id":"acc"}}"#,
+    )
+    .unwrap();
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    let parsed: toml::Value = toml::from_str(&config()).unwrap();
+    assert_eq!(
+        parsed["model_provider"].as_str(),
+        Some("openai"),
+        "{}",
+        config()
+    );
 }

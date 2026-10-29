@@ -33,7 +33,7 @@ const js = buildSync({
       window.testSetMode=setMode;
       const entries=Array.from({length:20},(_,i)=>({kind:"mcp",id:"server-"+i,title:"Server "+i,tomlBody:'command = "test"',enabled:true}));
       const onImport=async json=>{window.testImported=json;return false};
-      return <><button id="modal-opener" onClick={()=>setDialog(true)}>Open cleanup</button><button id="outside">Outside</button>
+      return <><div data-topbar-actions/><button id="modal-opener" onClick={()=>setDialog(true)}>Open cleanup</button><button id="outside">Outside</button>
         {mode==="mcp"&&<div className="screen management-screen" style={{height:"100vh"}}><McpPage entries={entries} onSave={async()=>false} onDelete={async()=>false} onRefresh={async()=>{}} onImport={onImport} notify={async()=>{}}/></div>}
         {mode==="legacy-import"&&<McpJsonImporter actions={{previewMcpServersJson:json=>window.__TAURI_INTERNALS__.invoke("preview_mcp_servers_json",{json})}} onCancel={()=>setMode("")} onImport={onImport}/>}
         {mode==="skills"&&<div className="screen management-screen" style={{height:"100vh"}}><SkillsPage notify={async(...args)=>{window.testNotice=args}}/></div>}

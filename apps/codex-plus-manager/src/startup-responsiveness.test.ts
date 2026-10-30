@@ -122,6 +122,40 @@ test("settings refresh cannot overwrite a draft edited while loading", async () 
   assert.equal(h.changes.length, 1);
 });
 
+for (const status of ["failed", "ok"]) {
+  test(`provider import ${status} waits for the draft guard and confirms the reviewed fingerprint`, async () => {
+    const h = settingsContext();
+    let pending!: () => void;
+    let calls = 0;
+    let reloads = 0;
+    const imports: unknown[] = [];
+    const confirm = action("confirmPendingProviderImport", {
+      ...h.context,
+      pendingProviderImport: { fingerprint: "reviewed-link" },
+      runAfterSettingsDraftGuard: (next: () => void) => { pending = next; },
+      call: async (command: string, args: { fingerprint: string }) => {
+        assert.equal(command, "confirm_pending_provider_import");
+        assert.equal(args.fingerprint, "reviewed-link");
+        calls++;
+        return { status, settings: h.saved };
+      },
+      showResultNotice: () => {},
+      setPendingProviderImport: (value: unknown) => imports.push(value),
+      refreshPendingProviderImport: async () => { reloads++; },
+      refreshCcsProviders: async () => {},
+    });
+    await confirm();
+    assert.equal(calls, 0, "unsaved settings must be handled before importing");
+    h.ref.current.dirty = false;
+    pending();
+    await setImmediate();
+    assert.equal(calls, 1);
+    assert.equal(reloads, status === "failed" ? 1 : 0);
+    assert.equal(h.changes.length, status === "failed" ? 0 : 2);
+    assert.deepEqual(imports, status === "failed" ? [] : [null]);
+  });
+}
+
 test("settings load failure reports the error and retains the current draft", async () => {
   const h = settingsContext();
   const notices: string[] = [];

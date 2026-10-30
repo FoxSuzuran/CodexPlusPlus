@@ -947,6 +947,7 @@ async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1169,6 +1170,7 @@ fn user_script_inventory_includes_market_metadata() {
             requirements: Vec::new(),
             limitations: Vec::new(),
             icon: String::new(),
+            updated_at: String::new(),
         })
         .unwrap();
 
@@ -1208,6 +1210,7 @@ fn install_market_script_writes_file_and_records_metadata() {
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1248,6 +1251,7 @@ fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() 
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")

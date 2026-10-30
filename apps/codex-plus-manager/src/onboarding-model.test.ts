@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { placeCard, shouldShowTour, TOUR_STEPS, TOUR_VERSION } from "./onboarding-model.ts";
-
-test("首次使用和引导升级后自动弹出，看过当前版本就不再弹", () => {
-  assert.equal(shouldShowTour(null), true);
-  assert.equal(shouldShowTour(String(TOUR_VERSION - 1)), true);
-  assert.equal(shouldShowTour("garbage"), true);
-  assert.equal(shouldShowTour(String(TOUR_VERSION)), false);
-});
+import { placeCard, TOUR_STEPS } from "./onboarding-model.ts";
 
 test("步骤：第一步是欢迎卡（无目标），其余步骤都有唯一目标", () => {
   assert.equal(TOUR_STEPS[0].target, undefined);

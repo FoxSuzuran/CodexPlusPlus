@@ -132,7 +132,6 @@ import { TopbarActions } from "./TopbarActions";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
-import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
@@ -1578,10 +1577,8 @@ export function App() {
   const settingsPendingActionRef = useRef<(() => void) | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
+  const [tourOpen, setTourOpen] = useState(false);
   const closeTour = useCallback(() => {
-    // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
-    try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
     setTourOpen(false);
   }, []);
   // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
@@ -18584,17 +18581,6 @@ function loadInitialRoute(): Route {
     return "settings";
   }
   return "hub";
-}
-
-/** 首次使用引导：没看过当前版本就自动打开；预览模式（?previewRoute=）不打开。 */
-function initialTourOpen(): boolean {
-  if (typeof window === "undefined") return false;
-  if (new URLSearchParams(window.location.search).has("previewRoute")) return false;
-  try {
-    return shouldShowTour(window.localStorage.getItem(TOUR_STORAGE_KEY));
-  } catch {
-    return false;
-  }
 }
 
 /** 「关于」已经并进「设置」：启动时要看更新，就滚到版本与更新。 */

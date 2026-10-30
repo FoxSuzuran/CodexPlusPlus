@@ -1,4 +1,4 @@
-/** 首次使用引导：步骤定义与「看过没有」的记录。页面只负责高亮与摆放说明卡。 */
+/** 手动使用引导：步骤定义与说明卡位置。 */
 
 export type TourStep = {
   id: string;
@@ -7,10 +7,6 @@ export type TourStep = {
   title: string;
   body: string;
 };
-
-/** 引导版本：步骤大改时加一，老用户会再看到一次。 */
-export const TOUR_VERSION = 1;
-export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
 export const TOUR_STEPS: TourStep[] = [
   {
@@ -61,13 +57,6 @@ export const TOUR_STEPS: TourStep[] = [
     body: "主题、配置备份、版本更新和日志都在这里。想再看一遍这个引导，也在设置里重新打开。",
   },
 ];
-
-/** 是否需要自动弹出引导：没看过，或看的是旧版本。 */
-export function shouldShowTour(stored: string | null): boolean {
-  if (!stored) return true;
-  const version = Number(stored);
-  return !Number.isFinite(version) || version < TOUR_VERSION;
-}
 
 /** 说明卡放在目标的右侧；右边放不下就放左侧，再不行放到下方。返回卡片左上角坐标。 */
 export function placeCard(

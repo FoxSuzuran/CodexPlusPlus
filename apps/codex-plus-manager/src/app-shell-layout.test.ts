@@ -347,11 +347,13 @@ test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
   assert.match(hub, /export function HubTopology\(/);
 });
 
-test("首次使用引导：首次启动自动打开（预览模式除外），看完或跳过都记下版本；设置页可重新打开；每一步的目标在侧栏都有锚点", () => {
+test("使用引导只从设置手动打开，启动与窗口重建始终关闭；每一步的目标在侧栏都有锚点", () => {
   const app = functionSource("App");
+  assert.match(app, /const \[tourOpen, setTourOpen\] = useState\(false\);/);
+  assert.match(app, /onOpenTour=\{\(\) => setTourOpen\(true\)\}/);
+  assert.equal((app.match(/setTourOpen\(true\)/g) ?? []).length, 1);
+  assert.doesNotMatch(text, /initialTourOpen|shouldShowTour|TOUR_STORAGE_KEY|TOUR_VERSION/);
   assert.match(app, /\{tourOpen \? <OnboardingTour onClose=\{closeTour\} \/> : null\}/);
-  assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
-  assert.match(functionSource("initialTourOpen"), /has\("previewRoute"\)/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");

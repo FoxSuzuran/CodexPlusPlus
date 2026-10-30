@@ -63,8 +63,12 @@ pub(crate) fn cache_key(
 }
 
 pub(crate) fn cached(key: &CacheKey) -> bool {
+    cached_at(key, Instant::now())
+}
+
+fn cached_at(key: &CacheKey, now: Instant) -> bool {
     let mut entries = cache().lock().unwrap_or_else(|error| error.into_inner());
-    entries.retain(|(_, created)| created.elapsed() < CACHE_TTL);
+    entries.retain(|(_, created)| now.saturating_duration_since(*created) < CACHE_TTL);
     entries.iter().any(|(entry, _)| entry == key)
 }
 
@@ -405,8 +409,11 @@ mod tests {
         }
         let mut entries = cache().lock().unwrap_or_else(|error| error.into_inner());
         assert_eq!(entries.len(), CACHE_CAPACITY);
-        entries.push_back((canceled_key, Instant::now() - CACHE_TTL));
+        let created = Instant::now();
+        entries.push_back((canceled_key, created));
         drop(entries);
-        assert!(!cached(&canceled_key));
+        // Windows 的 Instant 不能保证能向前减去完整 TTL，改为推进测试时钟。
+        assert!(cached_at(&canceled_key, created + CACHE_TTL - Duration::from_millis(1)));
+        assert!(!cached_at(&canceled_key, created + CACHE_TTL));
     }
 }

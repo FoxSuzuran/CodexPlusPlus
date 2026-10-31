@@ -92,7 +92,7 @@ async function main() {
     for (const mode of ["mcp", "legacy-import"]) {
       await load(mode);
       if (mode === "mcp") {
-        await page.getByRole("button", { name: "更多操作", exact: true }).first().click();
+        await page.locator("[data-topbar-actions]").getByRole("button", { name: "更多操作", exact: true }).click();
         await page.getByRole("menuitem", { name: "导入 JSON", exact: true }).click();
       }
       const textarea = page.getByRole("textbox", { name: "MCP 配置 JSON", exact: true });

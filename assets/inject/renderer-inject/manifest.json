@@ -53,12 +53,12 @@
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 397
+      "lines": 456
     },
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1386
+      "lines": 1388
     },
     {
       "name": "71-model-picker-groups.js",
@@ -68,7 +68,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 595
+      "lines": 631
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -82,8 +82,8 @@
     },
     {
       "name": "83-usage-statusline.js",
-      "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用",
-      "lines": 545
+      "description": "输入框下方用量状态栏：输出吞吐、缓存命中率与上下文占用；旧版 Codex 挂载兜底与诊断",
+      "lines": 715
     },
     {
       "name": "84-proxy-request-status.js",
@@ -158,7 +158,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 97
+      "lines": 101
     },
     {
       "name": "99-tail.js",

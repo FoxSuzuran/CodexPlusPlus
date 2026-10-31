@@ -2680,11 +2680,37 @@ export const EN_PLAIN: Record<string, string> = {
   "暂时获取失败，显示的是上次的结果": "Temporarily unavailable; showing the last result",
   "暂时获取不到倍率和余额，点击重试": "Rate and balance are temporarily unavailable. Click to retry",
   "没有识别出 sub2api / new-api 中转站，点击重新识别": "Not recognized as a sub2api / new-api relay. Click to check again",
+  // new-api 访问令牌查账户余额、厂商余额显示在供应商池卡片上（#2793）
+  "配置访问令牌后可显示余额（展开供应商详情，在「访问令牌」里填写）":
+    "Set an access token to show the balance (expand the provider details and fill in \"Access token\")",
+  "余额查询失败": "Balance check failed",
+  "余额接口查询，和「用量」页、托盘面板同一来源": "From the balance API, the same source as the Usage page and the tray panel",
+  "刷新余额": "Refresh balance",
+  "可选：只用来查 new-api 账户余额，留空不查": "Optional: only used to check the new-api account balance. Leave empty to skip",
+  "访问令牌": "Access token",
+  "在 new-api 的「个人设置 → 安全设置」里生成，不是 API Key": "Generate it in new-api under Personal settings → Security. It is not an API key",
+  "粘贴访问令牌": "Paste the access token",
+  "用户 ID": "User ID",
+  "个人设置里显示的 ID": "The ID shown in personal settings",
+  "按 new-api 文档，查余额要同时带访问令牌和用户 ID（旧版必须填用户 ID）；新版的分权限令牌需要勾选「个人资料 · 查看」。令牌只存在本机，和 Key 一样不显示原文。":
+    "Per the new-api docs, the balance request carries both the access token and the user ID (older versions require the user ID); scoped tokens in newer versions need \"Profile · View\". The token stays on this computer and, like keys, is never shown in full.",
+  "清除令牌": "Clear token",
+  "访问令牌里不能有空格或换行": "The access token can't contain spaces or line breaks",
+  "用户 ID 只能是数字": "The user ID must be a number",
+  "保存访问令牌": "Save access token",
+  "清除访问令牌": "Clear access token",
+  "未填写：Key 不限额度时查不到账户余额": "Not set: the account balance can't be checked when the key has no quota limit",
+  "编辑访问令牌": "Edit access token",
   // 导入链接导入到供应商池
   "导入后供应商默认启用，会按「Agent 接入」里各 Agent 的「添加供应商时自动加入」设置立即承接请求。":
     "The imported provider is enabled by default and starts serving requests right away for agents that have \"Auto-join new providers\" turned on under Agent access.",
   // 子 Agent 任务排队（#2772）
   "任务已提交并进入排队，前面的任务结束后自动启动。": "Task submitted and queued. It starts automatically when the tasks ahead of it finish.",
+  // 同一 Agent 并发执行（#2800）
+  "同时执行任务数": "Concurrent tasks",
+  "1（逐个执行，其余排队）": "1 (one at a time, others queue)",
+  "同一 Agent 最多同时运行的任务数。超出时排队，任一任务结束后按提交顺序启动下一个；并发任务请使用不同的工作目录，避免互相修改相同文件。": "Maximum number of tasks this agent runs at the same time. Extra tasks queue and start in submission order as soon as any task finishes. Give concurrent tasks different working directories so they don't edit the same files.",
+  "各 Agent 并发情况": "Per-agent concurrency",
   // 脚本市场更新时间 / 排序与本地脚本合并状态（#2781）
   "市场脚本排序": "Sort marketplace scripts",
   "默认顺序": "Default order",
@@ -2745,6 +2771,10 @@ export const EN_PLAIN: Record<string, string> = {
   "上游服务出错：多半是上游临时故障，稍后再试。": "The upstream service failed: most likely a temporary upstream outage; try again later.",
   "上游开始回复后又报错或断开：见下方的错误原文。": "The upstream started replying, then errored or disconnected: see the raw error below.",
   "请求没有成功：见下方的错误原文。": "The request didn't succeed: see the raw error below.",
+  // 多开页：编辑 / 删除供应商，cc-switch 导入指路（#2801）
+  "导入或添加供应商": "Import or add providers",
+  "到「旧版供应商配置」添加供应商，或用「从第三方导入」导入 cc-switch 的供应商": "Go to Legacy provider settings to add a provider, or use Import from third party to import cc-switch providers",
+  "这些供应商仍可在「多开」页悬停卡片编辑、删除；右上角「从第三方导入」可以继续导入 cc-switch 的供应商。": "You can still edit or delete these providers by hovering a card on the Multi-instance page; use Import from third party at the top right to import cc-switch providers.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -2761,6 +2791,10 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 剩余 {1}": "{0}: {1} left",
   "订阅剩余 {0}": "Subscription left {0}",
   "余额 {0}": "Balance {0}",
+  "访问令牌查询余额失败：{0}": "Checking the balance with the access token failed: {0}",
+  "{0} 的访问令牌": "Access token for {0}",
+  "已保存 {0}，留空不改": "Saved {0}; leave empty to keep it",
+  "用户 ID {0}": "User ID {0}",
   "剩 {0}": "{0} left",
   "{0} 剩 {1}": "{0}: {1} left",
   "倍率接口：{0}": "Rate endpoint: {0}",
@@ -2770,6 +2804,11 @@ export const EN_TEMPLATE: Record<string, string> = {
   // 子 Agent 任务排队（#2772）
   "此 Agent 的排队任务已达上限（{0} 个），请等待前面的任务结束或取消部分排队任务。": "This agent's queue is full ({0} tasks). Wait for earlier tasks to finish or cancel some queued tasks.",
   "此 Agent 还有 {0} 个任务未结束，新任务会排队，前面的结束后按提交顺序自动启动。": "This agent still has {0} unfinished task(s). New tasks are queued and start automatically in submission order.",
+  // 同一 Agent 并发执行（#2800）
+  "{0} 同时执行任务数": "{0} concurrent tasks",
+  "此 Agent 正在执行 {0} 个任务（同时最多 {1} 个），新任务会直接并发启动。": "This agent is running {0} task(s) (up to {1} at a time). A new task starts right away in parallel.",
+  " 同一工作目录已有 {0} 个任务在运行，并发执行可能互相修改相同文件，建议使用不同的工作目录。": " {0} task(s) are already running in this working directory. Concurrent tasks may edit the same files; consider a different working directory.",
+  "{0}：执行中 {1}/{2}，排队 {3}": "{0}: running {1}/{2}, queued {3}",
   "连接 {0} 时带上：": "When connecting to {0}, add:",
   "用到时下载并缓存在本机。来源：{0}（{1}）": "Downloaded when needed and cached locally. Source: {0} ({1})",
   "清除{0}": "Clear {0}",
@@ -3102,6 +3141,12 @@ export const EN_TEMPLATE: Record<string, string> = {
   "测试 Key {0}": "Test key {0}",
   "本次用的是 Key「{0}」（末 4 位 {1}）。": "This test used key “{0}” (ending in {1}).",
   "本次用的是末 4 位为 {0} 的 Key。": "This test used the key ending in {0}.",
+  // 多开页：编辑 / 删除供应商（#2801）
+  "删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。": "Delete provider “{0}”? {1} multi-instance window(s) are still running with it. They won't be closed, but you won't be able to launch with this provider again.",
+  "删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。": "Delete provider “{0}”? You won't be able to launch instances with it, and it will also be removed from the legacy provider list.",
+  "{0} 个实例运行中": "{0} running",
+  "编辑供应商「{0}」": "Edit provider “{0}”",
+  "删除供应商「{0}」": "Delete provider “{0}”",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
@@ -3122,6 +3167,9 @@ export const EN_BACKEND: Record<string, string> = {
   "保存上下文窗口失败": "Failed to save context windows",
   "限速已保存。": "Rate limit saved.",
   "保存限速失败": "Failed to save rate limit",
+  "访问令牌已保存。": "Access token saved.",
+  "访问令牌已清除。": "Access token cleared.",
+  "保存访问令牌失败": "Failed to save the access token",
   "扫描已失效，请重新扫描。": "The scan is no longer valid. Scan again.",
   "扫描已过期，请重新扫描。": "The scan has expired. Scan again.",
   "请选择缓存项目。": "Select cache items first.",
@@ -3353,6 +3401,7 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^从 CC Switch 导入失败：(.+)$/, "Import from CC Switch failed: $1"],
   // 供应商池：单独管理 Key（#2782）
   [/^添加 Key 失败：(.+)$/, "Failed to add key: $1"],
+  [/^保存访问令牌失败：(.+)$/, "Failed to save the access token: $1"],
   [/^替换 Key 失败：(.+)$/, "Failed to replace key: $1"],
   [/^删除 Key 失败：(.+)$/, "Failed to delete key: $1"],
   // 供应商池：测试供应商

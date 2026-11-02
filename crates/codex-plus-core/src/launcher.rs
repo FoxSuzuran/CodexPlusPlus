@@ -341,6 +341,7 @@ impl LaunchHandle {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
         self.hooks.stop_native_browser_compatibility().await;
+        self.hooks.stop_cua_proxy().await;
         let (status, message) = match &result {
             Ok(()) => (
                 "stopped",
@@ -420,6 +421,8 @@ pub trait LaunchHooks: Send + Sync {
     }
     async fn start_native_browser_compatibility(&self, _settings: &BackendSettings) {}
     async fn stop_native_browser_compatibility(&self) {}
+    async fn start_cua_proxy(&self, _settings: &BackendSettings) {}
+    async fn stop_cua_proxy(&self) {}
     fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -534,6 +537,7 @@ pub struct DefaultLaunchHooks {
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     bridge_reinjector: Mutex<Option<BridgeReinjector>>,
+    cua_proxy: Mutex<Option<crate::native_cua_proxy::ProxyMonitor>>,
     #[cfg(windows)]
     packaged_executable: Mutex<Option<PathBuf>>,
     #[cfg(windows)]
@@ -866,6 +870,7 @@ where
         let timeline = LaunchTimeline::new(options.status_store.clone());
         timeline.mark("start_native_browser_compatibility", 5);
         hooks.start_native_browser_compatibility(&settings).await;
+        hooks.start_cua_proxy(&settings).await;
         let home = hooks.codex_home_dir();
         timeline.mark("cleanup_unsupported_config", 10);
         hooks.cleanup_unsupported_config()?;
@@ -1120,6 +1125,7 @@ where
         Ok(handle) => Ok(handle),
         Err(error) => {
             hooks.stop_native_browser_compatibility().await;
+            hooks.stop_cua_proxy().await;
             if helper_started {
                 hooks.shutdown_helper(helper_port).await;
             }
@@ -1242,6 +1248,23 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn load_settings(&self) -> anyhow::Result<BackendSettings> {
         SettingsStore::default().load()
+    }
+
+    async fn start_cua_proxy(&self, settings: &BackendSettings) {
+        let monitor = crate::native_cua_proxy::start_monitor(
+            settings.enhancements_enabled,
+            self.codex_home_dir(),
+            self.state_dir().join("native-cua-proxy"),
+        )
+        .await;
+        *self.cua_proxy.lock().await = monitor;
+    }
+
+    async fn stop_cua_proxy(&self) {
+        let monitor = self.cua_proxy.lock().await.take();
+        if let Some(monitor) = monitor {
+            monitor.stop().await;
+        }
     }
 
     fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {

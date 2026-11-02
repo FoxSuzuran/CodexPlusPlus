@@ -54,6 +54,7 @@ pub mod models;
 pub mod multi_worker;
 pub mod native_browser;
 pub mod native_browser_connection;
+pub mod native_cua_proxy;
 pub(crate) mod native_fast;
 pub(crate) mod native_predictions;
 pub mod official_login;

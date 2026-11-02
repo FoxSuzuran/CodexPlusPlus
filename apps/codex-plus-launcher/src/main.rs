@@ -658,6 +658,7 @@ async fn run_embedded_session(
         json!({"phase": "native_browser", "elapsed_ms": cleanup_started.elapsed().as_millis()}),
     );
     hooks.stop_native_browser_compatibility().await;
+    hooks.stop_cua_proxy().await;
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "launcher.cleanup_complete",
         json!({"elapsed_ms": cleanup_started.elapsed().as_millis()}),
@@ -1101,6 +1102,14 @@ impl LaunchHooks for LauncherHooks {
 
     async fn load_settings(&self) -> anyhow::Result<codex_plus_core::settings::BackendSettings> {
         self.core.load_settings().await
+    }
+
+    async fn start_cua_proxy(&self, settings: &codex_plus_core::settings::BackendSettings) {
+        self.core.start_cua_proxy(settings).await;
+    }
+
+    async fn stop_cua_proxy(&self) {
+        self.core.stop_cua_proxy().await;
     }
 
     async fn start_native_browser_compatibility(

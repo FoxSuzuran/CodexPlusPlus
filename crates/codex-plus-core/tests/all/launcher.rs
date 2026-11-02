@@ -2747,6 +2747,45 @@ fn paused_dream_skin_does_not_reapply_the_native_base_theme_on_launch() {
 }
 
 #[tokio::test]
+async fn cua_proxy_prepares_before_launch_and_stops_on_exit_or_launch_failure() {
+    let _state = crate::common::IsolatedTestState::new();
+    for (enabled, fail) in [(true, false), (false, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("Codex.app");
+        std::fs::create_dir(&app_dir).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
+            enhancements_enabled: enabled,
+            provider_sync_enabled: false,
+            ..BackendSettings::default()
+        });
+        hooks.record_cua_proxy = true;
+        if fail {
+            hooks = hooks.with_launch_error("fixture launch failure");
+        }
+        let result = launch_and_inject_with_hooks(
+            LaunchOptions {
+                app_dir: Some(app_dir),
+                status_store: StatusStore::new(temp.path().join("status.json")),
+                ..LaunchOptions::default()
+            },
+            &hooks,
+        ).await;
+        if fail {
+            assert!(result.is_err());
+        } else {
+            result.unwrap().wait_for_codex_exit().await.unwrap();
+        }
+        let events = events.lock().unwrap();
+        let start = events.iter().position(|event| event == &format!("cua-proxy:start:{enabled}")).unwrap();
+        let launch = events.iter().position(|event| event.starts_with("launch:")).unwrap();
+        let stop = events.iter().position(|event| event == "cua-proxy:stop").unwrap();
+        assert!(start < launch && launch < stop, "{events:?}");
+        assert_eq!(events.iter().filter(|event| *event == "cua-proxy:stop").count(), 1);
+    }
+}
+
+#[tokio::test]
 async fn native_browser_lifecycle_uses_one_settings_snapshot_and_stops_on_success_or_failure() {
     let _state = crate::common::IsolatedTestState::new();
     for fail in [false, true] {
@@ -2849,6 +2888,7 @@ struct FakeHooks {
     wait_error: bool,
     captured_launch_identity: Arc<Mutex<bool>>,
     record_identity_capture: bool,
+    record_cua_proxy: bool,
     wait_until_exit: Option<Arc<tokio::sync::Notify>>,
 }
 
@@ -2873,6 +2913,7 @@ impl FakeHooks {
             wait_error: false,
             captured_launch_identity: Arc::new(Mutex::new(false)),
             record_identity_capture: false,
+            record_cua_proxy: false,
             wait_until_exit: None,
         }
     }
@@ -2987,6 +3028,18 @@ impl LaunchHooks for FakeHooks {
             .codex_app_native_browser_require_identification
         {
             self.event("native-browser:stop");
+        }
+    }
+
+    async fn start_cua_proxy(&self, settings: &BackendSettings) {
+        if self.record_cua_proxy {
+            self.event(format!("cua-proxy:start:{}", settings.enhancements_enabled));
+        }
+    }
+
+    async fn stop_cua_proxy(&self) {
+        if self.record_cua_proxy {
+            self.event("cua-proxy:stop");
         }
     }
 

@@ -306,7 +306,7 @@ fn key_valid(key: &str) -> bool {
 }
 
 // Reject junctions as well as symlinks, including in parent directories.
-fn plain_path(path: &Path) -> Result<()> {
+pub(crate) fn plain_path(path: &Path) -> Result<()> {
     ensure!(path.is_absolute(), "Expected an absolute local path");
     for ancestor in path.ancestors() {
         if let Ok(meta) = fs::symlink_metadata(ancestor) {
@@ -335,7 +335,7 @@ fn plain_path(path: &Path) -> Result<()> {
 
 // Deny directory deletion/renaming while a Windows transaction uses its descendants.
 // Open root-first with OPEN_REPARSE_POINT so no checked parent can become a junction.
-fn pin_parents(path: &Path) -> Result<Vec<File>> {
+pub(crate) fn pin_parents(path: &Path) -> Result<Vec<File>> {
     plain_path(path)?;
     // 非 Windows 上下面这段 cfg 块整段编译掉，guards 从不被 push。
     #[cfg_attr(not(windows), allow(unused_mut))]
@@ -365,7 +365,7 @@ fn pin_parents(path: &Path) -> Result<Vec<File>> {
     Ok(guards)
 }
 
-fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
+pub(crate) fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let _guards = pin_parents(path)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -405,7 +405,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<File> {
     Ok(file)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     atomic_write_with_modified(path, bytes, None)
 }
 

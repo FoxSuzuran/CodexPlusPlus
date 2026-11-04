@@ -176,6 +176,18 @@ pub struct RelayProfile {
     /// Codex App 会固定带上这个工具，不支持生图的第三方 Responses 上游会整条请求报 403（#228）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_image_generation_tool: bool,
+    /// 转发前移除 Responses `input_image.detail`。部分 Responses 上游不认这个
+    /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_image_detail: bool,
+    /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
+    /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disable_tool_search: bool,
+    /// 纯 API 下让 Codex 注册原生生图工具（`image_gen`），生图请求经本地代理发给本供应商的
+    /// `/images/generations`、`/images/edits`（#1433）。默认关闭。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pure_api_image_generation: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -394,6 +406,9 @@ impl Default for RelayProfile {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
+            disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -440,6 +455,20 @@ impl RelayProfile {
     /// Chat / Anthropic 上游在协议转换时本来就不会带托管工具。
     pub fn strips_image_generation_tool(&self) -> bool {
         self.strip_image_generation_tool
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否让纯 API 会话注册 Codex 原生生图工具；只对纯 API 供应商生效，且要走本地代理。
+    pub fn enables_pure_api_image_generation(&self) -> bool {
+        self.pure_api_image_generation && self.relay_mode == RelayMode::PureApi
+    }
+
+    /// 是否在转发前移除 Responses 图片 `detail` 字段；只对经本地代理转发的
+    /// 第三方 Responses 上游生效。
+    pub fn strips_responses_image_detail(&self) -> bool {
+        self.strip_responses_image_detail
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1098,6 +1127,9 @@ pub struct BackendSettings {
     // 默认开启：纯展示层状态栏，不改变 Codex 的请求内容与本地数据，误开没有副作用。
     #[serde(rename = "codexAppUsageStatusLine", default = "default_true")]
     pub codex_app_usage_status_line: bool,
+    /// 本机用量历史默认关闭，仅显式开启后允许只读查询。
+    #[serde(rename = "usageHistoryEnabled", default)]
+    pub usage_history_enabled: bool,
     // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
     #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
     pub codex_app_proxy_request_status: bool,
@@ -1452,6 +1484,7 @@ impl Default for BackendSettings {
             codex_app_side_chat_save: false,
             codex_app_markdown_export: true,
             codex_app_usage_status_line: true,
+            usage_history_enabled: false,
             codex_app_proxy_request_status: true,
             claude_app_voice_input: true,
             claude_app_localization: true,
@@ -1608,6 +1641,9 @@ impl BackendSettings {
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
+                strip_responses_image_detail: false,
+                disable_tool_search: false,
+                pure_api_image_generation: false,
                 auto_review_model: String::new(),
                 multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
@@ -1679,6 +1715,9 @@ impl BackendSettings {
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
+            strip_responses_image_detail: false,
+            disable_tool_search: false,
+            pure_api_image_generation: false,
             auto_review_model: String::new(),
             multi_agent: String::new(),
             anthropic_auth_header: String::new(),
@@ -1748,6 +1787,7 @@ impl BackendSettings {
             || self.active_relay_profile().request_compatibility_enabled()
             || self.active_relay_profile().rewrites_auto_review_model()
             || self.active_relay_profile().strips_image_generation_tool()
+            || self.active_relay_profile().enables_pure_api_image_generation()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -2873,6 +2913,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppSideChatSave");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
+    merge_bool_setting(target, source, "usageHistoryEnabled");
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
@@ -4291,6 +4332,20 @@ mod tests {
         let saved = serde_json::to_value(profile).unwrap();
         assert_eq!(saved["modelRoutes"][0]["targetRelayId"], "relay-b");
         assert_eq!(saved["modelRoutes"][0]["targetModel"], "provider-luna");
+    }
+
+    #[test]
+    fn relay_profile_disable_tool_search_roundtrips_in_camel_case() {
+        // #2868：手动关闭 tool_search 的开关按 disableToolSearch 往返。
+        let profile: RelayProfile =
+            serde_json::from_str(r#"{"id":"relay-a","name":"A","disableToolSearch":true}"#).unwrap();
+        assert!(profile.disable_tool_search);
+        let saved = serde_json::to_value(&profile).unwrap();
+        assert_eq!(saved["disableToolSearch"], true);
+        // 默认 false 不序列化。
+        let default: RelayProfile = serde_json::from_str(r#"{"id":"relay-a","name":"A"}"#).unwrap();
+        assert!(!default.disable_tool_search);
+        assert!(serde_json::to_value(&default).unwrap()["disableToolSearch"].is_null());
     }
 
     /// 旧版按供应商勾选上下文条目的 `contextSelection` / `contextSelectionInitialized`
@@ -5814,6 +5869,36 @@ experimental_bearer_token = "sk-existing""#
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
     }
+    #[test]
+    fn pure_api_image_generation_is_default_off_and_only_for_pure_api() {
+        let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(legacy.get("pureApiImageGeneration").is_none());
+        let enabled = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            pure_api_image_generation: true,
+            ..RelayProfile::default()
+        };
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["pureApiImageGeneration"], json!(true));
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.enables_pure_api_image_generation());
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile { id: "on".to_string(), ..enabled }],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        for mode in [RelayMode::Official, RelayMode::Aggregate] {
+            let profile = RelayProfile {
+                relay_mode: mode,
+                official_mix_api_key: true,
+                pure_api_image_generation: true,
+                ..RelayProfile::default()
+            };
+            assert!(!profile.enables_pure_api_image_generation());
+        }
+    }
+
     #[test]
     fn strip_image_generation_tool_is_default_off_and_only_for_api_responses() {
         let legacy = serde_json::to_value(RelayProfile::default()).unwrap();

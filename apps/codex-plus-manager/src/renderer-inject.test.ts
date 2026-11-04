@@ -2699,6 +2699,8 @@ describe("拓展接口层", () => {
     for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/cdp/evaluate"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
+    assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");
+    assert.ok(routes.includes("/usage/archive"), "固定 schema 的独立消费者封存应开放给拓展");
     assert.ok(routes.includes("/diagnostics/log"), "诊断上报应保持开放");
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
@@ -2708,6 +2710,21 @@ describe("拓展接口层", () => {
     // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
     for (const forbidden of ["/codex-model-catalog", "/codex-config-model"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应开放给拓展`);
+    }
+  });
+
+  it("用量路由的公开类型与运行时白名单保持一致", async () => {
+    const routes = await readRouteWhitelist();
+    const declarations = await readFile(
+      new URL("../../../types/codex-plus-extensions.d.ts", import.meta.url),
+      "utf8",
+    );
+    const routeType = declarations.match(/type CodexPlusExtensionRoute\s*=([\s\S]*?);/);
+    assert.ok(routeType, "找不到公开路由类型");
+    const declared = Array.from(routeType[1].matchAll(/"([^"]+)"/g), ([, route]) => route);
+    for (const route of ["/usage/history", "/usage/archive"]) {
+      assert.ok(routes.includes(route), `${route} 未开放`);
+      assert.ok(declared.includes(route), `${route} 缺少公开类型`);
     }
   });
 
@@ -3543,7 +3560,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "globalThis",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "document",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
     )(
       window,
@@ -3574,7 +3591,8 @@ describe("拓展运行时内核", () => {
       { rowActions: new Map(), navEntries: new Map(), menuItems: new Map(), composerActions: new Map() },
       (route: string) => { calls.push(route); return Promise.resolve({ status: "ok" }); },
       (message: string) => toasts.push(message),
-      localStorage, { navigator: { language: "en-US" } },
+      localStorage,
+      { documentElement: { lang: "en-US" } },
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
       bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
       services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
@@ -4402,7 +4420,7 @@ describe("拓展运行时内核", () => {
   it("ctx.locale：按命名空间登记词条，按语言链回退到 en、common、key，包内 locale 自动登记", async () => {
     const k = await kernel({ manifest: { id: "greeter", locales: { en: { meta: { title: "Greeter" }, hi: "Hello {name}" }, fr: { hi: "Bonjour {name}" } } } });
     const ctx = k.create(() => {});
-    // 沙箱固定 en-US，不依赖运行测试的系统语言。
+    // 测试页面固定为 en-US，不依赖宿主 Node 的系统语言。
     assert.match(ctx.locale.current, /^en/);
     assert.equal(ctx.locale.t("hi", { name: "Ada" }), "Hello Ada", "包内 locale 登记在拓展 id 命名空间");
     assert.equal(ctx.locale.t("meta.title"), "Greeter", "点号路径取嵌套词条");

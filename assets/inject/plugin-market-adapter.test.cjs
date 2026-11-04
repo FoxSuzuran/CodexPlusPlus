@@ -66,6 +66,8 @@ function fixture(handler, { enabled = true } = {}) {
     applyCodexRemoteSessionProviderOverride: (_, params) => params, applyCodexServiceTierRequestOnly: (_, params) => params,
     prepareCodexServiceTierRequest: async (_, params) => params,
     beginCodexServiceTierRequest: () => null, observeCodexServiceTierRequestResult: () => {},
+    prepareCodexPureApiResume: async (_, params) => params,
+    verifyCodexPureApiResumeResult: () => {},
     // 拓展的 codex/request 中间件：这里没有拓展，原样放行。
     codexPlusApplyExtensionRequestMiddlewareAsync: async (_, params) => params, codexPlusExtensionWantsRequestMiddleware: () => false,
     refreshCodexThreadModelBeforeTurn: async () => null,

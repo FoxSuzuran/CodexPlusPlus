@@ -222,6 +222,8 @@ describe("captured request clients continue forwarding requests", () => {
       const codexPlusSettings = () => ({sessionDelete:true});
       const appServerModelRequestMethod = (method) => method;
       const applyCodexRemoteSessionProviderOverride = (method, params) => params;
+      const prepareCodexPureApiResume = async (_method, params) => params;
+      const verifyCodexPureApiResumeResult = () => {};
       const codexManagedSessionConnection = () => null;
       const prepareCodexManagedSessionConnection = async (_method, params) => params;
       const sendCodexManagedSessionTurn = async () => null;

@@ -3413,7 +3413,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"28\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"33\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3458,6 +3458,7 @@ fn model_whitelist_never_claims_the_host_default_model() {
         format!(
             r#"
 const codexModelCatalog = {{
+  status: "ok",
   default_model: "supplier-default",
   model: "supplier-default",
   provider_name: "Supplier",
@@ -3467,7 +3468,8 @@ const codexPlusModelMetadata = () => null;
 const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];
-const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode: "official" }});
+let relayMode = "official";
+const codexRemoteSessionActiveProfile = () => ({{ id: "custom", relayMode }});
 const codexPlusModelUnlockEnabled = () => true;
 const codexPlusBackendSettingsLoaded = true;
 const codexPlusModelCollectionSnapshots = new WeakMap();
@@ -3505,6 +3507,21 @@ const existingContainerDefault = {{
 patchModelContainer(existingContainerDefault);
 if (existingContainerDefault.defaultModel !== hostDefault) process.exit(9);
 if (existingContainerDefault.model !== hostModel) process.exit(10);
+
+relayMode = "pureApi";
+const savedDefault = {{ model: "outside-provider-list", defaultReasoningEffort: "xhigh" }};
+const pureApiHost = {{
+  models: [{{ model: "native-model", isDefault: true }}],
+  defaultModel: savedDefault,
+  default_model: "outside-provider-list",
+  model: hostModel,
+}};
+patchModelContainer(pureApiHost, "local");
+if (pureApiHost.defaultModel.model !== "supplier-default") process.exit(11);
+if (pureApiHost.defaultModel.defaultReasoningEffort !== "medium") process.exit(12);
+if (pureApiHost.default_model !== "supplier-default") process.exit(13);
+if (pureApiHost.model !== hostModel) process.exit(14);
+if (!pureApiHost.models.some((item) => item.model === "supplier-default")) process.exit(15);
 "#
         ),
     )
@@ -3665,7 +3682,7 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["currentStateApi"], true);
     assert_eq!(cases["appServerParamsUnchanged"], true);
     assert_eq!(cases["appServerProjectlessParamsUnchanged"], true);
-    assert_eq!(cases["appServerSentCount"], 7);
+    assert_eq!(cases["appServerSentCount"], 8);
     assert_eq!(cases["serviceTierClientPatched"], true);
     assert_eq!(cases["serviceTierClientSendTier"], "priority");
     assert_eq!(cases["serviceTierClientPrewarmTier"], "priority");
@@ -3728,12 +3745,14 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
     assert_eq!(cases["refreshedOpenAiProvider"], "openai");
     assert_eq!(cases["refreshedPureApiResumeProvider"], "custom");
     assert_eq!(cases["refreshedPureApiResumeModel"], "gpt-5.6-terra");
+    assert_eq!(cases["syncDisabledExplicitProvider"], "custom");
+    assert_eq!(cases["syncDisabledModelAbsent"], true);
     assert_eq!(cases["failedRefreshProviderUnchanged"], "openai");
     assert_eq!(cases["missingActiveProviderUnchanged"], true);
     assert_eq!(cases["missingActiveRecoveryUnscheduled"], true);
     assert_eq!(cases["pureApiThreadStartProvider"], "custom");
     assert_eq!(cases["pureApiThreadResumeProvider"], "custom");
-    assert_eq!(cases["pureApiNativeResumeProvider"], "custom");
+    assert_eq!(cases["pureApiNativeResumePreserved"], true);
     assert_eq!(cases["pureApiExplicitResumePreserved"], true);
     assert_eq!(cases["officialResumePreserved"], true);
     assert_eq!(cases["pureApiTurnStartProvider"], "custom");
@@ -4332,7 +4351,7 @@ window.__codexSessionDeleteBridge = async (path) => {{
   if (path === "/settings/get") return {{
     launchMode: "patch",
     enhancementsEnabled: true,
-    providerSyncEnabled: true,
+    providerSyncEnabled: false,
     relayProfilesEnabled: true,
     activeRelayId: "refreshed-pure-api",
     activeRelaySessionProvider: "custom",
@@ -4348,6 +4367,12 @@ await appServerClient.sendRequest("thread/resume", {{
 }}, {{ signal: "pure-api-switch" }});
 const refreshedPureApiResumeProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
 const refreshedPureApiResumeModel = appServerCalls.at(-1)?.params?.model || "";
+await appServerClient.sendRequest("thread/resume", {{
+  threadId: "thread-mobile-openai-sync-disabled",
+  model_provider: "openai",
+}}, {{ signal: "pure-api-sync-disabled" }});
+const syncDisabledExplicitProvider = appServerCalls.at(-1)?.params?.modelProvider || "";
+const syncDisabledModelAbsent = !Object.prototype.hasOwnProperty.call(appServerCalls.at(-1)?.params || {{}}, "model");
 delete window.__codexSessionDeleteBridge;
 api.setBackendSettings({{
   relayProfilesEnabled: true,
@@ -4387,7 +4412,7 @@ const pureApiThreadResumeParams = {{
 }};
 const pureApiThreadResumeProvider = api.applyProviderOverride("thread/resume", pureApiThreadResumeParams)?.modelProvider;
 const pureApiNativeResumeParams = {{ threadId: "thread-mobile-native-resume" }};
-const pureApiNativeResumeProvider = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams)?.modelProvider;
+const pureApiNativeResumePreserved = api.applyProviderOverride("thread/resume", pureApiNativeResumeParams) === pureApiNativeResumeParams;
 const explicitResume = {{ threadId: "thread-other-provider", modelProvider: "other", model: "gpt-custom", reasoningEffort: "high" }};
 const pureApiExplicitResumePreserved = api.applyProviderOverride("thread/resume", explicitResume) === explicitResume;
 const pureApiTurnStartProvider = api.applyProviderOverride("turn/start", {{
@@ -4741,12 +4766,14 @@ process.stdout.write(JSON.stringify({{
   refreshedOpenAiProvider,
   refreshedPureApiResumeProvider,
   refreshedPureApiResumeModel,
+  syncDisabledExplicitProvider,
+  syncDisabledModelAbsent,
   failedRefreshProviderUnchanged,
   missingActiveProviderUnchanged,
   missingActiveRecoveryUnscheduled,
   pureApiThreadStartProvider,
   pureApiThreadResumeProvider,
-  pureApiNativeResumeProvider,
+  pureApiNativeResumePreserved,
   pureApiExplicitResumePreserved,
   officialResumePreserved,
   pureApiTurnStartProvider,

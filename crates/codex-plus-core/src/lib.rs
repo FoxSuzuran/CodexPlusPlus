@@ -14,6 +14,8 @@ pub mod builtin_takeover;
 pub mod bundled_extensions;
 pub mod ccs_import;
 pub mod cdp;
+#[cfg(any(target_os = "windows", test))]
+mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_localization;
 pub mod codex_app_state;
@@ -66,6 +68,7 @@ pub mod native_browser_connection;
 pub mod native_cua_proxy;
 pub(crate) mod native_fast;
 pub(crate) mod native_predictions;
+pub mod native_thread_goal;
 pub mod official_login;
 pub mod packaged_launch;
 pub mod paths;

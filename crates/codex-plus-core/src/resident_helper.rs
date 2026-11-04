@@ -113,6 +113,8 @@ fn start_helper(port: u16) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let thread = std::thread::Builder::new()
         .name(RESIDENT_HELPER_THREAD.to_string())
+        // 未优化的代理 async 状态机需要超过 Windows 默认值的线程栈。
+        .stack_size(8 * 1024 * 1024)
         .spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()

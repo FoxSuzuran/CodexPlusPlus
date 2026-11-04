@@ -5,6 +5,7 @@ const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
 const preview = path.join(root, "site/manager-preview");
+const version = require("../apps/codex-plus-manager/package.json").version;
 const contentTypes = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
 
 async function main() {
@@ -30,7 +31,7 @@ async function main() {
       }, value);
       await page.goto("https://fixture.invalid/");
       await page.locator(".shell .workspace").waitFor();
-      await page.locator(".side .cx-side-version").filter({ hasText: "2.2.0" }).waitFor();
+      await page.locator(".side .cx-side-version").filter({ hasText: version }).waitFor();
       assert.equal(await page.locator(".tour-root, .onboarding-setup, .sponsor-block, .home-sponsors").count(), 0);
       cases.push(`startup onboarding=${JSON.stringify(value)} stays closed`);
     }

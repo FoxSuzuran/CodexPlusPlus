@@ -433,7 +433,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "28";
+  const codexAppServerModelRequestPatchVersion = "33";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -4188,11 +4188,12 @@
     if (!params || typeof params !== "object" || Array.isArray(params)) return params;
     const profile = codexRemoteSessionActiveProfile();
     const pureApi = String(profile?.relayMode || "") === "pureApi";
-    // Pure API 恢复旧会话时必须覆盖持久化的 openai；官登会话保留原生恢复语义。
-    if (requestMethod === "thread/resume" && !pureApi) return params;
-    if (requestMethod === "turn/start" && !pureApi) return params;
     const hasModelProvider = Object.prototype.hasOwnProperty.call(params, "modelProvider")
       || Object.prototype.hasOwnProperty.call(params, "model_provider");
+    const hasModel = Object.prototype.hasOwnProperty.call(params, "model");
+    // 仅无模型/provider 字段的恢复交给原生；显式 provider 仍需沿用供应商路由。
+    if (requestMethod === "thread/resume" && (!pureApi || (!hasModel && !hasModelProvider))) return params;
+    if (requestMethod === "turn/start" && !pureApi) return params;
     if (requestMethod === "turn/start" && !hasModelProvider) return params;
     const targetProvider = codexRemoteSessionTargetProvider();
     if (!targetProvider || targetProvider === "openai") return params;
@@ -4211,6 +4212,127 @@
       to: targetProvider,
     });
     return nextParams;
+  }
+
+  async function prepareCodexPureApiResume(method, params, hostId, refreshFailed = false, sendRequest) {
+    if (hostId !== "local") return params;
+    if ([params?.hostId, params?.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      if ([params.hostId, params.host_id].some((host) => typeof host === "string" && host !== "local")) return params;
+      const envelope = () => JSON.stringify([params.hostId, params.host_id, params.method]);
+      const before = envelope();
+      const inner = params.params;
+      const assertEnvelope = () => {
+        if (envelope() !== before || params.params !== inner) throw new Error("会话主机已变化，请重新打开会话");
+      };
+      const nested = await prepareCodexPureApiResume(String(params.method), params.params, hostId, refreshFailed,
+        sendRequest && ((nestedMethod, nestedParams, options) => {
+          assertEnvelope();
+          return sendRequest(method, { ...params, method: nestedMethod, params: nestedParams }, options);
+        }));
+      assertEnvelope();
+      return nested === params.params ? params : { ...params, params: nested };
+    }
+    if (method !== "thread/resume" || !params || typeof params !== "object" || Array.isArray(params)
+        || codexRemoteSessionActiveProfile()?.relayMode !== "pureApi") {
+      return params;
+    }
+    const specified = (value) => typeof value === "string" && !!value.trim();
+    const target = codexRemoteSessionTargetProvider();
+    if (target === "openai") return params;
+    const requestedProvider = String(params.modelProvider || params.model_provider || "").trim();
+    // nullable 字段和仅指定供应商不是模型选择；补供应商时必须同时保留保存的模型设置。
+    if (specified(params.model) || (requestedProvider && requestedProvider !== "openai" && requestedProvider !== target)) return params;
+    if (specified(params.config?.model)) {
+      return applyCodexRemoteSessionProviderOverride(method, { ...params, model: params.config.model });
+    }
+    if (!target) throw new Error("当前纯 API 供应商不可用");
+    const requestSignature = () => JSON.stringify([params.threadId,
+      ...["model", "modelProvider", "model_provider"].map((key) => [Object.prototype.hasOwnProperty.call(params, key), params[key]]),
+      params.config]);
+    const requestBefore = requestSignature();
+    const signature = () => {
+      const profile = codexRemoteSessionActiveProfile();
+      return JSON.stringify([profile?.id, profile?.relayMode, profile?.configContents, codexRemoteSessionTargetProvider()]);
+    };
+    const before = signature();
+    const assertUnchanged = () => {
+      if (signature() !== before) throw new Error("供应商配置已变化，请重新打开会话");
+      if (requestSignature() !== requestBefore) throw new Error("会话设置已变化，请重新打开会话");
+    };
+    let metadata;
+    let fallbackReason = refreshFailed ? "provider_refresh_failed" : "";
+    if (!fallbackReason) {
+      try {
+        metadata = await readCodexAppServerPreparation("/thread-resume-model-metadata",
+          { thread_id: params.threadId, host_id: "local" }, codexAppServerPreparationTimeoutMs);
+      } catch {
+        fallbackReason = "metadata_unavailable";
+      }
+    }
+    assertUnchanged();
+    if (metadata?.status !== "ok" || metadata.threadId !== params.threadId
+        || typeof metadata.model !== "string" || !metadata.model.trim()
+        || !Object.prototype.hasOwnProperty.call(metadata, "reasoningEffort")
+        || (metadata.reasoningEffort !== null
+          && (typeof metadata.reasoningEffort !== "string" || !metadata.reasoningEffort.trim()))) {
+      fallbackReason ||= "metadata_unavailable";
+    }
+    if (sendRequest) {
+      // 已加载会话可能忽略连接覆盖；不卸载正在被原生界面使用的实例。
+      let timer;
+      let read;
+      try {
+        read = await Promise.race([
+          sendRequest("thread/read", { threadId: params.threadId, includeTurns: false },
+            { timeoutMs: codexAppServerPreparationTimeoutMs }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("读取会话状态超时")), codexAppServerPreparationTimeoutMs); }),
+        ]);
+      } catch {
+        fallbackReason = "thread_state_unavailable";
+      } finally { clearTimeout(timer); }
+      assertUnchanged();
+      const status = read?.thread?.status?.type;
+      if (!["idle", "notLoaded", "active"].includes(status)) {
+        fallbackReason = "thread_state_unavailable";
+      } else if (status !== "notLoaded" && read.thread.modelProvider !== target) {
+        throw new Error("此会话仍使用旧供应商连接，请重新启动 Codex 后重试");
+      }
+    }
+    const config = { ...(params.config || {}) };
+    delete config.model;
+    // 降级时不带入部分历史设置，显式请求档位始终优先。
+    if (!specified(config.model_reasoning_effort)) {
+      delete config.model_reasoning_effort;
+      if (!fallbackReason && metadata.reasoningEffort !== null) config.model_reasoning_effort = metadata.reasoningEffort;
+    }
+    const next = { ...params, modelProvider: target, config };
+    if (fallbackReason) {
+      // 旧线程缺少可靠设置时优先保持可打开，由原生选择默认模型。
+      delete next.model;
+      sendCodexPlusDiagnostic("pure_api_resume_model_fallback", { reason: fallbackReason });
+    } else {
+      next.model = metadata.model;
+    }
+    delete next.model_provider;
+    (window.__codexPlusPureApiPreparedResumes ||= new WeakSet()).add(next);
+    return next;
+  }
+
+  function verifyCodexPureApiResumeResult(method, params, result, hostId) {
+    if (hostId !== "local") return;
+    if (method === "send-cli-request-for-host" && params?.method) {
+      return verifyCodexPureApiResumeResult(String(params.method), params.params, result, hostId);
+    }
+    if (method !== "thread/resume" || !window.__codexPlusPureApiPreparedResumes?.has(params)) return;
+    const modelMismatch = !!params.model && result?.model !== params.model;
+    const providerMismatch = result?.modelProvider !== params.modelProvider;
+    const reasoningEffortMismatch = Object.prototype.hasOwnProperty.call(params.config, "model_reasoning_effort")
+      && result?.reasoningEffort !== params.config.model_reasoning_effort;
+    if (modelMismatch || providerMismatch || reasoningEffortMismatch) {
+      sendCodexPlusDiagnostic("pure_api_resume_result_mismatch",
+        { modelMismatch, providerMismatch, reasoningEffortMismatch });
+    }
   }
 
   function codexManagedSessionConnection() {
@@ -11565,8 +11687,9 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest);
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest);
+        resumeParams, client.hostId, originalSendRequest);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -11579,6 +11702,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest(method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
@@ -11773,10 +11897,11 @@
       const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const resumeParams = await prepareCodexPureApiResume(String(method || ""), providerParams, client.hostId, providerRefreshFailed, originalSendRequest.bind(client));
       // 拓展的 codex/request 中间件不在这里跑：新版 Codex 的部分请求（如 turn/start）绕过 sendRequest，
       // 直接 enqueueRequest → createRequest，所以统一挂在下面的 createRequest 上，每个请求只经过一次。
       const nextParams = await prepareCodexManagedSessionConnection(String(method || ""),
-        providerParams, client.hostId, originalSendRequest.bind(client));
+        resumeParams, client.hostId, originalSendRequest.bind(client));
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest.bind(client),
@@ -11789,6 +11914,7 @@
       if (managedTurn) return managedTurn.result;
       const result = await sendAppServerRequestThroughExchange(client, method, nextParams,
         () => originalSendRequest.call(client, method, nextParams, options));
+      verifyCodexPureApiResumeResult(String(method || ""), nextParams, result, client.hostId);
       noteCodexManagedSessionStart(String(method || ""), nextParams, result, client.hostId);
       const threadState = codexThreadModelRequestState(String(method || ""), nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
@@ -12193,6 +12319,7 @@
   function ensureCodexModelWhitelistInstalls() {
     void installCodexCollaborationModePatch();
     void installCodexModelSubmitPreparationPatch();
+    installCodexThreadGoalForwarding();
     const extensionWantsRequests = typeof codexPlusExtensionWantsRequestMiddleware === "function"
       && codexPlusExtensionWantsRequestMiddleware();
     if (codexPlusModelUnlockEnabled()
@@ -13319,11 +13446,17 @@
   function codexPlusModelPickerReportUnrecognized() {
     const state = codexPlusModelPickerGroupsState;
     if (state.unrecognizedReported) return;
+    // #2883：诊断也节流到每 2 秒最多一次——菜单关着时每 250ms 的扫描轮
+    // 都会走到这里，对每个 [role=menu] 读布局是白做工。
+    const now = Date.now();
+    if (state.lastUnrecognizedProbe && now - state.lastUnrecognizedProbe < 2000) return;
+    state.lastUnrecognizedProbe = now;
     let exact = null;
     for (const menu of document.querySelectorAll('[role="menu"]')) {
-      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      // 先过廉价的 DOM 过滤，通过了才碰 visibleElement 的强制布局。
+      if (menu.closest("[data-codex-plus-ext]")) continue;
       const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
-      if (radios.length < 2) continue;
+      if (radios.length < 2 || !visibleElement(menu)) continue;
       // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
       exact ||= codexPlusModelPickerCatalogExactMap();
       if (!exact.size) return;
@@ -17163,6 +17296,9 @@
   const codexPlusExtensionRoutes = new Set([
     "/diagnostics/log",
     "/thread-usage-history",
+    "/usage/history",
+    // Daily 固定 schema 的消费者封存；写入只影响其独立数据库。
+    "/usage/archive",
     "/archived-thread",
     "/export-markdown",
     "/user-scripts/list",

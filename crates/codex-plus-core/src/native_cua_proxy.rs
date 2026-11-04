@@ -1,5 +1,5 @@
 //! Proxy inheritance for the official CUA launcher, independent of browser identity patches.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -9,17 +9,20 @@ use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::native_browser::{atomic_write, pin_parents, plain_path, read_regular};
 
 const ENTRY: &str = "bin/node_modules/@oai/cua-repl/bin/cua-repl.mjs";
 const MODULE: &[u8] = include_bytes!("../../../assets/native-cua-proxy/proxy.mjs");
 const MAX_ENTRY: u64 = 64 * 1024;
+const MAX_DESCRIPTOR: u64 = 1024 * 1024;
 const KEYS: [&str; 4] = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
 
 #[derive(Clone)]
 struct Paths {
     codex_home: PathBuf,
+    // Only needed to restore launcher patches written by older versions.
     runtime_root: PathBuf,
     state: PathBuf,
 }
@@ -35,6 +38,13 @@ struct Control {
 #[serde(deny_unknown_fields)]
 struct Journal {
     original: String,
+    patched: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DescriptorJournal {
+    path: PathBuf,
+    original: Option<String>,
     patched: String,
 }
 
@@ -72,101 +82,14 @@ fn proxy_env(
     env
 }
 
-fn selected_key(descriptor: &Value, root: &Path) -> Result<Option<String>> {
-    let server = &descriptor["mcpServers"]["cua_repl"];
-    if server.is_null() || server["enabled"] == false {
-        return Ok(None);
-    }
-    let node = Path::new(
-        server["command"]
-            .as_str()
-            .context("Missing CUA Node command")?,
-    );
-    let relative = node
-        .strip_prefix(root)
-        .context("CUA Node is outside the runtime cache")?;
-    let key = relative
-        .components()
-        .next()
-        .context("Missing CUA runtime key")?
-        .as_os_str()
-        .to_str()
-        .context("Invalid CUA runtime key")?;
-    ensure!(
-        key_valid(key) && relative == Path::new(key).join("bin/node.exe"),
-        "Unsupported CUA runtime layout"
-    );
-    let runtime = root.join(key);
-    let env = &server["env"];
-    ensure!(
-        env["NODE_REPL_NODE_PATH"].as_str().map(Path::new) == Some(node),
-        "Conflicting CUA Node selection"
-    );
-    ensure!(
-        env["CUA_REPL_NODE_REPL_PATH"].as_str().map(Path::new)
-            == Some(runtime.join("bin/node_repl.exe").as_path()),
-        "Conflicting CUA worker"
-    );
-    let surfaces = env["CUA_REPL_ENABLED_SURFACES"]
-        .as_str()
-        .context("Missing CUA surfaces")?;
-    let services: Value = serde_json::from_str(
-        env["NODE_REPL_TRUSTED_SERVICES"]
-            .as_str()
-            .context("Missing CUA services")?,
-    )?;
-    ensure!(!surfaces.is_empty(), "Empty CUA surface selection");
-    for surface in surfaces.split(',') {
-        ensure!(
-            matches!(surface, "browser" | "computer"),
-            "Unsupported CUA surface"
-        );
-        ensure!(
-            services[if surface == "browser" {
-                "browser"
-            } else {
-                "sky"
-            }] == if surface == "browser" {
-                "@oai/browser-desktop/service"
-            } else {
-                "@oai/sky/service"
-            },
-            "Unexpected CUA trusted service"
-        );
-    }
-    let args = server["args"].as_array().context("Missing CUA arguments")?;
-    let entry = runtime.join(ENTRY);
-    ensure!(
-        args.last().and_then(Value::as_str).map(Path::new) == Some(entry.as_path()),
-        "Unexpected CUA entry point"
-    );
-    if args.len() == 3 {
-        ensure!(args[0] == "--import", "Unexpected CUA preload");
-        let preload = reqwest::Url::parse(args[1].as_str().context("Missing CUA preload")?)?
-            .to_file_path()
-            .map_err(|_| anyhow::anyhow!("CUA preload must be a local file"))?;
-        ensure!(
-            preload
-                .file_name()
-                .is_some_and(|name| name == "require-browser-access.mjs"),
-            "Unexpected CUA access preload"
-        );
-        plain_path(&preload)?;
-    } else {
-        ensure!(args.len() == 1, "Unsupported CUA arguments");
-    }
-    plain_path(node)?;
-    Ok(Some(key.to_owned()))
-}
-
-fn discover(paths: &Paths) -> Result<BTreeSet<String>> {
+fn discover(paths: &Paths) -> Result<Vec<PathBuf>> {
     let plugins = paths
         .codex_home
         .join("plugins/cache/openai-bundled/unified-computer-use");
     plain_path(&plugins)?;
-    let mut keys = BTreeSet::new();
+    let mut descriptors = Vec::new();
     if !plugins.exists() {
-        return Ok(keys);
+        return Ok(descriptors);
     }
     let metadata = paths.codex_home.join(
         ".tmp/bundled-marketplaces/openai-bundled/plugins/unified-computer-use/.codex-plugin/plugin.json",
@@ -176,21 +99,11 @@ fn discover(paths: &Paths) -> Result<BTreeSet<String>> {
         let version = plugin["version"]
             .as_str()
             .context("Missing active CUA plugin version")?;
-        ensure!(
-            plugin["name"] == "unified-computer-use"
-                && !version.is_empty()
-                && version
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
-                && !matches!(version, "." | ".."),
-            "Invalid active CUA plugin metadata"
-        );
         Some(version.to_owned())
     } else {
         None
     };
-    for (count, entry) in fs::read_dir(plugins)?.enumerate() {
-        ensure!(count < 64, "Too many CUA plugin descriptors");
+    for entry in fs::read_dir(plugins)? {
         let entry = entry?;
         if active_version
             .as_ref()
@@ -202,59 +115,50 @@ fn discover(paths: &Paths) -> Result<BTreeSet<String>> {
         if !descriptor.exists() {
             continue;
         }
-        let value = serde_json::from_slice(&read_regular(&descriptor, 1024 * 1024)?)?;
-        if let Some(key) = selected_key(&value, &paths.runtime_root)? {
-            keys.insert(key);
+        let value: Value = serde_json::from_slice(&read_regular(&descriptor, MAX_DESCRIPTOR)?)?;
+        let server = &value["mcpServers"]["cua_repl"];
+        if !server.is_null() && server["enabled"] != false {
+            descriptors.push(descriptor);
         }
     }
-    ensure!(
-        keys.len() <= 1,
-        "Ambiguous active CUA runtime; no launcher was modified"
-    );
-    Ok(keys)
+    Ok(descriptors)
 }
 
-fn transform(source: &str, module: &Path) -> Result<String> {
-    // Match the small public launcher, never minified symbols or a runtime fingerprint.
-    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
-    let alias = compact
-        .strip_prefix("#!/usr/bin/envnode")
-        .unwrap_or(&compact)
-        .strip_prefix("import*as")
-        .context("Unrecognized CUA launcher")?
-        .split_once("from")
-        .context("Unrecognized CUA import")?
-        .0;
-    ensure!(
-        !alias.is_empty()
-            && alias
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
-        "Unrecognized CUA import alias"
-    );
-    ensure!(
-        compact.contains(&format!(
-            "from\"@oai/cua-repl\";try{{await{alias}.launch();}}catch("
-        )) || compact.contains(&format!(
-            "from'@oai/cua-repl';try{{await{alias}.launch();}}catch("
-        )),
-        "Unrecognized CUA launch structure"
-    );
-    let call = format!("await {alias}.launch()");
-    ensure!(
-        source.matches(&call).count() == 1 && !source.contains("/* codex-plus-cua-proxy */"),
-        "Ambiguous or already modified CUA launcher"
-    );
-    let module = reqwest::Url::from_file_path(module)
+fn proxy_import(state: &Path) -> Result<String> {
+    let module = reqwest::Url::from_file_path(state.join("proxy.mjs"))
         .map_err(|_| anyhow::anyhow!("CUA proxy module must be an absolute path"))?;
-    Ok(source.replacen(
-        &call,
-        &format!(
-            "/* codex-plus-cua-proxy */ await import({});\n  {call}",
-            serde_json::to_string(module.as_str())?
-        ),
-        1,
+    Ok(format!(
+        "--import={}",
+        serde_json::to_string(module.as_str())?
     ))
+}
+
+fn descriptor_env(descriptor: &mut Value) -> Result<&mut serde_json::Map<String, Value>> {
+    descriptor["mcpServers"]["cua_repl"]
+        .as_object_mut()
+        .context("Invalid CUA server configuration")?
+        .entry("env")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .context("Invalid CUA environment")
+}
+
+fn node_options(env: &serde_json::Map<String, Value>) -> Result<Option<&str>> {
+    env.get("NODE_OPTIONS")
+        .map(|value| value.as_str().context("CUA NODE_OPTIONS must be a string"))
+        .transpose()
+}
+
+fn without_proxy_import(options: Option<&str>, import: &str) -> Option<String> {
+    options.and_then(|options| {
+        if options.contains(import) {
+            let remaining = options.replace(import, "");
+            let remaining = remaining.trim();
+            (!remaining.is_empty()).then(|| remaining.to_owned())
+        } else {
+            Some(options.to_owned())
+        }
+    })
 }
 
 fn write_changed(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -273,10 +177,6 @@ struct Adapter {
 impl Adapter {
     fn acquire(paths: Paths, caller: BTreeMap<String, String>) -> Result<Self> {
         plain_path(&paths.state)?;
-        ensure!(
-            !paths.state.starts_with(&paths.runtime_root),
-            "CUA backups must be outside cache"
-        );
         fs::create_dir_all(&paths.state)?;
         let lock = paths.state.join("monitor.lock");
         let _guards = pin_parents(&lock)?;
@@ -349,6 +249,37 @@ impl Adapter {
                 conflict = true;
             }
         }
+        let receipts = self.paths.state.join("descriptors");
+        if receipts.exists() {
+            let import = proxy_import(&self.paths.state)?;
+            for entry in fs::read_dir(receipts)? {
+                let journal: DescriptorJournal =
+                    serde_json::from_slice(&read_regular(&entry?.path(), MAX_DESCRIPTOR * 3)?)?;
+                if !journal.path.exists() {
+                    continue;
+                }
+                let mut descriptor: Value =
+                    serde_json::from_slice(&read_regular(&journal.path, MAX_DESCRIPTOR)?)?;
+                if descriptor["mcpServers"]["cua_repl"].is_null() {
+                    continue;
+                }
+                let env = descriptor_env(&mut descriptor)?;
+                let current = node_options(env)?;
+                let original = if current == Some(journal.patched.as_str()) {
+                    journal.original
+                } else if current.is_some_and(|value| value.contains(&import)) {
+                    without_proxy_import(current, &import)
+                } else {
+                    continue;
+                };
+                if let Some(original) = original {
+                    env.insert("NODE_OPTIONS".into(), json!(original));
+                } else {
+                    env.remove("NODE_OPTIONS");
+                }
+                atomic_write(&journal.path, &serde_json::to_vec_pretty(&descriptor)?)?;
+            }
+        }
         ensure!(
             !conflict,
             "CUA launcher changed externally; backup and current file retained"
@@ -361,33 +292,41 @@ impl Adapter {
         // With no proxy from any source, the initializer leaves its environment untouched.
         self.control(true, system)?;
         write_changed(&self.paths.state.join("proxy.mjs"), MODULE)?;
-        for key in discover(&self.paths)? {
-            let target = self.paths.runtime_root.join(&key).join(ENTRY);
+        let import = proxy_import(&self.paths.state)?;
+        for target in discover(&self.paths)? {
             let _guards = pin_parents(&target)?;
-            let current = String::from_utf8(read_regular(&target, MAX_ENTRY)?)?;
-            let receipt = self.journal(&key);
+            let mut descriptor: Value =
+                serde_json::from_slice(&read_regular(&target, MAX_DESCRIPTOR)?)?;
+            let env = descriptor_env(&mut descriptor)?;
+            let current = node_options(env)?;
+            let receipt = self.paths.state.join("descriptors").join(format!(
+                "{:x}.json",
+                Sha256::digest(target.as_os_str().as_encoded_bytes())
+            ));
             if receipt.exists() {
-                let journal: Journal =
-                    serde_json::from_slice(&read_regular(&receipt, MAX_ENTRY * 3)?)?;
-                if current == journal.patched {
+                let journal: DescriptorJournal =
+                    serde_json::from_slice(&read_regular(&receipt, MAX_DESCRIPTOR * 3)?)?;
+                if current == Some(journal.patched.as_str()) {
                     continue;
                 }
-                ensure!(
-                    current == journal.original,
-                    "CUA launcher changed externally; refusing overwrite"
-                );
             }
-            let patched = transform(&current, &self.paths.state.join("proxy.mjs"))?;
+            let original = without_proxy_import(current, &import);
+            let patched = match &original {
+                Some(options) if !options.is_empty() => format!("{options} {import}"),
+                _ => import.clone(),
+            };
             plain_path(&receipt)?;
             fs::create_dir_all(receipt.parent().context("Missing CUA backup directory")?)?;
             atomic_write(
                 &receipt,
-                &serde_json::to_vec(&Journal {
-                    original: current,
+                &serde_json::to_vec(&DescriptorJournal {
+                    path: target.clone(),
+                    original,
                     patched: patched.clone(),
                 })?,
             )?;
-            atomic_write(&target, patched.as_bytes())?;
+            env.insert("NODE_OPTIONS".into(), json!(patched));
+            atomic_write(&target, &serde_json::to_vec_pretty(&descriptor)?)?;
         }
         Ok(())
     }
@@ -460,7 +399,7 @@ pub async fn start_monitor(
         } else {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "native_cua_proxy.ready",
-                json!({"detail": "Official CUA launcher prepared"}),
+                json!({"detail": "Official CUA proxy environment prepared"}),
             );
         }
         adapter
@@ -548,6 +487,16 @@ mod tests {
         (entry, descriptor)
     }
 
+    fn descriptor_path(paths: &Paths) -> PathBuf {
+        paths
+            .codex_home
+            .join("plugins/cache/openai-bundled/unified-computer-use/v1/.mcp.json")
+    }
+
+    fn read_descriptor(paths: &Paths) -> Value {
+        serde_json::from_slice(&fs::read(descriptor_path(paths)).unwrap()).unwrap()
+    }
+
     #[test]
     fn caller_proxy_precedes_system_and_accepts_lowercase() {
         let caller = BTreeMap::from([
@@ -567,29 +516,36 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_keeps_access_preload_and_supports_both_surfaces() {
+    fn supports_runtime_outside_cache_without_modifying_launch_arguments() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
-        let (_, mut descriptor) = fixture(&paths, "runtime1");
-        let before = descriptor.clone();
-        assert_eq!(
-            selected_key(&descriptor, &paths.runtime_root).unwrap(),
-            Some("runtime1".into())
+        let (entry, mut descriptor) = fixture(&paths, "runtime1");
+        descriptor["mcpServers"]["cua_repl"]["command"] = json!(
+            paths
+                .codex_home
+                .join("Program Files/WindowsApps/Codex/resources/cua_node/bin/node.exe")
         );
-        assert_eq!(before, descriptor);
-        descriptor["mcpServers"]["cua_repl"]["env"]["CUA_REPL_ENABLED_SURFACES"] =
-            json!("computer");
-        assert!(selected_key(&descriptor, &paths.runtime_root).is_ok());
-        descriptor["mcpServers"]["cua_repl"]["env"]["CUA_REPL_ENABLED_SURFACES"] =
-            json!("terminal");
-        assert!(selected_key(&descriptor, &paths.runtime_root).is_err());
-        descriptor["mcpServers"]["cua_repl"]["command"] =
-            json!(paths.runtime_root.join("../outside/bin/node.exe"));
-        assert!(selected_key(&descriptor, &paths.runtime_root).is_err());
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
+        adapter.refresh(None).unwrap();
+        let mut patched = read_descriptor(&paths);
+        let options = descriptor_env(&mut patched)
+            .unwrap()
+            .remove("NODE_OPTIONS")
+            .unwrap();
+        assert!(options.as_str().unwrap().contains("--import="));
+        assert_eq!(patched, descriptor);
+        assert_eq!(fs::read_to_string(entry).unwrap(), SOURCE);
+        drop(adapter);
+        assert_eq!(read_descriptor(&paths), descriptor);
     }
 
     #[test]
-    fn discovery_prefers_active_plugin_and_refuses_ambiguous_selection() {
+    fn discovery_prefers_active_plugin_and_supports_multiple_cached_descriptors() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         fixture(&paths, "runtime1");
@@ -598,7 +554,7 @@ mod tests {
             .join("plugins/cache/openai-bundled/unified-computer-use");
         fs::rename(old_plugin.join("v1"), old_plugin.join("old")).unwrap();
         fixture(&paths, "runtime2");
-        assert!(discover(&paths).is_err());
+        assert_eq!(discover(&paths).unwrap().len(), 2);
         let metadata = paths.codex_home.join(".tmp/bundled-marketplaces/openai-bundled/plugins/unified-computer-use/.codex-plugin/plugin.json");
         fs::create_dir_all(metadata.parent().unwrap()).unwrap();
         fs::write(
@@ -606,46 +562,43 @@ mod tests {
             r#"{"name":"unified-computer-use","version":"v1"}"#,
         )
         .unwrap();
-        assert_eq!(
-            discover(&paths).unwrap(),
-            BTreeSet::from(["runtime2".into()])
-        );
+        assert_eq!(discover(&paths).unwrap(), vec![descriptor_path(&paths)]);
+        let mut disabled = read_descriptor(&paths);
+        disabled["mcpServers"]["cua_repl"]["enabled"] = json!(false);
         fs::write(
-            metadata,
-            r#"{"name":"unified-computer-use","version":".."}"#,
+            descriptor_path(&paths),
+            serde_json::to_vec(&disabled).unwrap(),
         )
         .unwrap();
-        assert!(discover(&paths).is_err());
+        assert!(discover(&paths).unwrap().is_empty());
     }
 
     #[test]
     fn install_is_idempotent_updates_proxy_and_restores_original() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
-        let (entry, _) = fixture(&paths, "runtime1");
+        let (entry, descriptor) = fixture(&paths, "runtime1");
         let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
         assert!(Adapter::acquire(paths.clone(), BTreeMap::new()).is_err());
         assert_eq!(fs::read_to_string(&entry).unwrap(), SOURCE);
         adapter.refresh(None).unwrap();
         assert!(
-            fs::read_to_string(&entry)
-                .unwrap()
-                .contains("codex-plus-cua-proxy")
+            read_descriptor(&paths)["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"].is_string()
         );
         adapter
             .refresh(Some("http://127.0.0.1:1234".into()))
             .unwrap();
-        let patched = fs::read_to_string(&entry).unwrap();
-        assert_eq!(patched.matches("codex-plus-cua-proxy").count(), 1);
+        let patched = fs::read(descriptor_path(&paths)).unwrap();
         adapter
             .refresh(Some("http://127.0.0.1:2345".into()))
             .unwrap();
-        assert_eq!(fs::read_to_string(&entry).unwrap(), patched);
+        assert_eq!(fs::read(descriptor_path(&paths)).unwrap(), patched);
         let config: Control =
             serde_json::from_slice(&fs::read(paths.state.join("control.json")).unwrap()).unwrap();
         assert_eq!(config.env["HTTPS_PROXY"], "http://127.0.0.1:2345");
         drop(adapter);
         assert_eq!(fs::read_to_string(&entry).unwrap(), SOURCE);
+        assert_eq!(read_descriptor(&paths), descriptor);
         assert!(
             !serde_json::from_slice::<Control>(
                 &fs::read(paths.state.join("control.json")).unwrap()
@@ -659,57 +612,137 @@ mod tests {
     fn recovers_abnormal_exit_and_tracks_a_new_runtime() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
-        let (old, _) = fixture(&paths, "runtime1");
+        let (old, original) = fixture(&paths, "runtime1");
         let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
         adapter
             .refresh(Some("http://127.0.0.1:1234".into()))
             .unwrap();
-        let candidate = fs::read(&old).unwrap();
+        let candidate = fs::read(descriptor_path(&paths)).unwrap();
         drop(adapter);
         // A terminated process leaves this exact candidate and its durable journal.
-        fs::write(&old, candidate).unwrap();
+        fs::write(descriptor_path(&paths), candidate).unwrap();
         let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
-        assert_eq!(fs::read_to_string(&old).unwrap(), SOURCE);
+        assert_eq!(read_descriptor(&paths), original);
         adapter
             .refresh(Some("http://127.0.0.1:1234".into()))
             .unwrap();
-        let (new, _) = fixture(&paths, "runtime2");
+        let (new, updated) = fixture(&paths, "runtime2");
         adapter
             .refresh(Some("http://127.0.0.1:1234".into()))
             .unwrap();
         assert!(
-            fs::read_to_string(&new)
-                .unwrap()
-                .contains("codex-plus-cua-proxy")
+            read_descriptor(&paths)["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"].is_string()
         );
         drop(adapter);
+        assert_eq!(read_descriptor(&paths), updated);
         assert_eq!(fs::read_to_string(old).unwrap(), SOURCE);
         assert_eq!(fs::read_to_string(new).unwrap(), SOURCE);
     }
 
     #[test]
-    fn preserves_external_edits_and_refuses_unknown_launcher() {
+    fn preserves_existing_options_and_external_edits_during_refresh_and_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        let (_, mut original) = fixture(&paths, "runtime1");
+        original["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"] = json!("--no-warnings");
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
+        adapter.refresh(None).unwrap();
+        let mut changed = read_descriptor(&paths);
+        let env = descriptor_env(&mut changed).unwrap();
+        let options = format!("{} --trace-warnings", node_options(env).unwrap().unwrap());
+        env.insert("NODE_OPTIONS".into(), json!(options));
+        env.insert("EXTERNAL_EDIT".into(), json!("preserved"));
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        adapter.refresh(None).unwrap();
+        let refreshed = read_descriptor(&paths);
+        let options = refreshed["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"]
+            .as_str()
+            .unwrap();
+        assert_eq!(options.matches("--import=").count(), 1);
+        assert!(options.contains("--no-warnings") && options.contains("--trace-warnings"));
+        drop(adapter);
+        let restored = read_descriptor(&paths);
+        assert_eq!(
+            restored["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            vec!["--no-warnings", "--trace-warnings"]
+        );
+        assert_eq!(
+            restored["mcpServers"]["cua_repl"]["env"]["EXTERNAL_EDIT"],
+            "preserved"
+        );
+    }
+
+    #[test]
+    fn restores_only_our_import_after_options_change_and_rejects_invalid_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        fixture(&paths, "runtime1");
+        let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
+        adapter.refresh(None).unwrap();
+        let mut changed = read_descriptor(&paths);
+        let env = descriptor_env(&mut changed).unwrap();
+        let options = format!("{} --no-warnings", node_options(env).unwrap().unwrap());
+        env.insert("NODE_OPTIONS".into(), json!(options));
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        drop(adapter);
+        assert_eq!(
+            read_descriptor(&paths)["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"],
+            "--no-warnings"
+        );
+        changed["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"] = json!(42);
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+        let error = Adapter::acquire(paths.clone(), BTreeMap::new())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("NODE_OPTIONS must be a string"));
+    }
+
+    #[test]
+    fn restores_legacy_runtime_patch_before_configuring_descriptor() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         let (entry, _) = fixture(&paths, "runtime1");
+        let patched = format!("{SOURCE}// legacy proxy patch");
+        let receipt = paths.state.join("runtime1/journal.json");
+        fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+        fs::write(
+            &receipt,
+            serde_json::to_vec(&Journal {
+                original: SOURCE.into(),
+                patched: patched.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&entry, patched).unwrap();
         let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
-        adapter
-            .refresh(Some("http://127.0.0.1:1234".into()))
-            .unwrap();
-        fs::write(&entry, "external change").unwrap();
+        assert_eq!(fs::read_to_string(&entry).unwrap(), SOURCE);
+        adapter.refresh(None).unwrap();
+        assert_eq!(fs::read_to_string(&entry).unwrap(), SOURCE);
         assert!(
-            adapter
-                .refresh(Some("http://127.0.0.1:1234".into()))
-                .is_err()
+            read_descriptor(&paths)["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"].is_string()
         );
-        assert!(adapter.restore().is_err());
-        assert_eq!(fs::read_to_string(&entry).unwrap(), "external change");
-        assert!(paths.state.join("runtime1/journal.json").is_file());
-        fs::write(&entry, SOURCE).unwrap();
-        drop(adapter);
-        assert!(transform("await other.launch();", &paths.state.join("proxy.mjs")).is_err());
-        let patched = transform(SOURCE, &paths.state.join("proxy.mjs")).unwrap();
-        assert!(transform(&patched, &paths.state.join("proxy.mjs")).is_err());
     }
 
     #[test]
@@ -766,8 +799,15 @@ mod tests {
     #[test]
     fn real_node_launcher_preserves_preload_child_environment_and_exit_codes() {
         let temp = tempfile::tempdir().unwrap();
-        let paths = paths(&temp);
-        let (entry, descriptor) = fixture(&paths, "runtime1");
+        let mut paths = paths(&temp);
+        paths.state = paths.state.join("proxy state 中文");
+        let (entry, mut original) = fixture(&paths, "runtime1");
+        original["mcpServers"]["cua_repl"]["env"]["NODE_OPTIONS"] = json!("--no-warnings");
+        fs::write(
+            descriptor_path(&paths),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
         let package = entry.parent().unwrap().parent().unwrap();
         fs::write(
             package.join("package.json"),
@@ -786,6 +826,7 @@ mod tests {
         let proxy = format!("http://{}", listener.local_addr().unwrap());
         let adapter = Adapter::acquire(paths.clone(), BTreeMap::new()).unwrap();
         adapter.refresh(Some(proxy.clone())).unwrap();
+        let descriptor = read_descriptor(&paths);
         let args: Vec<_> = descriptor["mcpServers"]["cua_repl"]["args"]
             .as_array()
             .unwrap()
@@ -794,6 +835,13 @@ mod tests {
             .collect();
         let mut command = std::process::Command::new("node");
         command.args(&args);
+        command.envs(
+            descriptor["mcpServers"]["cua_repl"]["env"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (key, value.as_str().unwrap())),
+        );
         for key in KEYS {
             command.env_remove(key).env_remove(key.to_lowercase());
         }
@@ -828,7 +876,7 @@ mod tests {
     /// Explicit opt-in probe for a live desktop session; never part of the isolated suite.
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "temporarily patches the installed official CUA runtime; press Enter to restore"]
+    #[ignore = "temporarily patches the official CUA startup environment; press Enter to restore"]
     async fn manual_official_runtime_proxy_monitor() {
         use std::io::Write;
         let state = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

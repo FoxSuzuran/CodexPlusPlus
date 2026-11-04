@@ -98,7 +98,8 @@ async function captureRuntime(assets: Record<string, string>, roots: string[]) {
   const capture = between(source, "    function locateCodexAppServerClientBreakpoint(", "    function installCodexAppServerClientPrototypePatch(");
   const from = source.indexOf("  async function* codexAppAssetSources(");
   const assetSource = from < 0 ? "" : between(source, "  async function* codexAppAssetSources(", "  function codexAppAssetUrl(");
-  const window: Record<string, any> = {};
+  const timers: Array<() => void> = [];
+  const window: Record<string, any> = { setTimeout: (callback: () => void) => timers.push(callback) };
   const reads: string[] = [];
   const diagnostics: string[] = [];
   const install = new Function(
@@ -118,7 +119,7 @@ async function captureRuntime(assets: Record<string, string>, roots: string[]) {
     reads.push(url);
     return { ok: url in assets, text: async () => assets[url] || "" };
   }, () => roots, { href: "app://-/index.html" }, (event: string) => diagnostics.push(event));
-  return { install, window, reads, diagnostics };
+  return { install, window, reads, diagnostics, timers };
 }
 
 describe("request-client discovery follows native assets", () => {
@@ -136,7 +137,7 @@ describe("request-client discovery follows native assets", () => {
     assert.deepEqual(harness.reads, [root, client], "successful discovery must not rescan");
   });
 
-  it("does not loop over cyclic imports or rescan after a definite miss", async () => {
+  it("cyclic imports are scanned once while a miss waits for a bounded retry", async () => {
     const root = "app://-/assets/a.js";
     const harness = await captureRuntime({
       [root]: 'import "./b.js";',
@@ -146,7 +147,11 @@ describe("request-client discovery follows native assets", () => {
     await harness.install();
     assert.equal(new Set(harness.reads).size, 2);
     assert.equal(harness.reads.length, 2);
-    assert.deepEqual(harness.diagnostics, ["app_server_client_capture_locate_failed"]);
+    assert.equal(harness.timers.length, 1);
+    harness.timers.shift()?.();
+    await new Promise(setImmediate);
+    assert.equal(harness.reads.length, 2, "retries must not refetch checked assets");
+    assert.deepEqual(harness.diagnostics, []);
   });
 
   it("ignores a marker in an unrelated function and still finds the real sendRequest", async () => {

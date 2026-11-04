@@ -147,26 +147,31 @@ async function main() {
     await trigger.click();
     const menu = page.getByRole("menu");
     const geometry = await menu.evaluate(menu => {
-      const bounds = menu.getBoundingClientRect(), item = menu.querySelectorAll("button")[1], button = item.getBoundingClientRect();
+      const bounds = menu.getBoundingClientRect(), item = [...menu.querySelectorAll("button")].find(node => node.textContent === "删除"), button = item.getBoundingClientRect();
       return { portaled: menu.parentElement === document.body, visible: bounds.top >= 0 && bounds.bottom <= innerHeight,
         deleteHit: item.contains(document.elementFromPoint(button.x + button.width / 2, button.y + button.height / 2)) };
     });
     assert.deepEqual(geometry, { portaled: true, visible: true, deleteHit: true });
-    await page.waitForFunction(() => document.activeElement.textContent === "复制配置");
+    await page.waitForFunction(() => document.activeElement.textContent === "编辑");
+    await page.keyboard.press("Tab");
+    assert.equal(await page.evaluate(() => document.activeElement.textContent), "复制配置");
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement.textContent), "删除");
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
     assert.equal(await trigger.evaluate(node => node === document.activeElement), true);
     await trigger.click();
-    await page.locator(".mg-matrix").evaluate(node => { node.scrollTop = 0; });
-    await page.waitForFunction(() => {
-      const menu = document.querySelector(".mg-menu");
-      if (!menu) return true;
-      const row = document.querySelector(".mg-matrix-row:last-child"), trigger = row.querySelector(".mg-menu-wrap").getBoundingClientRect();
-      const bounds = menu.getBoundingClientRect();
-      return Math.abs(bounds.top - trigger.top) > 100;
+    const scrolled = await trigger.evaluate(node => {
+      let moved = false;
+      for (let owner = node.parentElement; owner; owner = owner.parentElement) {
+        if (owner.scrollTop > 0) { owner.scrollTop = 0; moved = true; }
+      }
+      return moved;
     });
+    assert.equal(scrolled, true);
+    await menu.waitFor({ state: "detached" });
+    await trigger.scrollIntoViewIfNeeded();
+    await trigger.click();
     await page.locator("#outside").click();
     await menu.waitFor({ state: "detached" });
     record("MCP row menu", { ...geometry, keyboardItemsReachable: true, escapeRestoresFocus: true, scrollHandled: true, outsideCloses: true });

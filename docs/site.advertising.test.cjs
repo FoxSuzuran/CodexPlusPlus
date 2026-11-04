@@ -5,7 +5,7 @@ const { fileURLToPath, pathToFileURL } = require("node:url");
 const vm = require("node:vm");
 const { test } = require("node:test");
 
-for (const file of ["docs/site.js", "site/js/main.js"]) {
+for (const file of ["docs/site.js", "site/js/site.js"]) {
   test(`${file} initializes without advertising requests or timers`, async () => {
     const requests = [];
     const source = readFileSync(path.join(__dirname, "..", file), "utf8");
@@ -15,7 +15,7 @@ for (const file of ["docs/site.js", "site/js/main.js"]) {
         body: { classList: { add() {}, toggle() {}, contains: () => false } },
         createTreeWalker: () => ({ nextNode: () => null }),
         querySelector: () => null, querySelectorAll: () => [],
-        getElementById: id => id === "siteNav" ? { classList: { toggle() {} } } : null,
+        getElementById: id => id === "siteNav" ? { classList: { add() {}, toggle() {}, contains: () => false } } : null,
       },
       window: {
         addEventListener() {}, matchMedia: () => ({ matches: true }), scrollY: 0,

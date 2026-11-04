@@ -18,6 +18,10 @@ test("retired project enhancements have no UI, dispatch or scanner entry", () =>
   assert.match(source, /function retireSessionSharing\(/);
   assert.doesNotMatch(source, /function installSessionShareButton\(/);
   assert.doesNotMatch(source, /\/share\/create|\/session\/export|\/session\/import/);
+  assert.match(source, /sessionShareButtonClass = "codex-session-share-button"/);
+  // 会话分享（按钮、导入监听、开关）已整体下线。
+  assert.doesNotMatch(source, /function (?:installSessionShareButton|createSessionShare|installSessionShareImportListener)\(/);
+  // 会话行「…」菜单里的原地复制 / 自动重命名已整体下线，函数与入口都不该回来。
   assert.doesNotMatch(source, /function (?:activateSessionCopyMenuItem|activateSessionAutoRenameMenuItem)\(/);
 });
 
@@ -32,12 +36,12 @@ test("old backend switches cannot enable retired features", () => {
     codexPlusBackendSettings: {
       enhancementsEnabled: true,
       codexAppZedRemoteOpen: true, codexAppUpstreamWorktreeCreate: true,
-      codexAppNativeMenuTranslation: true,
+      codexAppNativeMenuTranslation: true, codexAppSessionShare: true,
       codexAppNativeMenuPlacement: false, codexAppStepwiseEnabled: true,
     },
   });
   vm.runInContext(`${style.slice(begin, end)}\nglobalThis.result = codexPlusSettings();`, context);
-  for (const key of ["zedRemoteOpen", "upstreamWorktreeCreate", "nativeMenuTranslation"]) {
+  for (const key of ["zedRemoteOpen", "upstreamWorktreeCreate", "nativeMenuTranslation", "sessionShare"]) {
     assert.equal(Object.hasOwn(context.result, key), false, key);
   }
   assert.equal(context.result.nativeMenuPlacement, false, "menu placement keeps its independent mapping");

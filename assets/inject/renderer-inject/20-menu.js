@@ -1,5 +1,5 @@
   function renderCodexPlusMenu() {
-    const settings = codexPlusSettings();
+    const settings = codexPlusSettings({ ignoreBuiltins: true });
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
       const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
@@ -10,11 +10,6 @@
     });
     refreshConversationViewControls();
     if (typeof syncCodexAmbientSuggestionsToggles === "function") syncCodexAmbientSuggestionsToggles();
-    document.querySelectorAll("[data-codex-plus-typing-effect]").forEach((select) => {
-      select.value = ["rainbow", "fireworks", "stars"].includes(settings.typingEffect) ? settings.typingEffect : "off";
-      select.disabled = !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.enhancementsEnabled === false;
-      if (typeof syncCodexPlusTypingEffectDropdown === "function") syncCodexPlusTypingEffectDropdown(select);
-    });
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexAppVersion: "" };
@@ -110,10 +105,10 @@
   }
 
   // Follow native JS dependencies: chunk names change between releases.
-  async function* codexAppAssetSources() {
+  async function* codexAppAssetSources(excludedUrls = []) {
     const page = new URL(location.href);
     const queue = [...codexAppAssetCandidateUrls()];
-    const seen = new Set();
+    const seen = new Set(excludedUrls);
     while (queue.length) {
       const candidate = queue.shift();
       let url;

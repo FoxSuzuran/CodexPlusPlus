@@ -110,6 +110,7 @@ test("settings refresh cannot overwrite a draft edited while loading", async () 
   let complete!: (result: unknown) => void;
   const refresh = action("refreshSettings", { ...h.context,
     call: () => new Promise((resolve) => { complete = resolve; }),
+    visibleActiveTool: (tool: unknown) => tool,
     setActiveTool: () => {}, setLaunchForm: () => {},
   });
   const operation = refresh(true);
@@ -266,6 +267,7 @@ test("updater displays real progress, unknown totals and writing stages, then re
   let cleared = 0;
   const update = action("performUpdate", {
     updateInstallProgress: progress, updateInstallPending: { current: false },
+    releaseOf: action("releaseOf", {}), updateDownloadPromise: { current: null },
     update: { latestVersion: "v1.11.0", assetName: "update.exe", assetUrl: "https://example.test/update.exe" },
     setUpdateInstallProgress: (next: any) => { progress = typeof next === "function" ? next(progress) : next; },
     window: { setTimeout: () => 1, clearTimeout: () => cleared++ },
@@ -296,6 +298,7 @@ test("updater listener failure clears pending state and allows a retry", async (
   const pending = { current: false };
   const update = action("performUpdate", {
     updateInstallProgress: progress, updateInstallPending: pending,
+    releaseOf: action("releaseOf", {}), updateDownloadPromise: { current: null },
     update: { latestVersion: "v1.11.0", assetName: "update.exe", assetUrl: "https://example.test/update.exe" },
     setUpdateInstallProgress: (next: any) => { progress = next; },
     window: { setTimeout: () => 1, clearTimeout: () => {} },

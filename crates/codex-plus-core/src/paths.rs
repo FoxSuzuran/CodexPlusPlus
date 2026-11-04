@@ -8,7 +8,6 @@ const SETTINGS_PATH_POINTER_FILE: &str = "settings.path";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
 const DIAGNOSTIC_LOG_FILE: &str = "codex-plus.log";
 const PENDING_PROVIDER_IMPORT_FILE: &str = "pending-provider-import.json";
-const PENDING_SESSION_SHARE_FILE: &str = "pending-session-share.txt";
 const PENDING_REMOTE_CONTROL_RECOVERY_FILE: &str = "pending-remote-control-recovery.json";
 const SKILLS_STATE_FILE: &str = "skills.json";
 const SKILLS_DIR: &str = "skills";
@@ -117,10 +116,6 @@ pub fn default_pending_provider_import_path() -> PathBuf {
     default_app_state_dir().join(PENDING_PROVIDER_IMPORT_FILE)
 }
 
-pub fn default_pending_session_share_path() -> PathBuf {
-    default_app_state_dir().join(PENDING_SESSION_SHARE_FILE)
-}
-
 pub fn default_pending_remote_control_recovery_path() -> PathBuf {
     default_app_state_dir().join(PENDING_REMOTE_CONTROL_RECOVERY_FILE)
 }
@@ -182,7 +177,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_settings_path();
 
-        assert!(path.ends_with(".codex-session-delete/settings.json"));
+        assert_eq!(path, default_app_state_dir().join(SETTINGS_FILE));
     }
 
     #[test]
@@ -203,7 +198,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_latest_status_path();
 
-        assert!(path.ends_with(".codex-session-delete/latest-status.json"));
+        assert_eq!(path, default_app_state_dir().join(LATEST_STATUS_FILE));
     }
 
     #[test]
@@ -211,7 +206,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_diagnostic_log_path();
 
-        assert!(path.ends_with(".codex-session-delete/codex-plus.log"));
+        assert_eq!(path, default_app_state_dir().join(DIAGNOSTIC_LOG_FILE));
     }
 
     #[test]
@@ -219,15 +214,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_provider_import_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-provider-import.json"));
-    }
-
-    #[test]
-    fn default_pending_session_share_path_uses_app_state_directory() {
-        let _guard = settings_path_test_guard();
-        let path = default_pending_session_share_path();
-
-        assert!(path.ends_with(".codex-session-delete/pending-session-share.txt"));
+        assert_eq!(path, default_app_state_dir().join(PENDING_PROVIDER_IMPORT_FILE));
     }
 
     #[test]
@@ -235,7 +222,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_remote_control_recovery_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-remote-control-recovery.json"));
+        assert_eq!(path, default_app_state_dir().join(PENDING_REMOTE_CONTROL_RECOVERY_FILE));
     }
 
     #[test]
@@ -243,7 +230,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_manager_navigation_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-manager-navigation.json"));
+        assert_eq!(path, default_app_state_dir().join(PENDING_MANAGER_NAVIGATION_FILE));
     }
 
     // 显式状态目录覆盖是 Windows 多开隔离的前提：平台无关的环境变量，
@@ -276,6 +263,7 @@ mod tests {
     fn default_app_state_dir_honours_explicit_override() {
         // `CODEX_PLUS_STATE_DIR` 是进程级环境变量，用作用域守卫保证并行测试看不到它。
         let _guard = settings_path_test_guard();
+        let original = default_app_state_dir();
         let expected = std::env::temp_dir().join("codex-plus-instance-state");
         let scope = StateDirEnvScope::set(expected.as_os_str());
 
@@ -285,7 +273,7 @@ mod tests {
         );
 
         drop(scope);
-        assert!(default_app_state_dir().ends_with(".codex-session-delete"));
+        assert_eq!(default_app_state_dir(), original);
     }
 
     /// 测试用：临时设置 `CODEX_PLUS_STATE_DIR`，Drop 时恢复原值。

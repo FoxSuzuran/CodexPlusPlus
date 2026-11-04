@@ -3,13 +3,14 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
 
-const source = await readFile(new URL("../../../assets/inject/renderer-inject/zz-paste-fix.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../../../assets/inject/renderer-inject/96-paste-fix.js", import.meta.url), "utf8");
 
 function fixture(enabled = true) {
   const handlers: ((event: unknown) => void)[] = [];
   const writes: unknown[][] = [];
   const context = vm.createContext({
     window: { __CODEX_PLUS_PASTE_FIX__: { enabled } },
+    codexPlusBackendSettingsLoaded: false,
     document: {
       addEventListener(type: string, handler: (event: unknown) => void) {
         assert.equal(type, "paste");
@@ -19,8 +20,8 @@ function fixture(enabled = true) {
     },
     console: { log() {}, warn() {} },
   });
-  vm.runInContext(source, context);
-  vm.runInContext(source, context);
+  vm.runInContext(`${source}
+codexPlusPasteFixExtension({ listen: (target, type, handler) => target.addEventListener(type, handler) });`, context);
   return {
     handlers, writes,
     paste(clipboardData: unknown) {
@@ -35,7 +36,7 @@ function fixture(enabled = true) {
   };
 }
 
-test("Word text remains plain text and repeated injection installs one paste handler", () => {
+test("Word text remains plain text through the built-in extension handler", () => {
   const f = fixture();
   assert.equal(f.handlers.length, 1);
   const result = f.paste({ items: [{ kind: "string", type: "text/html" }], getData: () => "Word text" });
@@ -64,6 +65,8 @@ test("empty and long text retain native paste", () => {
   assert.deepEqual(f.writes, []);
 });
 
-test("disabled paste fix installs no handler", () => {
-  assert.equal(fixture(false).handlers.length, 0);
+test("disabled paste fix retains native paste", () => {
+  const f = fixture(false);
+  assert.deepEqual(f.paste({ getData: () => "Word text" }), { prevented: false, stopped: false });
+  assert.deepEqual(f.writes, []);
 });

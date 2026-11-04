@@ -149,6 +149,26 @@ pub async fn claude_localization_set_voice_input(enabled: bool) -> CommandResult
 }
 
 #[tauri::command]
+pub async fn claude_localization_set_extensions(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_extensions_enabled(enabled)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
+            if enabled {
+                "Claude 拓展已开启，重启增强版后应用。"
+            } else {
+                "Claude 拓展已关闭，重启增强版后应用。"
+            },
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn claude_localization_set_localization(enabled: bool) -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(move || {
         codex_plus_core::claude_localization::set_localization(enabled)
@@ -320,6 +340,7 @@ struct WeixinQrSession {
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
     codex_path: codex_plus_core::connect::WeixinCodexPath,
+    outbound: codex_plus_core::connect::outbound::OutboundPolicy,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1864,16 +1885,32 @@ fn terminate_multi_worker(
     #[cfg(windows)]
     {
         // 创建身份、精确参数与 exe 均验证后，使用同一句柄终止，不再按 PID taskkill。
-        let terminated = codex_plus_core::multi_worker::terminate_verified_worker(
+        let result = codex_plus_core::multi_worker::terminate_verified_worker(
             pid,
             options_path,
             worker_birth_id,
-        )?;
-        if !terminated {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.multi_worker_stop_skipped",
-                json!({ "pid": pid, "reason": "identity_unverified" }),
-            );
+        );
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.multi_worker_stop_skipped",
+                    json!({ "pid": pid, "reason": "identity_unverified" }),
+                );
+            }
+            Err(error) => {
+                // 多开停止调用方会故意忽略清理错误；这里先写诊断，避免身份冲突或
+                // 查询失败只表现为“停掉了”，却没有留下跳过依据。
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.multi_worker_stop_skipped",
+                    json!({
+                        "pid": pid,
+                        "reason": "verification_error",
+                        "message": format!("{error:#}"),
+                    }),
+                );
+                return Err(error);
+            }
         }
     }
     #[cfg(not(any(unix, windows)))]
@@ -2005,14 +2042,21 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
         let _ = codex_plus_launcher::shutdown();
         return Ok(());
     };
-    while tauri::async_runtime::block_on(
-        codex_plus_core::multi_worker::codex_instance_identity_matches(&identity),
-    )
-    .unwrap_or(false)
-    {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    codex_plus_launcher::shutdown()
+    #[cfg(windows)]
+    let lifetime = codex_plus_core::multi_worker::wait_for_codex_instance_exit(&identity);
+    #[cfg(not(windows))]
+    let lifetime = {
+        while tauri::async_runtime::block_on(
+            codex_plus_core::multi_worker::codex_instance_identity_matches(&identity),
+        )
+        .unwrap_or(false)
+        {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+    let cleanup = codex_plus_launcher::shutdown();
+    lifetime.and(cleanup)
 }
 
 /// 多开实例启动结果文件名（与 `worker-options.json` 同目录）。
@@ -2546,15 +2590,28 @@ fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
     // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
     // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
     // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
+    // macOS 上按端口没匹配到时，退回结束没带调试端口的主进程（外部启动的 Codex）。
     #[cfg(windows)]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
+    #[cfg(not(any(windows, target_os = "macos")))]
     codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
     anyhow::ensure!(
         !codex_plus_core::cdp::endpoint_available(debug_port),
         "Codex 进程尚未退出"
     );
+    anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     Ok(())
+}
+
+/// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
+/// 只在 macOS 上能精确区分它和多开实例；其它平台维持「只认调试端口」。
+fn main_codex_running_without_debug_port() -> bool {
+    #[cfg(target_os = "macos")]
+    return !codex_plus_core::watcher::find_macos_codex_processes_without_debug_port().is_empty();
+    #[cfg(not(target_os = "macos"))]
+    false
 }
 
 fn wait_native_browser_shutdown()
@@ -2578,7 +2635,9 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         Err(message) => return failed(message, json!({})),
     };
     let request = normalize_launch_request(request);
-    if !codex_plus_core::cdp::endpoint_available(request.debug_port) {
+    if !codex_plus_core::cdp::endpoint_available(request.debug_port)
+        && !main_codex_running_without_debug_port()
+    {
         return ok("Codex 没有在运行。", json!({}));
     }
     let Ok(_guard) = relay_switch_mutex().try_lock() else {
@@ -3369,12 +3428,57 @@ pub async fn weixin_connect_qr_status() -> CommandResult<WeixinQrPayload> {
 }
 
 #[tauri::command]
+pub async fn weixin_connect_catalog() -> Value {
+    codex_plus_core::model_catalog::read_codex_model_catalog().await
+}
+
+#[tauri::command]
+pub async fn weixin_connect_projects(
+    codex_path: Option<String>,
+    work_dir: Option<String>,
+) -> Result<Value, String> {
+    let settings = SettingsStore::default()
+        .load()
+        .map_err(|error| format!("读取微信连接设置失败：{error}"))?;
+    let executable = codex_path.unwrap_or(settings.weixin_connect_codex_path);
+    let work_dir = work_dir.unwrap_or(settings.weixin_connect_work_dir);
+    let work_dir = if work_dir.trim().is_empty() {
+        std::env::current_dir().map_err(|error| format!("无法读取当前工作目录：{error}"))?
+    } else {
+        PathBuf::from(work_dir.trim())
+    };
+    codex_plus_core::connect::projects::list_projects(executable.trim().to_string(), work_dir)
+        .await
+        .map_err(|error| format!("读取微信连接项目失败：{error:#}"))
+}
+
+#[tauri::command]
 pub fn weixin_connect_status() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let status = weixin_status()
         .lock()
         .map(|status| status.clone())
         .unwrap_or_default();
     ok("微信连接状态已读取。", status)
+}
+
+#[tauri::command]
+pub fn weixin_connect_reset_session(peer_id: String, account_id: String) -> Result<(), String> {
+    let settings = SettingsStore::default()
+        .load()
+        .map_err(|error| error.to_string())?;
+    if settings.weixin_connect_account_id.trim() != account_id.trim() {
+        return Err("账号设置尚未保存，请保存后重试".to_string());
+    }
+    let peer = peer_id.trim();
+    if peer.is_empty() {
+        return Err("请填写需要重置的微信联系人 ID".to_string());
+    }
+    codex_plus_core::connect::controls::SessionOptionsStore::for_peer(
+        &settings.weixin_connect_account_id,
+        peer,
+    )
+    .request_reset()
+    .map_err(|error| format!("保存重置请求失败：{error}"))
 }
 
 #[tauri::command]
@@ -3405,10 +3509,12 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
     let stopping = weixin_runtime()
         .lock()
         .ok()
-        .and_then(|runtime| runtime.as_ref().map(|runtime| Arc::clone(&runtime.stop)))
-        .map(|stop| {
-            stop.store(true, Ordering::SeqCst);
-            true
+        .and_then(|runtime| {
+            runtime.as_ref().map(|runtime| {
+                runtime.stop.store(true, Ordering::SeqCst);
+                runtime.outbound.set(false, "", "");
+                true
+            })
         })
         .unwrap_or(false);
     let store = SettingsStore::default();
@@ -3572,9 +3678,12 @@ fn spawn_weixin_connect(
         token: settings.weixin_connect_token,
         account_id: settings.weixin_connect_account_id,
         allow_from: settings.weixin_connect_allow_from,
+        allow_outbound_attachments: settings.weixin_connect_allow_outbound_attachments,
         route_tag: settings.weixin_connect_route_tag,
         work_dir: settings.weixin_connect_work_dir,
         model: settings.weixin_connect_model,
+        reasoning_effort: settings.weixin_connect_reasoning_effort,
+        project_id: settings.weixin_connect_project_id,
         sandbox: settings.weixin_connect_sandbox,
         codex_path: settings.weixin_connect_codex_path,
     }
@@ -3590,9 +3699,11 @@ fn spawn_weixin_connect(
         anyhow::bail!("微信连接已在运行或正在停止");
     }
     let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
+    let outbound = SettingsStore::default().weixin_outbound_policy(&config, Arc::clone(&stop))?;
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
         codex_path: codex_path.clone(),
+        outbound: outbound.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -3605,11 +3716,12 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_outbound(
             config,
             stop,
             Arc::clone(&task_status),
             codex_path,
+            outbound,
         )
         .await
             && let Ok(mut current) = task_status.lock()
@@ -3770,6 +3882,19 @@ pub fn save_settings(
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    if let Err(error) = codex_plus_core::connect::outbound::validate_settings_change(&previous, &settings) {
+        return failed(
+            &error.to_string(),
+            SettingsPayload {
+                revision: settings.settings_revision.clone(),
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            },
+        );
+    }
     let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
     if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
         dream_skin_enabled,
@@ -3797,6 +3922,13 @@ pub fn save_settings(
                 && let Some(runtime) = runtime.as_ref()
             {
                 runtime.codex_path.set(&settings.weixin_connect_codex_path);
+                runtime.codex_path.set_defaults(codex_plus_core::connect::SessionDefaults {
+                    model: settings.weixin_connect_model.clone(),
+                    reasoning_effort: settings.weixin_connect_reasoning_effort.clone(),
+                    project_id: settings.weixin_connect_project_id.clone(),
+                    work_dir: settings.weixin_connect_work_dir.clone(),
+                    sandbox: settings.weixin_connect_sandbox.clone(),
+                });
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
             crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
@@ -5937,7 +6069,7 @@ fn persist_provider_sync_selection(provider: &str) {
 
 #[tauri::command]
 pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    match script_market::fetch_market_manifest(script_market::DEFAULT_MARKET_INDEX_URL).await {
+    match script_market::cached_market_manifest(true).await {
         Ok(manifest) => ok(
             "脚本市场已刷新。",
             script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
@@ -6058,6 +6190,8 @@ pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
         .and_then(|status| status.debug_port)
         .unwrap_or_else(default_debug_port);
     let manager = default_user_script_manager();
+    // 手动改过拓展文件后热重载：顺带让 Codex 钩子条目与拓展声明一致。
+    codex_plus_core::extension_hooks::sync_default(&manager);
     match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
         Ok(user_scripts) => {
             let page_reload = user_scripts["reload_mode"] == "page";
@@ -6135,11 +6269,29 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
-pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
+pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandResult<SettingsPayload> {
+    let claude = match host.as_deref() {
+        None | Some("codex") => false,
+        Some("claude") => true,
+        Some(_) => return failed("不支持的拓展宿主。", fallback_settings_payload()),
+    };
     let manager = default_user_script_manager();
-    match manager.set_global_enabled(enabled) {
+    let result = if claude {
+        manager.set_claude_extensions_enabled(enabled)
+    } else {
+        manager.set_global_enabled(enabled).map(|_| ())
+    };
+    // 拓展声明的 Codex 钩子跟着拓展开关走：同步 Codex 配置里的分发条目（失败只记日志）。
+    if !claude {
+        codex_plus_core::extension_hooks::sync_default(&manager);
+    }
+    match result {
         Ok(_) => settings_payload(
-            if enabled {
+            if claude && enabled {
+                "Claude Desktop 拓展已开启，重新启动增强版 Claude 后加载。"
+            } else if claude {
+                "Claude Desktop 拓展已关闭。"
+            } else if enabled {
                 "本地拓展整体已开启。"
             } else {
                 "本地拓展整体已关闭。"
@@ -6172,16 +6324,141 @@ pub fn set_user_scripts_skip_next_start(skip: bool) -> CommandResult<SettingsPay
     }
 }
 
+/// 拓展的管理器面板（codexpp.json 的 `manager.page`）或设置页（`settings.page`，`kind` 为 "settings"）：
+/// 标题与 HTML，由前端放进沙箱 iframe。设置页在拓展停用时也能打开。
 #[tauri::command]
-pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
+pub fn extension_manager_page(key: String, kind: Option<String>) -> Result<Value, String> {
+    let manager = default_user_script_manager();
+    let page = if kind.as_deref() == Some("settings") {
+        manager.extension_settings_page(key.trim())
+    } else {
+        manager.extension_manager_page(key.trim())
+    };
+    page
+        .map(|(title, html)| serde_json::json!({ "title": title, "html": html }))
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 管理器面板的 `codexPlusManager.asset(path)`：只读本拓展包 assets/ 里的资源（设置页在拓展停用时也能取）。
+#[tauri::command]
+pub fn extension_manager_asset(key: String, path: String, kind: Option<String>) -> Result<String, String> {
+    default_user_script_manager()
+        .extension_asset_for(key.trim(), &path, kind.as_deref() != Some("settings"))
+        .map_err(|error| format!("{error:#}"))
+}
+/// 设置页 / 管理器面板的 `codexPlusManager.call(route, payload)`：只认开放给拓展页面、且本拓展清单声明过的数据路由。
+#[tauri::command]
+pub async fn extension_page_call(key: String, route: String, payload: Value) -> Result<Value, String> {
+    default_user_script_manager()
+        .extension_page_route(key.trim(), route.trim(), &payload)
+        .await
+        .map_err(|error| format!("{error:#}"))
+}
+
+/// 新增管理器公共数据出口：后端复核声明、逐字段投影，不转发任意命令或内部配置。
+#[tauri::command]
+pub async fn extension_manager_data(key: String, name: String, params: Option<Value>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        default_user_script_manager().authorize_manager_data(key.trim(), &name)
+            .map_err(|_| "拓展未启用、清单无效或未声明这项管理器数据".to_string())?;
+        let params = params.unwrap_or(Value::Null);
+        let read = || -> anyhow::Result<Value> {
+            use codex_plus_core::{extension_manager_data as public, gateway};
+            match name.as_str() {
+                "gatewayProviders" | "gatewayRouting" | "gatewayHealth" | "gatewayQuota" => {
+                    let gateway = gateway::store::GatewayStore::default().load()?;
+                    Ok(match name.as_str() {
+                        "gatewayProviders" => public::gateway_providers(&gateway),
+                        "gatewayRouting" => public::gateway_routing(&gateway),
+                        "gatewayHealth" => public::gateway_health(&gateway, &gateway::key_pool::snapshot(std::time::Instant::now()), &gateway::speed::snapshot(), &gateway::activity::snapshot()),
+                        _ => public::gateway_quota(&gateway, gateway::quota::get),
+                    })
+                }
+                "installedSkills" => Ok(public::installed_skills(&default_skills_manager().local_inventory())),
+                "installedPlugins" => codex_plus_core::plugin_market::installed_summary(&codex_plus_core::codex_home::default_codex_home_dir()),
+                "agentCollaboration" => {
+                    let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 200) as usize;
+                    codex_plus_core::agent_collaboration::Store::default().extension_summary(limit)
+                }
+                _ => anyhow::bail!("未开放的数据源"),
+            }
+        };
+        // 不把底层错误中的配置路径、上游响应或原始文件内容带进 iframe。
+        read().map_err(|_| "无法读取管理器数据".to_string())
+    }).await.map_err(|_| "管理器数据读取任务失败".to_string())?
+}
+
+/// 管理器面板的 `codexPlusManager.backend.call(method, params)`：只调本拓展自己的常驻后台。
+#[tauri::command]
+pub async fn extension_manager_backend_call(key: String, method: String, params: Value) -> Result<Value, String> {
+    let manager = default_user_script_manager();
+    codex_plus_core::extension_backend::call(
+        &manager,
+        key.trim(),
+        method.trim(),
+        params,
+        std::time::Duration::from_secs(30),
+        Some("manager"),
+    )
+    .await
+    .map_err(|error| format!("{error:#}"))
+}
+
+/// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
+#[tauri::command]
+pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return failed("拓展 key 不能为空。", fallback_settings_payload());
+    }
+    match default_user_script_manager().set_extension_config(trimmed, &values) {
+        Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
+        Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
+    }
+}
+
+/// 保存配置后先试着在 Codex 页面里原地生效（拓展用 ctx.onConfigUpdate 接住时不必热重载）。返回 "applied" 或 "reload"。
+#[tauri::command]
+pub async fn update_extension_config_live(key: String) -> Result<String, String> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    Ok(codex_plus_core::user_scripts::update_live_config(debug_port, &manager, key.trim())
+        .await
+        .unwrap_or_else(|_| "reload".to_string()))
+}
+
+#[tauri::command]
+pub fn set_user_script_enabled(key: String, enabled: bool, host: Option<String>) -> CommandResult<SettingsPayload> {
+    let claude = match host.as_deref() {
+        None | Some("codex") => false,
+        Some("claude") => true,
+        Some(_) => return failed("不支持的拓展宿主。", fallback_settings_payload()),
+    };
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.set_script_enabled(trimmed, enabled) {
+    let result = if claude {
+        manager.set_claude_script_enabled(trimmed, enabled)
+    } else {
+        manager.set_script_enabled(trimmed, enabled)
+    };
+    if !claude {
+        codex_plus_core::extension_hooks::sync_default(&manager);
+    }
+    match result {
         Ok(_) => settings_payload(
-            if enabled {
+            if claude && enabled {
+                "Claude Desktop 拓展已启用，重新启动增强版 Claude 后加载。"
+            } else if claude {
+                "Claude Desktop 拓展已停用。"
+            } else if enabled {
                 "脚本已启用。"
             } else {
                 "脚本已禁用。"
@@ -6202,7 +6479,9 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
         return failed("脚本 key 不能为空。", fallback_settings_payload());
     }
     let manager = default_user_script_manager();
-    match manager.delete_user_script(trimmed) {
+    let result = manager.delete_user_script(trimmed);
+    codex_plus_core::extension_hooks::sync_default(&manager);
+    match result {
         Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
         Err(error) => failed(
             &format!("脚本删除失败：{error}"),
@@ -6368,6 +6647,10 @@ pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsP
     install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
 }
 
+fn skill_install_failure_message(failure_prefix: &str, error: &anyhow::Error) -> String {
+    format!("{failure_prefix}：{error:#}")
+}
+
 async fn install_or_update_skill(
     repo_key: &str,
     id: &str,
@@ -6391,7 +6674,7 @@ async fn install_or_update_skill(
         }
         Err(error) => {
             return failed(
-                &format!("{failure_prefix}：{error}"),
+                &skill_install_failure_message(failure_prefix, &error),
                 current_skills_payload(&manager),
             );
         }
@@ -6429,7 +6712,7 @@ async fn install_or_update_skill(
         Ok(bytes) => bytes,
         Err(error) => {
             return failed(
-                &format!("{failure_prefix}：{error}"),
+                &skill_install_failure_message(failure_prefix, &error),
                 current_skills_payload(&manager),
             );
         }
@@ -6437,7 +6720,7 @@ async fn install_or_update_skill(
     match manager.install_from_zip(&skill, &zip) {
         Ok(_) => ok(success_message, current_skills_payload(&manager)),
         Err(error) => failed(
-            &format!("{failure_prefix}：{error}"),
+            &skill_install_failure_message(failure_prefix, &error),
             current_skills_payload(&manager),
         ),
     }
@@ -6689,7 +6972,7 @@ fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> S
     skills_payload(manager, &all_cached_repo_skills(), Vec::new())
 }
 
-fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
+pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
     codex_plus_core::skills::SkillsManager::new(
         codex_plus_core::paths::default_skills_source_dir(),
         codex_plus_core::paths::default_skill_backups_dir(),
@@ -6873,6 +7156,8 @@ pub async fn check_update() -> CommandResult<Value> {
                     "assetName": update.asset_name,
                     "assetUrl": update.asset_url,
                     "updateAvailable": update.update_available,
+                    // 安装包是否已经在后台下好：界面据此显示「安装」而不是「下载并安装」。
+                    "downloaded": update.update_available && update_already_downloaded(&update),
                     "progress": 0
                 }),
             }
@@ -6892,7 +7177,56 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+fn update_download_dir() -> std::path::PathBuf {
+    codex_plus_core::paths::default_app_state_dir().join("updates")
+}
+
+fn update_already_downloaded(update: &codex_plus_core::update::UpdateCheck) -> bool {
+    let release = codex_plus_core::update::Release {
+        version: update.latest_version.clone().unwrap_or_default(),
+        url: String::new(),
+        body: String::new(),
+        asset_name: update.asset_name.clone(),
+        asset_url: update.asset_url.clone(),
+    };
+    codex_plus_core::update::downloaded_installer(&release, &update_download_dir()).is_some()
+}
+
+/// 只下载安装包、不安装（「有可用更新时自动下载」）。下载进度走 `update-download-progress` 事件，
+/// 和安装时的 `update-progress` 分开，后台下载不会弹出安装进度。已经下好的直接返回。
+#[tauri::command]
+pub async fn download_update(
+    app: tauri::AppHandle,
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    let Some(release) = release else {
+        return failed(
+            "请先检查更新并选择可下载的 Release asset。",
+            json!({ "downloaded": false }),
+        );
+    };
+    let emitter = app.clone();
+    match codex_plus_core::update::download_update_with_progress(&release, &update_download_dir(), move |progress| {
+        let _ = emitter.emit("update-download-progress", progress);
+    })
+    .await
+    {
+        Ok(path) => ok(
+            &format!("新版本 {} 已下载，点「安装」即可更新。", release.version),
+            json!({
+                "downloaded": true,
+                "latestVersion": release.version,
+                "installerPath": path.to_string_lossy(),
+            }),
+        ),
+        Err(error) => failed(
+            &format!("后台下载更新失败：{error}"),
+            json!({ "downloaded": false, "latestVersion": release.version }),
+        ),
+    }
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[tauri::command]
 pub async fn perform_update(
     app: tauri::AppHandle,
@@ -6929,7 +7263,7 @@ pub async fn perform_update(
     result
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 #[tauri::command]
 pub async fn perform_update(
     release: Option<codex_plus_core::update::Release>,
@@ -6954,7 +7288,7 @@ where
             }),
         );
     };
-    let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
+    let download_dir = update_download_dir();
     match codex_plus_core::update::perform_update_with_progress(
         &release,
         &download_dir,
@@ -7058,6 +7392,23 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
             "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(&profile_id).is_some()
         }),
     )
+}
+
+/// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
+/// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
+#[tauri::command]
+pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+    let limit = limit.unwrap_or(30).clamp(1, 200);
+    match codex_plus_core::request_log::read_recent_request_logs(limit) {
+        Ok(entries) => ok(
+            &format!("已读取 {} 条请求。", entries.len()),
+            json!({ "entries": entries }),
+        ),
+        Err(error) => failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -7494,32 +7845,6 @@ pub fn reset_settings() -> CommandResult<SettingsPayload> {
         Ok(()) => settings_payload("设置已重置为默认值。", "设置重置后重新读取失败"),
         Err(error) => failed(
             &format!("重置设置失败：{error}"),
-            SettingsPayload {
-                revision: settings.settings_revision.clone(),
-                settings,
-                settings_path: codex_plus_core::paths::default_settings_path()
-                    .to_string_lossy()
-                    .to_string(),
-                user_scripts: user_script_inventory(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn reset_image_overlay_settings() -> CommandResult<SettingsPayload> {
-    let store = SettingsStore::default();
-    let mut settings = store.load().unwrap_or_default();
-    let defaults = BackendSettings::default();
-    settings.codex_app_image_overlay_enabled = defaults.codex_app_image_overlay_enabled;
-    settings.codex_app_image_overlay_path = defaults.codex_app_image_overlay_path;
-    settings.codex_app_image_overlay_opacity = defaults.codex_app_image_overlay_opacity;
-    settings.codex_app_image_overlay_fit_mode = defaults.codex_app_image_overlay_fit_mode;
-    let settings = normalize_settings_before_save(settings);
-    match store.save(&settings) {
-        Ok(()) => settings_payload("图片覆盖层设置已重置。", "图片覆盖层重置后重新读取失败"),
-        Err(error) => failed(
-            &format!("重置图片覆盖层失败：{error}"),
             SettingsPayload {
                 revision: settings.settings_revision.clone(),
                 settings,
@@ -9297,9 +9622,17 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     {
         codex_plus_core::windows_open_url(url)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("启动系统浏览器失败：{error}"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
             .arg(url)
             .spawn()
             .map(|_| ())
@@ -9386,13 +9719,19 @@ fn script_market_payload_from_manifest(
         .iter()
         .map(|script| market_script_payload(script, &installed))
         .collect::<Vec<_>>();
+    // 精选拓展包（含官方）与已装但被下架的拓展。
+    let (packages, blocked_installed) =
+        script_market::market_packages_payload(&default_user_script_manager(), manifest);
     ScriptMarketPayload {
         market: json!({
             "status": status,
             "message": message,
             "indexUrl": script_market::DEFAULT_MARKET_INDEX_URL,
             "updatedAt": manifest.updated_at.clone().unwrap_or_default(),
-            "scripts": scripts
+            "scripts": scripts,
+            "packages": packages,
+            "blocked": manifest.blocked,
+            "blockedInstalled": blocked_installed
         }),
         user_scripts,
     }
@@ -9441,34 +9780,9 @@ fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, Str
     })
 }
 
-fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
+pub(crate) fn default_user_script_manager() -> UserScriptManager {
+    // 目录算法统一在 core，启动器、本地代理、钩子分发共用同一份。
+    codex_plus_core::user_scripts::default_user_script_manager()
 }
 
 fn diagnostics_report() -> String {
@@ -9833,6 +10147,17 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn skill_install_failure_message_preserves_the_error_chain() {
+        let error = anyhow::anyhow!("root cause")
+            .context("download context")
+            .context("repository context");
+        assert_eq!(
+            skill_install_failure_message("update failed", &error),
+            "update failed：repository context: download context: root cause"
+        );
+    }
 
     #[test]
     fn skills_payload_hides_disabled_repository_catalog() {
@@ -11962,47 +12287,6 @@ enabled = true
         assert!(claude.switchable);
         assert!(!claude.active);
         assert!(claude.home_dir.ends_with(".claude"));
-    }
-
-    #[test]
-    fn reset_image_overlay_settings_preserves_supplier_settings() {
-        let _guard = lock_codex_home_for_test();
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
-
-        let settings = BackendSettings {
-            codex_app_image_overlay_enabled: true,
-            codex_app_image_overlay_path: "C:\\Users\\me\\Pictures\\overlay.png".to_string(),
-            codex_app_image_overlay_opacity: 42,
-            codex_app_image_overlay_fit_mode: "fill".to_string(),
-            active_relay_id: "supplier-a".to_string(),
-            relay_profiles: vec![RelayProfile {
-                id: "supplier-a".to_string(),
-                name: "供应商 A".to_string(),
-                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
-                api_key: "sk-test".to_string(),
-                ..RelayProfile::default()
-            }],
-            ..BackendSettings::default()
-        };
-        SettingsStore::default().save(&settings).unwrap();
-
-        let result = reset_image_overlay_settings();
-        codex_plus_core::paths::set_settings_path_for_tests(previous);
-
-        assert_eq!(result.status, "ok");
-        assert!(!result.payload.settings.codex_app_image_overlay_enabled);
-        assert_eq!(result.payload.settings.codex_app_image_overlay_path, "");
-        assert_eq!(result.payload.settings.codex_app_image_overlay_opacity, 35);
-        assert_eq!(
-            result.payload.settings.codex_app_image_overlay_fit_mode,
-            "fit"
-        );
-        assert_eq!(result.payload.settings.active_relay_id, "supplier-a");
-        assert_eq!(result.payload.settings.relay_profiles.len(), 1);
-        assert_eq!(result.payload.settings.relay_profiles[0].id, "supplier-a");
-        assert_eq!(result.payload.settings.relay_profiles[0].api_key, "sk-test");
     }
 
     #[test]

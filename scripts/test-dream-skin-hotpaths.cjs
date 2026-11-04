@@ -57,25 +57,23 @@ async function main() {
     assert.equal(await marked(), false, "cleanup removes the runtime compatibility marker");
 
     await page.evaluate(`(() => {
-      const codexPlusSettings = () => ({typingEffect: "stars"});
-      const isExtensionUiNode = node => !!node.closest("[data-codex-plus-ext]");
-      const registerCodexPlusExtensionSelector = () => {};
       window.geometryReads = 0;
       const original = Element.prototype.getBoundingClientRect;
       Element.prototype.getBoundingClientRect = function() { window.geometryReads++; return original.call(this); };
-      ${read("assets/inject/renderer-inject/94-typing-effects.js")}
-      installCodexPlusTypingEffects();
+      ${read("assets/extensions/typing-effects/effects.js")}
+      window.testTypingEffects = createCodexPlusTypingEffects(() => "stars");
+      window.testTypingEffects.install();
     })();`);
     await page.$eval("#composer", node => node.setAttribute("data-codex-composer-root", ""));
     await page.locator("textarea").focus();
     await page.keyboard.type("a");
-    assert.equal(await page.locator('[data-codex-plus-ext="builtin-typing-effects"]').count(), 1);
+    assert.equal(await page.locator('[data-codex-plus-ext="typing-effects"]').count(), 1);
     const geometryReads = await page.evaluate(() => window.geometryReads);
     await page.waitForTimeout(150);
     assert.equal(await page.evaluate(() => window.geometryReads), geometryReads, "animation frames must not force layout");
     assert.equal(await page.locator("textarea").inputValue(), "a");
-    await page.evaluate(() => window.__codexPlusTypingEffectsRuntime.dispose());
-    assert.equal(await page.locator('[data-codex-plus-ext="builtin-typing-effects"]').count(), 0);
+    await page.evaluate(() => window.testTypingEffects.uninstall());
+    assert.equal(await page.locator('[data-codex-plus-ext="typing-effects"]').count(), 0);
     assert.deepEqual(errors, []);
     console.log("PASS: runtime CSS cache, alpha marker, class invalidation, cleanup and layout-free typing animation");
   } finally { await browser.close(); }

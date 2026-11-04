@@ -35,6 +35,7 @@ const context = vm.createContext({
   scanDeferred() { counters.deferred++; },
   pruneSessionMoreMenus() {},
   pruneRemovedSessionActions() { return false; },
+  pruneRemovedCodexPlusUiSlots() { return false; },
 });
 vm.runInContext(`${init}\n${runStep}\n${scan}\n${scheduling}`, context);
 const flush = queue => {

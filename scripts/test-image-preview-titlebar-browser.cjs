@@ -107,7 +107,8 @@ const declarations = Array.from(names, name => {
       if (zoom === 1 && width !== 1180) {
         const output = path.join(root, "output/playwright");
         fs.mkdirSync(output, { recursive: true });
-        await page.screenshot({ path: path.join(output, `image-preview-titlebar-${width}.png`) });
+        const screenshot = path.join(output, `image-preview-titlebar-${width}.png`);
+        if (!fs.existsSync(screenshot)) await page.screenshot({ path: screenshot });
       }
       results.push({ width, zoom, captionBottom: fixed.captionBottom,
         actionsTop: fixed.actions[0].top, allControlsClickable: true });

@@ -710,7 +710,7 @@
         cursor: default;
         opacity: .5;
       }
-      span:has(> [data-codex-intelligence-trigger] + [data-codex-native-fast-shortcut]) {
+      span:has(> :is([data-codex-intelligence-trigger], [data-composer-navigation-target="reasoning"]) + [data-codex-native-fast-shortcut]) {
         display: inline-flex;
         align-items: center;
         gap: 4px;
@@ -2505,7 +2505,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, sessionDeleteSkipConfirm: false, markdownExport: true, pasteFix: false, offlineAutoReview: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, historyTurnRecovery: false, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, turnRewind: false, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -2528,6 +2528,7 @@
     capacityAutoRetry: "codexAppCapacityAutoRetry",
     turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
+    offlineAutoReview: "codexAppOfflineAutoReview",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
     dreamSkinPaused: "codexAppDreamSkinPaused",
     dreamSkinThemeConfig: "codexAppDreamSkinThemeConfig",
@@ -2563,6 +2564,7 @@
         conversationView: "conversation-view",
         activityOverlayRight: "activity-overlay-right",
         pasteFix: "paste-fix",
+        offlineAutoReview: "offline-auto-review",
         stepwise: "stepwise",
         answerOutline: "answer-outline",
         petRealMouseLook: "pet-real-mouse",
@@ -2581,6 +2583,7 @@
         markdownExport: false,
         sideChatSave: false,
         pasteFix: false,
+        offlineAutoReview: false,
         threadIdBadge: false,
         conversationView: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
@@ -2693,7 +2696,11 @@
     const existing = document.querySelector("main.main-surface");
     if (existing) return existing;
 
-    const modularSurface = document.querySelector('main[class*="_MainContentSurface_"]');
+    // 优先按 `data-app-shell-main-surface` 属性找，和上游梦皮的选择器契约（shell-main）一致；
+    // 属性不受 CSS Modules 哈希格式变化影响（26.1029 把类名改成了 `MainContentSurface-哈希`，属性仍在）。
+    // 属性也没有时，再按类名找，新旧格式都认（#2893）。
+    const modularSurface = document.querySelector("main[data-app-shell-main-surface]")
+      || document.querySelector('main[class*="_MainContentSurface_"], main[class^="MainContentSurface-"], main[class*=" MainContentSurface-"]');
     const mainCandidates = modularSurface ? [] : [...document.querySelectorAll("main")];
     const shellMain = modularSurface || (mainCandidates.length === 1 ? mainCandidates[0] : null);
     if (!shellMain) return null;
@@ -3213,7 +3220,7 @@
         && (
           homeCandidate.querySelector('.group\\/home-suggestions')
           || homeCandidate.querySelector('[class*="home-suggestions"]')
-          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"], [class^="homeUtilityBar-"], [class*=" homeUtilityBar-"]')
         )
       );
       const home = homeHasClassicChrome ? homeCandidate : null;
@@ -5265,6 +5272,87 @@
     });
     return codexForkReadinessState.installing;
   }
+  /**
+   * 内置拓展「拿不到远程开关时补开『替我审批』」（#2817）。
+   *
+   * Codex 权限菜单里的「替我审批」（agentMode = guardian-approvals）是否出现，看的是 Statsig
+   * 远程开关 `guardian_approval`（闸门 3902016271）。这份数据由 OpenAI 后端预置下发，国内网络下
+   * 拉不到时 Statsig 客户端是 Ready 但没有任何数据（NoValues），所有远程开关都按关处理，入口随之消失。
+   * 审批本身是一次普通的模型请求（固定模型名 codex-auto-review），走当前配置的供应商 / 网关，
+   * 所以补上入口就能用。
+   *
+   * 做法：只在客户端完全没有数据时，往它的数据适配器里补一份只含这一个闸门的最小数据，其余开关
+   * 仍然是「没下发 = 关」，和补之前一样。`setData` 只写内存、不写 localStorage，关掉开关后重启
+   * Codex 即恢复原样；拿到了真实数据（有网络）就完全不碰。
+   */
+  const codexPlusOfflineAutoReviewGate = "3902016271";
+  const codexPlusOfflineAutoReviewRule = "codex-plus:offline-auto-review";
+
+  function codexPlusOfflineAutoReviewEnabled() {
+    return codexPlusBackendSettingsLoaded === true && codexPlusSettings().offlineAutoReview === true;
+  }
+
+  function codexPlusOfflineAutoReviewClients() {
+    const root = window.__STATSIG__ || globalThis.__STATSIG__;
+    if (!root || typeof root !== "object") return [];
+    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+  }
+
+  /** 补一次；真的补了返回 true。客户端还在加载、或已经有数据时什么都不做。 */
+  function codexPlusOfflineAutoReviewPatch(client) {
+    if (!client || client.loadingStatus !== "Ready") return false;
+    let context;
+    try {
+      context = client.getContext();
+    } catch {
+      return false;
+    }
+    if (!context || context.values != null) return false;
+    const adapter = client.dataAdapter;
+    if (typeof adapter?.setData !== "function" || typeof client.updateUserSync !== "function") return false;
+    const values = {
+      feature_gates: {
+        [codexPlusOfflineAutoReviewGate]: {
+          name: codexPlusOfflineAutoReviewGate,
+          value: true,
+          rule_id: codexPlusOfflineAutoReviewRule,
+          secondary_exposures: [],
+          id_type: "userID",
+        },
+      },
+      dynamic_configs: {},
+      layer_configs: {},
+      param_stores: {},
+      time: Date.now(),
+      has_updates: true,
+      hash_used: "none",
+      user: context.user,
+    };
+    adapter.setData(JSON.stringify(values));
+    client.updateUserSync(context.user);
+    return true;
+  }
+
+  function codexPlusOfflineAutoReviewTick() {
+    if (!codexPlusOfflineAutoReviewEnabled()) return;
+    for (const client of codexPlusOfflineAutoReviewClients()) {
+      try {
+        if (codexPlusOfflineAutoReviewPatch(client)) {
+          console.log("[OfflineAutoReview]", "Statsig 没有远程数据，已补开「替我审批」入口");
+        }
+      } catch (error) {
+        console.warn("[OfflineAutoReview]", "补开失败：", error && error.message);
+      }
+    }
+  }
+
+  function codexPlusOfflineAutoReviewExtension(ctx) {
+    codexPlusOfflineAutoReviewTick();
+    // Statsig 可能晚于注入才 Ready，后台刷新失败也可能再次清空数据：低频复查，补过且仍有数据时是空操作。
+    ctx.setInterval(codexPlusOfflineAutoReviewTick, 3000);
+  }
   async function loadBackendSettings() {
     const loaded = await loadBackendSettingsState();
     if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
@@ -6259,9 +6347,10 @@
     // 别改用 main[data-app-shell-main-surface] 的 --app-shell-main-surface-clip-start-radius：
     // 那个元素左边缘在 362（缩在侧边栏后面），左侧还用 inset 负内缩把圆角裁掉，start 恒为 0，
     // 会让人误判左侧不该圆——第一版就是这么写错的，用户反馈「少一个圆角」正是缺了左边两个角。
-    // 类名是 CSS Modules 的哈希名，但 _PageSurface_ 这个片段稳定，且不会命中 _PageSurfaceLayout_
-    //（其后紧跟 L 而非 _）。量到的是视觉值，同样折算成布局坐标。读不到就保持 0，不做猜测。
-    const pageSurface = document.querySelector('[class*="_PageSurface_"]');
+    // 类名是 CSS Modules 的哈希名，但 PageSurface 这个名字稳定，且不会命中 PageSurfaceLayout
+    //（新旧两种哈希格式 `_PageSurface_xx` / `PageSurface-xx` 都认，#2893）。量到的是视觉值，同样折算成布局坐标。
+    // 读不到就保持 0，不做猜测。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
     const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
     const mainSurfaceStyle = (() => {
       const main = document.querySelector("main[data-app-shell-main-surface]");
@@ -12474,6 +12563,8 @@
     providerNames: new Map(),
     /** 默认成员的分组 id（聚合的"默认供应商"），用于打「默认」标志。 */
     defaultGroupId: "",
+    /** 上次从目录算出的默认供应商名：快照暂缺元数据时沿用（#2860）。 */
+    defaultProviderName: "",
     /** 目录快照的单飞标记与冷却时间。 */
     catalogPending: false,
     catalogRetryAt: 0,
@@ -12523,7 +12614,11 @@
           if (typeof key === "string" && typeof value === "string" && key && value) {
             codexPlusModelPickerGroupsState.providerNames.set(key, { name: value, parsed: false });
           } else if (key && typeof value?.name === "string" && value.name) {
-            codexPlusModelPickerGroupsState.providerNames.set(key, { name: value.name, parsed: value.parsed === true });
+            codexPlusModelPickerGroupsState.providerNames.set(key, {
+              name: value.name,
+              parsed: value.parsed === true,
+              groupId: typeof value.groupId === "string" ? value.groupId : "",
+            });
           }
         }
       }
@@ -12552,13 +12647,14 @@
    * `parsed` 表示这条是从行末尾 `（供应商）` 猜出来的；权威来源（目录侧
    * `codex_plus_group` / `description`）可以覆盖它，反过来不行。
    */
-  function codexPlusModelPickerRememberProvider(displayName, provider, parsed) {
+  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
-    if (existing && existing.name === provider && existing.parsed === !!parsed) return;
-    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed });
+    const id = groupId || (existing?.name === provider ? existing.groupId || "" : "");
+    if (existing && existing.name === provider && existing.parsed === !!parsed && (existing.groupId || "") === id) return;
+    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed, groupId: id });
     codexPlusModelPickerGroupsState.providerDirty = true;
   }
 
@@ -12614,7 +12710,7 @@
         const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
         if (!groupId) continue;
         const displayName = entry.displayName || entry.display_name || "";
-        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false);
+        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false, groupId);
         if (state.defaultGroupId !== groupId) {
           state.defaultGroupId = groupId;
           state.providerDirty = true;
@@ -12650,19 +12746,34 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      if (!root.querySelector('[class*="_ModelList_"]')) continue;
+      if (!codexPlusModelPickerListIn(root)) continue;
       return root;
     }
     return null;
   }
 
+  /**
+   * 面板根里的模型列表。按结构找、不认类名（#2893）：模型行（`role="menuitemradio"`）的共同父节点
+   * 就是列表。实测 26.1029：菜单里 41 个模型行都直接挂在列表下，列表外（含推理强度子面板）没有别的
+   * 模型行；按结构找到的和按类名找到的是同一个节点。`role` 是 Codex 做菜单交互和无障碍要用的，
+   * 比 CSS Modules 的哈希类名稳定——26.1029 就把 `_ModelList_哈希` 改成了 `ModelList-哈希`。
+   *
+   * 还没有模型行时（列表加载中）回落到类名，新旧两种格式都认；新格式按类名开头匹配，不会误中
+   * `ModelListMotion-`。共同父节点退到面板根本身时（行分散在几个面板里）说明结构变了，同样回落。
+   */
+  function codexPlusModelPickerListIn(root) {
+    const rows = [...root.querySelectorAll('[role="menuitemradio"]')];
+    let list = rows[0]?.parentElement || null;
+    while (list && list !== root && !rows.every((row) => list.contains(row))) list = list.parentElement;
+    if (list && list !== root) return list;
+    return root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
+  }
+
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"]');
-    if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
-    return list;
+    return codexPlusModelPickerListIn(root);
   }
 
   /**
@@ -12736,10 +12847,19 @@
    */
   function codexPlusModelPickerCatalogProviderMap() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    // 会话内已记下的归属先铺一层：目录快照可能被整体替换（重连 / 重新生成），
-    // 只认当前快照会让默认供应商的分组名在某一刻变空。
-    const map = new Map(codexPlusModelPickerGroupsState.providerNames);
-    if (!modelMetadata || typeof modelMetadata !== "object") return map;
+    const map = new Map();
+    // 记下的归属只补当前快照缺的键：目录快照会被整体替换（重连 / 拉取超时返回空元数据），
+    // 只认当前快照会让裸名模型在某一刻全部失去归属，落进一串空名分组（#2860）。
+    // 缓存里的形状是 `{ name, parsed, groupId }`，这里换成读取方要的 `{ provider, groupId }`；
+    // 从行尾后缀猜的（parsed）不补：那是别家同名模型的归属，套给裸名行会串组。
+    const fillFromMemory = () => {
+      codexPlusModelPickerGroupsState.providerNames.forEach((value, key) => {
+        if (map.has(key) || !value?.name || value.parsed) return;
+        map.set(key, { provider: value.name, groupId: value.groupId || "", parsed: false });
+      });
+      return map;
+    };
+    if (!modelMetadata || typeof modelMetadata !== "object") return fillFromMemory();
     const slugList = Array.isArray(codexModelCatalog?.models)
       ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
       : [];
@@ -12760,12 +12880,12 @@
         // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
         if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
       }
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
     for (const [key, entry] of entries) registerEntry(entry, key);
-    return map;
+    return fillFromMemory();
   }
 
   /**
@@ -12860,6 +12980,8 @@
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
+    // 每轮算一次：逐行调用在目录失效时会退化成「行数 × 目录条目数」。
+    const defaultProviderName = codexPlusModelPickerDefaultProviderName();
     const rows = [];
     const items = list.querySelectorAll('[role="menuitemradio"]');
     items.forEach((row) => {
@@ -12886,7 +13008,7 @@
         || (split.provider ? `provider:${split.provider}` : defaultGroupId);
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = exactKnown?.provider || split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
+      const provider = exactKnown?.provider || split.provider || known?.provider || defaultProviderName;
       const authoritativeGroupId = !!known?.groupId
         || (split.provider ? true : !!defaultGroupId);
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
@@ -12903,7 +13025,8 @@
    */
   function codexPlusModelPickerDefaultProviderName() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
-    if (!modelMetadata || typeof modelMetadata !== "object") return "";
+    // 快照暂时没有元数据（拉取超时 / 重连）时沿用上次算出的名字，裸名行不至于变成无名分组（#2860）。
+    if (!modelMetadata || typeof modelMetadata !== "object") return codexPlusModelPickerGroupsState.defaultProviderName || "";
     // 取"裸名模型里出现最多的那个分组"：聚合的默认成员可能有几百个模型，
     // 偶尔混进一两个别的成员的裸名条目也不该把整组改姓。
     const counts = new Map();
@@ -12921,7 +13044,8 @@
       }
       if (!provider) continue;
       counts.set(provider, (counts.get(provider) || 0) + 1);
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
     }
     let best = "";
     let bestCount = 0;
@@ -12931,7 +13055,8 @@
         bestCount = count;
       }
     });
-    return best;
+    if (best) codexPlusModelPickerGroupsState.defaultProviderName = best;
+    return best || codexPlusModelPickerGroupsState.defaultProviderName || "";
   }
 
   /** 权威 groupId 全局合组；无 ID 的旧行只做相邻回退，避免同名误合并。 */
@@ -12939,6 +13064,9 @@
     const groups = [];
     const identified = new Map();
     let legacy = null;
+    // 归属认不出的行（没有后缀、目录也查不到）全部收进同一个「其他供应商」组。
+    // 按相邻切段会被有名分组隔成好几段，几段共用一个 id：只有第一段有标题、点哪段都展开全部（#2860）。
+    let unnamed = null;
     for (const entry of rows) {
       const key = entry.provider || "";
       const id = entry.authoritativeGroupId !== false && typeof entry.groupId === "string" ? entry.groupId.trim() : "";
@@ -12951,6 +13079,13 @@
           identified.set(id, group);
           groups.push(group);
         }
+      } else if (!(entry.provider || defaultProviderName)) {
+        legacy = null;
+        if (!unnamed) {
+          unnamed = { key: "", id: "", name: "", entries: [] };
+          groups.push(unnamed);
+        }
+        group = unnamed;
       } else {
         if (!legacy || legacy.key !== key) {
           legacy = { key, id: `legacy:${groups.length}:${key}`, name: entry.provider || defaultProviderName, entries: [] };
@@ -13331,7 +13466,7 @@
     codexPlusModelPickerRemoveOwnNodes(list);
     groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
     const groupedRows = new Set(rows.map((entry) => entry.row));
-    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"]').forEach((node) => {
+    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
       node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
     });
     const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
@@ -13482,7 +13617,7 @@
           radios: radios.length,
           catalogMatches: known,
           pickerView: document.querySelectorAll("[data-model-picker-view]").length,
-          modelList: count('[class*="_ModelList_"]'),
+          modelList: count('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]'),
           rowContent: count("[data-menu-row-content]"),
           flex1: count("span.flex-1, span[class*='flex-1']"),
           menuData: dataAttributes(menu),
@@ -16883,7 +17018,7 @@
   }
 
   function codexNativeFastShortcutState(trigger) {
-    if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger]")
+    if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']")
         || !trigger.closest("[data-codex-composer-root], .composer-footer, .composer-surface-chrome")
         || !trigger.getClientRects().length) return null;
     // shortcut: 依赖原生菜单 props；上游变更接口时隐藏入口，再更新适配。
@@ -16921,7 +17056,7 @@
     const selector = "[data-codex-native-fast-shortcut]";
     const retained = new Set();
     if (codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) {
-      document.querySelectorAll("[data-codex-intelligence-trigger]").forEach((trigger) => {
+      document.querySelectorAll("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']").forEach((trigger) => {
         const state = codexNativeFastShortcutState(trigger);
         if (!state) return;
         let badge = trigger.nextElementSibling;
@@ -22833,6 +22968,7 @@
       { id: "conversation-view", name: "对话宽度", apply: codexPlusConversationViewExtension },
       { id: "activity-overlay-right", name: "消息导航条靠右", apply: codexPlusActivityOverlayExtension },
       { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
+      { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
       // 悬浮球是独立运行时，自己按停用集合判断；这两项让它在装卸、改设置时重新算一次。
       { id: "stepwise", name: "下一步建议", apply: codexPlusStepwiseExtension },
@@ -24349,6 +24485,7 @@
       '[class*="UserMessage"]',
       ".composer-footer",
       "[data-codex-intelligence-trigger]",
+      "[data-composer-navigation-target='reasoning']",
       "[data-ds-part='composer-toolbar']",
       "[data-composer-footer-responsive]",
       selectors.appHeader,

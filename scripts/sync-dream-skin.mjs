@@ -47,6 +47,7 @@ for (const platform of ["windows", "macos"]) {
   const schedulerAnchor = "    scheduler.timeout = null;\n    const pending = ";
   const timeoutAnchor = "    if (scheduler.timeout) return;";
   const observerAnchor = '  if (typeof MutationObserver === "function") {';
+  const partObserverAnchor = "    partObserver = new MutationObserver((records) => {";
   const cleanupAnchor = "    if (state?.timer) clearInterval(state.timer);";
   const safetyAnchor = "    metrics.safetyPasses += 1;\n    ensure({ root: true });";
   const classAnchor = "const predicateClass = /main-surface|";
@@ -54,7 +55,7 @@ for (const platform of ["windows", "macos"]) {
       baseRenderer.split(mutationAnchor).length !== 2 ||
       baseRenderer.split(ancestorAnchor).length !== 2 ||
       baseRenderer.split(branchAnchor).length !== 2 ||
-      [schedulerAnchor, timeoutAnchor, observerAnchor, cleanupAnchor, safetyAnchor, classAnchor]
+      [schedulerAnchor, timeoutAnchor, observerAnchor, partObserverAnchor, cleanupAnchor, safetyAnchor, classAnchor]
         .some(anchor => baseRenderer.split(anchor).length !== 2) ||
       !baseRenderer.includes("refreshPredicates();") ||
       !baseRenderer.includes("removePredicates();")) {
@@ -71,12 +72,21 @@ for (const platform of ["windows", "macos"]) {
               candidates.add(ancestor);
             }`)
     .replace(mutationAnchor, `        if (record.type === "childList" && record.addedNodes && record.removedNodes
-            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
+            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1
+              && (node.matches(partMutationSelector) || node.querySelector(partMutationSelector)))) return false;
 ${mutationAnchor}`)
     .replace(schedulerAnchor, `    scheduler.timeout = null;
     if (document.hidden) return;
     const pending = `)
     .replace(timeoutAnchor, "    if (document.hidden || scheduler.timeout) return;")
+    .replace(partObserverAnchor, `    // Streamed text and menu rows do not change structural skin surfaces.
+    const partMutationSelector = [
+      ...SELECTOR_CONTRACT.selectors.map(entry => entry.selector),
+      ...CSS_PREDICATES.flatMap(({ branches }) => branches.map(branch => branch.selector)),
+      'main, aside, nav[aria-label], textarea, [contenteditable="true"], [role="textbox"]',
+      '[data-composer-footer-responsive], [class*="_ComposerLayoutFooter_"], [class*="_footer_"]',
+    ].join(", ");
+${partObserverAnchor}`)
     .replace(observerAnchor, `  const visibilityHandler = () => {
     if (!document.hidden && (scheduler.root || scheduler.scope || scheduler.parts)) flushScheduledEnsure();
   };

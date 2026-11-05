@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2792
+      "lines": 2799
     },
     {
       "name": "20-menu.js",
@@ -36,9 +36,14 @@
       "lines": 77
     },
     {
+      "name": "33-offline-auto-review.js",
+      "description": "拿不到远程功能开关时补开「替我审批」（#2817）",
+      "lines": 81
+    },
+    {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2260
+      "lines": 2261
     },
     {
       "name": "41-extension-detail.js",
@@ -73,7 +78,7 @@
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标入口与模型列表导航（聚合供应商场景）",
-      "lines": 1205
+      "lines": 1251
     },
     {
       "name": "80-session-share.js",
@@ -168,7 +173,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 420
+      "lines": 421
     },
     {
       "name": "96-paste-fix.js",
@@ -183,7 +188,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 203
+      "lines": 204
     },
     {
       "name": "98-avatar-overlay-layout.js",

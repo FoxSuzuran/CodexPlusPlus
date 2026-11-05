@@ -10,6 +10,9 @@ const css = read(prefix + "dream-skin.css") + "\n" + read("assets/inject/dream-s
 const predicate = JSON.parse(renderer.match(/^  const CSS_PREDICATES = (.+);?$/m)[1]).find(item =>
   item.selector === ':has(:is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]))');
 assert.ok(predicate);
+const mentionPredicate = JSON.parse(renderer.match(/^  const CSS_PREDICATES = (.+);?$/m)[1]).find(item =>
+  item.selector === ":has(> [data-mention-list-scroll-area])");
+assert.ok(mentionPredicate);
 const payload = renderer
   .replace("__DREAM_SKIN_CSS_JSON__", JSON.stringify(css))
   .replace("__DREAM_SKIN_ART_JSON__", '""')
@@ -33,7 +36,10 @@ async function main() {
       <div id="footer" class="pointer-events-none absolute">
       <div id="backdrop" class="pointer-events-none absolute bg-surface"></div>
       <div id="composer" class="_ComposerLayoutRoot_test"><textarea></textarea></div>
-      </div></div></main></body></html>`);
+      </div>
+      <div id="streams"><article data-message-author-role="assistant"></article><article data-message-author-role="assistant"></article><article data-message-author-role="assistant"></article></div>
+      <div id="commands"></div>
+      </div></main></body></html>`);
     await page.evaluate(payload);
     const marked = () => page.evaluate(attribute => document.getElementById("footer").hasAttribute(attribute), predicate.attribute);
     assert.equal(await marked(), true);
@@ -53,6 +59,42 @@ async function main() {
     assert.equal(await page.evaluate(() => window.__CODEX_DREAM_SKIN_STATE__.metrics.predicateWrites), writes);
     assert.equal(await page.evaluate(() => document.documentElement.getAttribute("data-dream-upload-alpha")), "true");
     assert.equal(await page.$eval("#backdrop", node => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)");
+    const passes = () => page.evaluate(() => window.__CODEX_DREAM_SKIN_STATE__.metrics.predicatePasses);
+    const beforeStreams = await passes();
+    for (let step = 0; step < 3; step++) {
+      await page.locator("#streams article").evaluateAll(nodes => {
+        for (const node of nodes) {
+          const paragraph = document.createElement("p");
+          paragraph.append(document.createElement("span"));
+          node.replaceChildren(paragraph);
+        }
+      });
+      await page.waitForTimeout(120);
+    }
+    assert.equal(await passes(), beforeStreams, "three streaming tasks must not rescan structural skin predicates");
+    await page.$eval("#commands", node => {
+      const menu = document.createElement("div");
+      menu.setAttribute("data-mention-list-scroll-area", "");
+      menu.setAttribute("role", "listbox");
+      node.append(menu);
+    });
+    await page.waitForFunction(attribute => document.getElementById("commands").hasAttribute(attribute), mentionPredicate.attribute);
+    const beforeMenuUpdates = await passes();
+    for (let step = 0; step < 3; step++) {
+      await page.locator("[data-mention-list-scroll-area]").evaluate(node => {
+        const option = document.createElement("button");
+        option.setAttribute("role", "option");
+        option.append(document.createElement("span"));
+        node.replaceChildren(option);
+      });
+      await page.waitForTimeout(120);
+    }
+    assert.equal(await passes(), beforeMenuUpdates, "@ and / result updates must not rescan structural skin predicates");
+    await page.locator("[data-mention-list-scroll-area]").evaluate(node => node.remove());
+    await page.waitForFunction(attribute => !document.getElementById("commands").hasAttribute(attribute), mentionPredicate.attribute);
+    await page.$eval("#composer", node => node.replaceWith(node.cloneNode(true)));
+    await page.waitForTimeout(120);
+    assert.equal(await marked(), true, "replacing the composer must preserve its structural skin markers");
     await page.evaluate(() => window.__CODEX_DREAM_SKIN_STATE__.cleanup());
     assert.equal(await marked(), false, "cleanup removes the runtime compatibility marker");
 
@@ -75,7 +117,7 @@ async function main() {
     await page.evaluate(() => window.testTypingEffects.uninstall());
     assert.equal(await page.locator('[data-codex-plus-ext="typing-effects"]').count(), 0);
     assert.deepEqual(errors, []);
-    console.log("PASS: runtime CSS cache, alpha marker, class invalidation, cleanup and layout-free typing animation");
+    console.log("PASS: runtime CSS cache, streaming and command-menu mutation filtering, composer replacement, class invalidation, cleanup and layout-free typing animation");
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -19,9 +19,10 @@ const bundle = buildSync({
     import {flushSync} from "react-dom";
     const options=[{value:null},{value:"priority",iconKind:"fast"},{value:"ultrafast",iconKind:"ultrafast"}];
     function NativeMenu(props){return props.children}
-    function Composer({variant}){
+    function Composer({variant,nativeMarker}){
       const [tier,setTier]=useState(null);
-      const trigger=<button data-codex-intelligence-trigger=""><span className="model-label">6.1 Sol 极高</span>⌄</button>;
+      const marker=nativeMarker==="reasoning"?{"data-composer-navigation-target":"reasoning"}:{"data-codex-intelligence-trigger":""};
+      const trigger=<button {...marker}><span className="model-label">6.1 Sol 极高</span>⌄</button>;
       const wrapped=variant==="contents"?<span><span className="contents" data-state="closed">{trigger}</span></span>
         :variant==="span"?<span>{trigger}</span>:trigger;
       return <div className="composer-footer" data-codex-composer-root="">
@@ -37,7 +38,7 @@ const bundle = buildSync({
       </div>;
     }
     const root=createRoot(document.getElementById("root"));
-    window.mount=variant=>flushSync(()=>root.render(<Composer key={variant} variant={variant}/>));
+    window.mount=(variant,nativeMarker="legacy")=>flushSync(()=>root.render(<Composer key={variant+nativeMarker} variant={variant} nativeMarker={nativeMarker}/>));
   `, resolveDir: path.resolve(root, "apps/codex-plus-manager"), loader: "jsx" },
   bundle: true, write: false, format: "iife", define: { "process.env.NODE_ENV": '"production"' },
 }).outputFiles[0].text;
@@ -70,36 +71,38 @@ const bundle = buildSync({
       window.scheduleScan = () => setTimeout(() => window.refreshFast(), 0);
       new Function(source + ";window.refreshFast=refreshCodexNativeFastShortcuts;")();
     }, source);
-    for (const variant of ["contents", "span", "flex"]) {
-      for (const width of [320, 600, 1100]) {
-        for (const zoom of [0.8, 1, 1.25]) {
-          await page.setViewportSize({ width, height: 360 });
-          await page.evaluate(({ variant, zoom }) => {
-            document.body.style.zoom = zoom;
-            window.mount(variant); window.refreshFast();
-          }, { variant, zoom });
-          const badge = page.locator("[data-codex-native-fast-shortcut]");
-          for (const label of ["Standard", "Fast", "Ultrafast"]) {
-            await page.waitForFunction(label => document.querySelector("[data-codex-native-fast-shortcut]")?.textContent === `⚡ ${label}`, label);
-            const layout = await page.evaluate(() => {
-              const rect = selector => document.querySelector(selector).getBoundingClientRect();
-              const model = rect("[data-codex-intelligence-trigger]"), badge = rect("[data-codex-native-fast-shortcut]");
-              const mic = rect('[aria-label="语音"]'), stop = rect('[aria-label="停止"]');
-              const centers = [model, badge, mic, stop].map(r => r.y + r.height / 2);
-              return {
-                centerSpread: Math.max(...centers) - Math.min(...centers),
-                separated: model.right <= badge.left + 1 && badge.right <= mic.left + 1 && mic.right <= stop.left + 1,
-                inside: stop.right <= document.documentElement.clientWidth,
-                overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-                positions: { model: [model.left, model.right], badge: [badge.left, badge.right],
-                  mic: [mic.left, mic.right], stop: [stop.left, stop.right] },
-              };
-            });
-            assert.ok(layout.centerSpread <= 1 && layout.separated && layout.inside && !layout.overflow,
-              JSON.stringify({ variant, width, zoom, label, ...layout }));
-            await badge.click();
+    for (const nativeMarker of ["legacy", "reasoning"]) {
+      for (const variant of ["contents", "span", "flex"]) {
+        for (const width of [320, 600, 1100]) {
+          for (const zoom of [0.8, 1, 1.25]) {
+            await page.setViewportSize({ width, height: 360 });
+            await page.evaluate(({ variant, nativeMarker, zoom }) => {
+              document.body.style.zoom = zoom;
+              window.mount(variant, nativeMarker); window.refreshFast();
+            }, { variant, nativeMarker, zoom });
+            const badge = page.locator("[data-codex-native-fast-shortcut]");
+            for (const label of ["Standard", "Fast", "Ultrafast"]) {
+              await page.waitForFunction(label => document.querySelector("[data-codex-native-fast-shortcut]")?.textContent === `⚡ ${label}`, label);
+              const layout = await page.evaluate(() => {
+                const rect = selector => document.querySelector(selector).getBoundingClientRect();
+                const model = rect("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']"), badge = rect("[data-codex-native-fast-shortcut]");
+                const mic = rect('[aria-label="语音"]'), stop = rect('[aria-label="停止"]');
+                const centers = [model, badge, mic, stop].map(r => r.y + r.height / 2);
+                return {
+                  centerSpread: Math.max(...centers) - Math.min(...centers),
+                  separated: model.right <= badge.left + 1 && badge.right <= mic.left + 1 && mic.right <= stop.left + 1,
+                  inside: stop.right <= document.documentElement.clientWidth,
+                  overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+                  positions: { model: [model.left, model.right], badge: [badge.left, badge.right],
+                    mic: [mic.left, mic.right], stop: [stop.left, stop.right] },
+                };
+              });
+              assert.ok(layout.centerSpread <= 1 && layout.separated && layout.inside && !layout.overflow,
+                JSON.stringify({ nativeMarker, variant, width, zoom, label, ...layout }));
+              await badge.click();
+            }
+            cases.push({ nativeMarker, variant, width, zoom });
           }
-          cases.push({ variant, width, zoom });
         }
       }
     }

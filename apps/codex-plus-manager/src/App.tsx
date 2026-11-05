@@ -162,7 +162,7 @@ import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState } from "./
 import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
-import { saveAgentFocus, useAgentFocus } from "./agent-focus-store";
+import { backupAgentFocus, needAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
@@ -351,8 +351,9 @@ import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函�
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
 const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
-/// 会话维护页的「启动前自动修复历史会话」与 Codex 设置页共用清单里的同一条文案。
+/// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
 const providerSyncItem = enhancementItem("providerSyncEnabled");
+const sessionIndexRepairItem = enhancementItem("sessionIndexRepairEnabled");
 
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
@@ -468,6 +469,10 @@ type BackendSettings = WhaleBalanceSettings & {
   codexExtraArgs: string[];
   dictation: DictationSettings;
   providerSyncEnabled: boolean;
+  /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
+  sessionIndexRepairEnabled?: boolean;
+  /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
+  managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -505,6 +510,8 @@ type BackendSettings = WhaleBalanceSettings & {
   codexAppNativePredictions: boolean;
   /** 第三方模型回答完自动折叠过程（本地代理补阶段标记），默认关。 */
   codexAppThirdPartyReasoningCollapse: boolean;
+  /** 拿不到远程功能开关（国内网络）时补开「替我审批」入口（#2817），默认关。 */
+  codexAppOfflineAutoReview: boolean;
   /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
@@ -1407,7 +1414,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
   { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
-  { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
+  // 增强针对的是 Claude Desktop（汉化、Cowork 时限等），名字写明，免得和 Claude Code 命令行的概览混在一起（#2913）。
+  { id: "claude", get label() { return t("Desktop 增强"); }, icon: Languages, tool: "claude" },
   // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
   { id: "sessions", get label() { return t("会话"); }, icon: MessagesSquare },
   { id: "context", label: "MCP", icon: Network },
@@ -1531,6 +1539,7 @@ const defaultSettings: BackendSettings = {
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
   providerSyncEnabled: false,
+  sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
@@ -1563,6 +1572,7 @@ const defaultSettings: BackendSettings = {
   codexAppNativeFastUnlock: false,
   codexAppNativePredictions: false,
   codexAppThirdPartyReasoningCollapse: false,
+  codexAppOfflineAutoReview: false,
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
@@ -1743,6 +1753,18 @@ export function App() {
     setAgentFocusOpen(false);
     if (!agentFocus) setSetupOpen(false);
   }, [agentFocus]);
+  // 本地存储丢了使用模式、设置文件里还记着时补回来，问卷不再每次启动都弹（#2902）。
+  const settingsLoaded = Boolean(settings);
+  const savedAgentFocus = settings?.settings.managerAgentFocus;
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (restoreAgentFocusFromSettings(savedAgentFocus)) {
+      setAgentFocusOpen(false);
+    } else if (!savedAgentFocus && agentFocus) {
+      // 升级前就选过模式的老用户：设置文件里还没有备份，补存一次。
+      backupAgentFocus(agentFocus);
+    }
+  }, [settingsLoaded, savedAgentFocus, agentFocus]);
   const closeSetup = (completed: boolean) => {
     try { window.localStorage.setItem(SETUP_STORAGE_KEY, serializeSetupState(completed ? "completed" : "dismissed")); } catch { /* 本次窗口内仍可关闭。 */ }
     setSetupOpen(false);
@@ -2118,7 +2140,11 @@ export function App() {
   const deleteUserScript = async (key: string) => {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
-    if (!(await appConfirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]), { title: t("删除脚本"), confirmText: t("删除"), danger: true }))) return;
+    const isPackage = script?.kind === "package";
+    const question = isPackage
+      ? tf("卸载拓展“{0}”？整个拓展文件夹会移进废纸篓，需要时可以从废纸篓找回。", [name])
+      : tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]);
+    if (!(await appConfirm(question, { title: isPackage ? t("卸载拓展") : t("删除脚本"), confirmText: isPackage ? t("卸载") : t("删除"), danger: true }))) return;
     const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
     if (result) {
       setSettings(result);
@@ -10667,8 +10693,8 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
     <summary className="session-maintenance-summary">
       <Wrench aria-hidden="true" className="h-4 w-4" />
       <strong>{t("修复与维护")}</strong>
-      <span className="session-maintenance-auto-state" data-enabled={form.providerSyncEnabled}>
-        {form.providerSyncEnabled ? t("自动修复已开启") : t("自动修复已关闭")}
+      <span className="session-maintenance-auto-state" data-enabled={form.sessionIndexRepairEnabled ?? true}>
+        {(form.sessionIndexRepairEnabled ?? true) ? t("自动修复已开启") : t("自动修复已关闭")}
       </span>
       <span className="session-maintenance-status" data-error={maintenanceHasError} role="status" aria-live="polite">
         {providerSyncProgress.active
@@ -10682,6 +10708,17 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
     <div className="session-maintenance-content">
           {/* 和设置页同一种行：左边标题 + 一行说明，右边控件；开关即改即存（SettingsAutoSave）。 */}
           <div className="session-repair-rows">
+            <SettingRow title={t(sessionIndexRepairItem.title)} description={t(sessionIndexRepairItem.description)}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t(sessionIndexRepairItem.title)}
+                  checked={form.sessionIndexRepairEnabled ?? true}
+                  onChange={(event) => onFormChange({ ...form, sessionIndexRepairEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
             <SettingRow title={t(providerSyncItem.title)} description={t(providerSyncItem.description)}>
               <label className="relay-bare-switch">
                 <input
@@ -16908,6 +16945,8 @@ function AppSidebar({
 }) {
   const gateway = useGatewayPayload(10_000);
   const [settingsQuery, setSettingsQuery] = useState("");
+  // 收起了页面列表的 Agent：再点一次当前 Agent 收起 / 展开它下面的页面（#2913）。切到别的 Agent 时清掉。
+  const [collapsedAgent, setCollapsedAgent] = useState<string | null>(null);
   const enhanceOnly = providersHidden(focus);
   const settingsMode = settingsModeRoutes.has(route);
   const onGlobalPage = globalNavigationRoutes.includes(route);
@@ -17089,6 +17128,9 @@ function AppSidebar({
           {/* 每个 Agent 一行；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面在内容区顶部的胶囊里。 */}
           {tools.map((tool) => {
             const current = tool.id === activeTool && !onGlobalPage;
+            const expanded = current && collapsedAgent !== tool.id;
+            // 这一行同时管 Claude Code（命令行配置概览）和 Claude Desktop（增强），侧栏只写 Claude，免得误以为增强针对的是命令行（#2913）。
+            const displayName = tool.id === "claude" ? "Claude" : tool.name;
             const title = tool.switchable
               ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
               : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
@@ -17103,15 +17145,24 @@ function AppSidebar({
               <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
                 <button
                   aria-current={current ? "true" : undefined}
-                  aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
-                  className={`cx-side-item ${current ? "active" : ""} ${current && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
+                  aria-expanded={current ? expanded : undefined}
+                  aria-label={tool.switchable ? `${displayName} · ${access.label}` : `${displayName} · ${t("待接入")}`}
+                  className={`cx-side-item ${current ? "active" : ""} ${expanded && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
                   disabled={!tool.switchable}
-                  onClick={() => onOpenAgent(tool.id)}
+                  onClick={() => {
+                    // 再点当前 Agent：只收起 / 展开它的页面列表，不跳页；点别的 Agent 照常切过去并展开。
+                    if (current) {
+                      setCollapsedAgent((value) => (value === tool.id ? null : tool.id));
+                      return;
+                    }
+                    setCollapsedAgent(null);
+                    onOpenAgent(tool.id);
+                  }}
                   title={`${title}｜${access.label}`}
                   type="button"
                 >
                   <AgentGlyph agent={tool.id} className="cx-side-icon" />
-                  <span className="cx-side-label">{tool.name}</span>
+                  <span className="cx-side-label">{displayName}</span>
                   {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
                 {tool.id === "codex" && tool.switchable ? (() => {
@@ -17136,7 +17187,7 @@ function AppSidebar({
                 })() : null}
               </div>
               {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
-{current ? (() => {
+{expanded ? (() => {
             const pages = agentTabGroups(navigationSections, routeTool, activeTool)
               .flatMap((entry) => visibleRoutes(focus, entry.routes));
             if (pages.length < 2) return null;
@@ -17407,8 +17458,8 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
     : isPackage
       ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
       : script.source === "builtin" ? t("内置") : t("用户");
-  // 拓展包是文件夹，后端只删单文件，这里不给删除按钮。
-  const canDelete = codexHost && script.source === "user" && !isPackage;
+  // 拓展包是文件夹：后端整个移进废纸篓（可找回，#2919），单文件脚本直接删除。
+  const canDelete = codexHost && script.source === "user";
   const state = extensionStateForHost(script, host, globalEnabled);
   const { label, hint } = localScriptStateLabel(state, host);
   const stateHint = codexHost && state === "failed" && script.error ? `${hint}\n${script.error}` : hint;

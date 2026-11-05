@@ -170,6 +170,12 @@
       codexPlusProxyStatusHide();
       return;
     }
+    // 没有任何进行中的请求（绝大多数时间）：先返回，不去找输入框。找输入框要对每张卡片读一次布局，
+    // 原先空闲时也每 500ms 读一轮（#2883 跟进：实测约 2.9 次/秒的强制布局全来自这里）。
+    if (!codexPlusProxyStatusState.requests.length) {
+      codexPlusProxyStatusHide();
+      return;
+    }
     const card = codexPlusProxyStatusComposerCard();
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
@@ -215,7 +221,7 @@
     if (visibleRequests.length > 1) meta.push(`+${visibleRequests.length - 1}`);
 
     const fingerprint = JSON.stringify([phase, label, meta, lastError, lastErrorMessage, text.lastError, text.aria]);
-    if (fingerprint === codexPlusProxyStatusState.lastFingerprint) return;
+    if (fingerprint === codexPlusProxyStatusState.lastFingerprint && node.dataset.hidden === "false" && node.isConnected) return;
     codexPlusProxyStatusState.lastFingerprint = fingerprint;
     node.dataset.hidden = "false";
     node.dataset.phase = phase || "requesting";

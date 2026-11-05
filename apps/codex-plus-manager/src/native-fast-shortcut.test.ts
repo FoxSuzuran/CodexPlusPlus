@@ -12,7 +12,7 @@ const options = [
   { value: "ultrafast", iconKind: "ultrafast" },
 ];
 
-function fixture() {
+function fixture(selector = "[data-codex-intelligence-trigger]") {
   const calls: unknown[] = [], toasts: string[] = [];
   const settings = { enhancementsEnabled: true };
   let schedules = 0;
@@ -24,7 +24,8 @@ function fixture() {
   vm.runInContext(source.slice(start, end), context);
   const trigger: any = {
     isConnected: true, disabled: false, composer: true, visible: true,
-    matches: () => true, closest: () => trigger.composer ? {} : null,
+    matches: (selectors: string) => selectors.split(",").some(value => value.trim() === selector),
+    closest: () => trigger.composer ? {} : null,
     getClientRects: () => trigger.visible ? [{}] : [], getAttribute: () => null,
   };
   const props = {
@@ -61,6 +62,17 @@ test("shortcut cycles only native options and rereads the current selection befo
   f.props.serviceTierOptions.splice(2, 1);
   f.props.selectedServiceTier = "priority";
   assert.equal(f.state().next.value, null, "no Ultrafast option is invented");
+});
+
+test("Codex 26.1029 reasoning trigger exposes the same native speed settings", () => {
+  const f = fixture("[data-composer-navigation-target='reasoning']");
+  for (const [selected, next] of [[null, "priority"], ["priority", "ultrafast"], ["ultrafast", null]]) {
+    f.props.selectedServiceTier = selected;
+    assert.equal(f.state().next.value, next);
+    f.click();
+    assert.equal(f.calls.at(-1), next);
+  }
+  assert.equal(fixture("[data-composer-navigation-target='permissions']").state(), null);
 });
 
 test("only committed native props are read when the DOM fiber still references the previous render", () => {

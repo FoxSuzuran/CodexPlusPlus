@@ -1058,10 +1058,18 @@
     // Navigation API emits no event. Keep verification scope and public parts
     // derived from the same post-mutation tree.
     const predicateClass = /composer-surface-chrome|_ComposerLayoutRoot_|main-surface|_MainContentSurface_|home-banners|_homeUtilityBar_|_ComposerHomeUtilityBar_|horizontal-scroll-fade-mask|group\/project-selector/;
+    // Streamed text and menu rows do not change structural skin surfaces.
+    const partMutationSelector = [
+      ...SELECTOR_CONTRACT.selectors.map(entry => entry.selector),
+      ...CSS_PREDICATES.flatMap(({ branches }) => branches.map(branch => branch.selector)),
+      'main, aside, nav[aria-label], textarea, [contenteditable="true"], [role="textbox"]',
+      '[data-composer-footer-responsive], [class*="_ComposerLayoutFooter_"], [class*="_footer_"]',
+    ].join(", ");
     partObserver = new MutationObserver((records) => {
       const changed = records.some((record) => {
         if (record.type === "childList" && record.addedNodes && record.removedNodes
-            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1)) return false;
+            && ![...record.addedNodes, ...record.removedNodes].some(node => node.nodeType === 1
+              && (node.matches(partMutationSelector) || node.querySelector(partMutationSelector)))) return false;
         if (record.type !== "attributes") return true;
         const current = record.target.getAttribute(record.attributeName);
         if (record.oldValue === current) return false;

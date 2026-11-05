@@ -36,6 +36,7 @@
       '[class*="UserMessage"]',
       ".composer-footer",
       "[data-codex-intelligence-trigger]",
+      "[data-composer-navigation-target='reasoning']",
       "[data-ds-part='composer-toolbar']",
       "[data-composer-footer-responsive]",
       selectors.appHeader,

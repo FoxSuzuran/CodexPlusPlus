@@ -315,11 +315,20 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[] } | null>(null);
   // 当前这次登录的序号：取消或开始新的登录后，旧登录的收尾不再改界面。
   const attempt = useRef(0);
+  // 私有接口订阅的 `login()` 要等选登录方式 → 登录这一整段结束才返回：调用方（添加供应商）
+  // 在返回后就关掉整个界面，提前返回会把选择弹窗一起销毁，登录页根本拉不起来（#2879）。
+  const chooserDone = useRef<(() => void) | null>(null);
+  const settleChooser = () => {
+    const done = chooserDone.current;
+    chooserDone.current = null;
+    done?.();
+  };
   const cancel = () => {
     attempt.current += 1;
     setPending(null);
     setDeviceCode(null);
     setChoosing(null);
+    settleChooser();
     void invoke("cancel_gateway_login").catch(() => undefined);
   };
   /** 私有接口订阅的登录：开始 → （验证码弹窗 / 浏览器）→ 等完成后加进池里。 */
@@ -328,6 +337,9 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
     const id = ++attempt.current;
     const current = () => attempt.current === id;
     const title = tf("登录 {0}", [item.name]);
+    // 选择弹窗这一步结束了，登录本身结束时再通知 `login()` 的调用方。
+    const done = chooserDone.current;
+    chooserDone.current = null;
     setChoosing(null);
     setPending(kind);
     setDeviceCode(null);
@@ -360,6 +372,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         setPending(null);
         setDeviceCode(null);
       }
+      done?.();
     }
   };
   /** 登录订阅账号：ChatGPT / ChatGPT API / SuperGrok 走浏览器登录；Copilot 先显示验证码，再等你在 GitHub 上授权。
@@ -371,8 +384,11 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         await notify(t("登录失败"), t("当前版本不支持这个订阅"), "failed");
         return;
       }
-      setChoosing({ item: subscription, skip });
-      return;
+      settleChooser();
+      return new Promise<void>((resolve) => {
+        chooserDone.current = resolve;
+        setChoosing({ item: subscription, skip });
+      });
     }
     const id = ++attempt.current;
     const current = () => attempt.current === id;
@@ -412,7 +428,10 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   const dialog = choosing ? (
     <SubscriptionLoginDialog
       item={choosing.item}
-      onCancel={() => setChoosing(null)}
+      onCancel={() => {
+        setChoosing(null);
+        settleChooser();
+      }}
       onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip)}
     />
   ) : deviceCode ? (
@@ -1366,10 +1385,25 @@ function SubscriptionLoginDialog({
 
 /** 浏览器登录进行中的提示条：不挡操作（固定在窗口底部），可随时取消。 */
 function LoginPendingBar({ label, onCancel }: { label: string; onCancel: () => void }) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  // 复制登录链接（#2823）：想用无痕窗口或别的浏览器登录时，不用抢在默认浏览器打开的瞬间去地址栏复制。
+  const copyLink = async () => {
+    try {
+      const result = await invoke<{ status: string; url?: string | null }>("gateway_login_url");
+      if (!result.url) throw new Error("no url");
+      await navigator.clipboard.writeText(result.url);
+      setCopied("copied");
+    } catch {
+      setCopied("failed");
+    }
+  };
   return createPortal(
     <div aria-live="polite" className="gw-portal gw-login-pending" role="status">
       <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
       <span>{tf("正在等待 {0} 登录，在浏览器里完成后会自动继续", [label])}</span>
+      <button className="gw-text-button" onClick={() => void copyLink()} title={t("复制后可以在无痕窗口或其他浏览器里打开")} type="button">
+        {copied === "copied" ? t("已复制") : copied === "failed" ? t("复制失败") : t("复制登录链接")}
+      </button>
       <button className="gw-text-button strong" onClick={onCancel} type="button">{t("取消登录")}</button>
     </div>,
     document.body,

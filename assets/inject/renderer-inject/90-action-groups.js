@@ -874,7 +874,7 @@
   }
 
   function codexNativeFastShortcutState(trigger) {
-    if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger]")
+    if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']")
         || !trigger.closest("[data-codex-composer-root], .composer-footer, .composer-surface-chrome")
         || !trigger.getClientRects().length) return null;
     // shortcut: 依赖原生菜单 props；上游变更接口时隐藏入口，再更新适配。
@@ -912,7 +912,7 @@
     const selector = "[data-codex-native-fast-shortcut]";
     const retained = new Set();
     if (codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) {
-      document.querySelectorAll("[data-codex-intelligence-trigger]").forEach((trigger) => {
+      document.querySelectorAll("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']").forEach((trigger) => {
         const state = codexNativeFastShortcutState(trigger);
         if (!state) return;
         let badge = trigger.nextElementSibling;

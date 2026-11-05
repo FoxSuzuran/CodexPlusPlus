@@ -38,7 +38,7 @@ test("local Home geometry and upstream predicates do not drift", async () => {
   assert.match(renderer, /metrics\.predicateWrites/);
 });
 
-test("both skin observers ignore text-only replacements and retain structural changes", async () => {
+test("both skin observers ignore streamed content replacements and retain structural changes", async () => {
   for (const platform of ["windows", "macos"]) {
     const renderer = await readFile(new URL(
       `../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url,
@@ -48,12 +48,16 @@ test("both skin observers ignore text-only replacements and retain structural ch
     assert.ok(from >= 0 && to > from);
     let callback: (records: unknown[]) => void = () => {};
     let scheduled = 0;
+    const declarations = renderer.match(/^  const (?:SELECTOR_CONTRACT|CSS_PREDICATES) = .+$/gm)!.join("\n");
     new Function("MutationObserver", "scheduleEnsure",
-      `let partObserver;${renderer.slice(from, to)}`)(
+      `${declarations}\nlet partObserver;${renderer.slice(from, to)}`)(
       class { constructor(fn: typeof callback) { callback = fn; } },
       () => { scheduled++; },
     );
-    const text = { nodeType: 3 }, element = { nodeType: 1 };
+    const text = { nodeType: 3 };
+    const element = { nodeType: 1, matches: () => true, querySelector: () => null };
+    const content = { nodeType: 1, matches: () => false, querySelector: () => null };
+    const subtree = { nodeType: 1, matches: () => false, querySelector: () => element };
     for (const [record, expected] of [
       [{ type: "childList", addedNodes: [text], removedNodes: [text] }, 0],
       [{ type: "childList", addedNodes: [], removedNodes: [text] }, 0],
@@ -62,6 +66,9 @@ test("both skin observers ignore text-only replacements and retain structural ch
       [{ type: "childList", addedNodes: [element], removedNodes: [] }, 1],
       [{ type: "childList", addedNodes: [], removedNodes: [element] }, 1],
       [{ type: "childList", addedNodes: [text, element], removedNodes: [] }, 1],
+      [{ type: "childList", addedNodes: [content], removedNodes: [content] }, 0],
+      [{ type: "childList", addedNodes: [subtree], removedNodes: [] }, 1],
+      [{ type: "childList", addedNodes: [], removedNodes: [subtree] }, 1],
       [{ type: "childList" }, 1],
       [{ type: "attributes", attributeName: "class", oldValue: "scrolling",
         target: { getAttribute: () => "scrolled" } }, 0],

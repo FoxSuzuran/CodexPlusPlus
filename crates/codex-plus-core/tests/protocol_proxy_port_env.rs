@@ -77,3 +77,56 @@ fn invalid_env_values_fall_back_to_the_default_port() {
     clear_env_port();
     assert_eq!(protocol_proxy_port(), DEFAULT_PROTOCOL_PROXY_PORT);
 }
+
+#[test]
+fn proxy_status_bridge_uses_the_effective_helper_port() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use codex_plus_core::routes::{BridgeContext, CoreRuntimeService, handle_bridge_request};
+    use codex_plus_core::status::StatusStore;
+    use serde_json::json;
+
+    let _guard = lock_env();
+    let listener = loop {
+        let candidate = TcpListener::bind("127.0.0.1:0").unwrap();
+        if candidate.local_addr().unwrap().port() != DEFAULT_PROTOCOL_PROXY_PORT {
+            break candidate;
+        }
+    };
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                    let mut request = [0; 2048];
+                    let length = stream.read(&mut request).unwrap();
+                    assert!(request[..length].starts_with(b"POST /proxy-status HTTP/1.1\r\n"));
+                    let body = r#"{"status":"ok","requests":[{"id":"relocated-helper"}]}"#;
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline { return false; }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("helper fixture accept failed: {error}"),
+            }
+        }
+    });
+    let state = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let ctx = BridgeContext::core(Arc::new(CoreRuntimeService::new(
+        0, StatusStore::new(state.path().join("status.json")),
+    )));
+    set_env_port(&port.to_string());
+    let result = runtime.block_on(handle_bridge_request(ctx, "/proxy-status", json!({})));
+    clear_env_port();
+    assert!(server.join().unwrap(), "bridge did not contact the relocated helper");
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["requests"][0]["id"], "relocated-helper");
+}

@@ -11,6 +11,8 @@ Bennett 的额度组件会误认靠近窗口底部的项目操作区，并复用
 
 Daily 的 JSON 解析先判断文本是否可能是 JSON，同一条消息内的嵌套 JSON 解码结果共用；每条消息结束即释放缓存，不跨消息保留。原生 `thread/tokenUsage/updated` 不再进入工具调用扫描。累计增量、历史回填、跨日、外部来源切换和销毁保护保持原有实现。
 
+在此基础上，`daily-token-obstacle-geometry.patch` 先用已取得的样式和 DOM 祖先条件排除正文中的普通控件，再读取几何尺寸。长会话中顶部避让扫描不再为每个正文按钮、链接触发同步布局；已安装的前一版修复脚本 `6110359756056afded444be3df45385846015f1ac15fbd5811d2f1cfd9a655ef` 应用后哈希为 `3A8E1A3D57A8AA4EE422E5BFB110091FC78E684D4675489952A4855A73B6522E`。
+
 ## 应用与回退
 
 两个增量补丁为 `bennett-sidebar-placement.patch`、`daily-token-message-performance.patch`。只能应用到上表匹配的基线；不匹配时先比较源文件，不能强制应用。当前安装脚本位置：

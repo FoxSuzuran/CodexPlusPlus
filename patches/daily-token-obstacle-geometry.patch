@@ -1,0 +1,21 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index 85837cd1..c9830de4 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -5168,13 +5168,13 @@
+     const entries = Array.from(document.body.querySelectorAll(TOP_OBSTACLE_SELECTOR))
+       .filter((node) => !root?.contains(node) && !panel?.contains(node))
+       .map((node) => {
++        const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
++        if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;
++        if (!isTopChromeObstacleNode(node, style, header)) return null;
+         const rect = normalizeRect(node.getBoundingClientRect?.());
+         if (!rect || rect.width < 4 || rect.height < 4) return null;
+         if (rect.top >= FLOATING_SCAN_TOP || rect.bottom <= 0) return null;
+         if (rect.width > innerWidth * 0.85 || rect.height > FLOATING_SCAN_TOP) return null;
+-        const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+-        if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;
+-        if (!isTopChromeObstacleNode(node, style, header)) return null;
+         return { node, rect };
+       })
+       .filter(Boolean);

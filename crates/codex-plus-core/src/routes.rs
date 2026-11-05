@@ -732,7 +732,10 @@ pub async fn handle_bridge_request(
             // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。
             let client = reqwest::Client::new();
             match client
-                .post("http://127.0.0.1:57321/proxy-status")
+                .post(format!(
+                    "http://127.0.0.1:{}/proxy-status",
+                    crate::protocol_proxy::protocol_proxy_port()
+                ))
                 .json(&serde_json::json!({}))
                 .timeout(std::time::Duration::from_secs(2))
                 .send()

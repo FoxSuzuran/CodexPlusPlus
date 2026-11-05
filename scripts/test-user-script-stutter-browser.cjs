@@ -142,6 +142,33 @@ function functions(source, names) {
     assert.equal(scheduling.streamToolScans, 100, "streamed tool events still need accounting");
     assert.equal(scheduling.headerLayouts, 1);
     assert.equal(scheduling.toolScans, 101, "own UI changes must not schedule either scan");
-    console.log(JSON.stringify({ context, mount, daily, scheduling }));
+    await page.setContent(`<header style="position:fixed;top:30px;left:0">
+      <button id="header" style="width:20px;height:20px"></button></header>
+      <main>${"<button>chat action</button><a href='#'>file</a>".repeat(1000)}</main>
+      <button id="floating" style="position:fixed;top:60px;left:60px;width:20px;height:20px"></button>
+      <button id="hidden" style="position:fixed;top:60px;opacity:0">hidden</button>
+      <section id="own"><button style="position:fixed;top:60px">own</button></section>`);
+    const dailyGeometry = await page.evaluate(script => {
+      const root = document.getElementById("own"), panel = null, CODEX_PLUS_MENU_ID = "codex-plus-menu";
+      const TOP_OBSTACLE_SELECTOR = "button,a", APP_HEADER_SURFACE_SELECTOR = "header", FLOATING_SCAN_TOP = 120;
+      const normalizeRect = rect => rect;
+      const rectsOverlap = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+      const findAppHeaderElement = () => document.querySelector("header");
+      const nativeRect = Element.prototype.getBoundingClientRect;
+      let geometryReads = 0;
+      Element.prototype.getBoundingClientRect = function (...args) {
+        geometryReads++;
+        return nativeRect.apply(this, args);
+      };
+      try {
+        return eval(`(() => { ${script}
+          return { ids: collectTopObstacleEntries().map(({ node }) => node.id).sort(), geometryReads };
+        })()`);
+      } finally { Element.prototype.getBoundingClientRect = nativeRect; }
+    }, functions(dailySource, ["isPrimaryTopObstacleNode", "isTopChromeObstacleNode", "collectTopObstacleEntries"]));
+    assert.deepEqual(dailyGeometry.ids, ["floating", "header"]);
+    assert.equal(dailyGeometry.geometryReads, process.env.STUTTER_EXPECT_BASELINE === "1" ? 2003 : 2,
+      "chat actions and hidden controls must not force geometry");
+    console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

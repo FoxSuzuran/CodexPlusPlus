@@ -35,6 +35,7 @@ function environment() {
   const legacyDisposed: string[] = [];
   const window = {
     setTimeout: schedule, setInterval: schedule, clearInterval: clear, clearTimeout: clear,
+    requestAnimationFrame: schedule, cancelAnimationFrame: clear,
     __codexPlusUsageStatusLineRuntime: { dispose: () => legacyDisposed.push("usage") },
     __codexPlusProxyRequestStatusRuntime: { dispose: () => legacyDisposed.push("proxy") },
   };
@@ -64,8 +65,10 @@ function harness(dir: string, files: string[], exportNames: string[], callImpl: 
   };
   const scope = new Function(
     "codexPlus", "document", "window", "navigator", "MutationObserver", "clearTimeout", "Element",
+    "requestAnimationFrame", "cancelAnimationFrame",
     `${packageSource(dir, files)}\nreturn { ${exportNames.join(", ")} };`,
-  )(codexPlus, env.document, env.window, { language: "zh-CN" }, env.FakeMutationObserver, env.clear, class {});
+  )(codexPlus, env.document, env.window, { language: "zh-CN" }, env.FakeMutationObserver, env.clear, class {},
+    env.window.requestAnimationFrame, env.window.cancelAnimationFrame);
   const dispose = () => disposers.splice(0).reverse().forEach((fn) => fn());
   return { ...env, calls, slots, services, scope, dispose };
 }

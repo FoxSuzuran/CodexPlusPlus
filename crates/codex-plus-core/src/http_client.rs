@@ -1,5 +1,14 @@
 use anyhow::Context;
 
+/// 仅用于固定的回环 HTTP 地址，不加载系统 TLS 根证书或系统代理。
+pub(crate) fn loopback_client(timeout: std::time::Duration) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .no_proxy()
+        .tls_built_in_root_certs(false)
+        .timeout(timeout)
+        .build()?)
+}
+
 pub(crate) fn apply_configured_ca_certificate(
     mut builder: reqwest::ClientBuilder,
 ) -> anyhow::Result<reqwest::ClientBuilder> {
@@ -388,4 +397,50 @@ pub(crate) fn vlm_http_client_with_timeout(
         .connect_timeout(connect)
         .timeout(total))?
         .build()?)
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn loopback_client_keeps_the_request_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let error = loopback_client(Duration::from_millis(50))
+            .unwrap()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        server.abort();
+        assert!(error.is_timeout(), "{error}");
+    }
+
+    #[test]
+    #[ignore = "manual client-construction performance comparison"]
+    fn compare_loopback_client_construction() {
+        for (name, local) in [("system_roots", false), ("loopback", true)] {
+            let started = Instant::now();
+            for _ in 0..30 {
+                let client = if local {
+                    loopback_client(Duration::from_secs(3)).unwrap()
+                } else {
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .timeout(Duration::from_secs(3))
+                        .build()
+                        .unwrap()
+                };
+                std::hint::black_box(client);
+            }
+            println!("{name}: 30 constructions in {:?}", started.elapsed());
+        }
+    }
+
 }

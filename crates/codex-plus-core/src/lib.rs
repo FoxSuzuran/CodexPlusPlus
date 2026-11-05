@@ -121,6 +121,7 @@ pub mod extension_semver;
 pub mod upstream_model_meta;
 pub mod user_scripts;
 pub mod version;
+mod packed_assets;
 pub mod vision;
 pub mod watcher;
 pub mod whale;

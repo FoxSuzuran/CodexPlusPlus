@@ -4,7 +4,6 @@ use std::path::Path;
 
 use crate::settings::BackendSettings;
 
-const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
 /// Agent 桌宠的按压 / 松开音效，按音效组内嵌：(组名, 按压音, 松开音)。
 /// 音效随启动器本地内嵌，运行时不下载；桌宠图片则不内嵌，见 `agent_pet`。
 const AGENT_PET_SOUNDS: &[(&str, &[u8], &[u8])] = &[
@@ -188,7 +187,7 @@ pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
 const DREAM_SKIN_RENDERER_REVISION: &str = "32-wallpaper-shell-hotpath";
 
 pub fn renderer_script() -> &'static str {
-    RENDERER_SCRIPT
+    crate::packed_assets::renderer()
 }
 
 pub fn dream_skin_default_image() -> (&'static str, &'static [u8]) {

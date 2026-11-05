@@ -5,8 +5,10 @@ const { once } = require("node:events");
 
 const mode = process.argv[2] || "baseline";
 const seconds = Number(process.argv[3] || 15);
+const port = Number(process.argv[4] || 9229);
 assert.ok(["baseline", "cpu", "trace"].includes(mode), "Use baseline, cpu or trace");
 assert.ok(Number.isInteger(seconds) && seconds >= 3 && seconds <= 60, "Duration must be 3–60 seconds");
+assert.ok(Number.isInteger(port) && port > 0 && port <= 65535, "CDP port must be 1–65535");
 const folder = path.resolve(__dirname, "../target/temp");
 fs.mkdirSync(folder, { recursive: true });
 const output = path.join(folder, `renderer-${mode}-${Date.now()}`);
@@ -32,10 +34,10 @@ async function evaluate(expression) {
   return result.result.value;
 }
 async function main() {
-  const targets = await (await fetch("http://127.0.0.1:9229/json/list",
+  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`,
     { signal: AbortSignal.timeout(10000) })).json();
   const pages = targets.filter(t => t.type === "page" && /^app:\/\/-\/index\.html(?:[?#]|$)/.test(t.url));
-  assert.equal(pages.length, 1, "Expected exactly one native renderer on port 9229");
+  assert.equal(pages.length, 1, `Expected exactly one native renderer on port ${port}`);
   socket = new WebSocket(pages[0].webSocketDebuggerUrl);
   socket.onmessage = event => {
     const message = JSON.parse(event.data), receive = pending.get(message.id);
@@ -130,7 +132,7 @@ async function main() {
     const previous = new Map(before.metrics.map(row => [row.name, row.value]));
     const metrics = Object.fromEntries(after.metrics.map(row =>
       [row.name, { value: row.value, delta: row.value - previous.get(row.name) }]));
-    fs.writeFileSync(`${output}.json`, JSON.stringify({ mode, seconds, probe, metrics }, null, 2) + "\n");
+    fs.writeFileSync(`${output}.json`, JSON.stringify({ mode, seconds, port, probe, metrics }, null, 2) + "\n");
     console.log(`Saved ${output}`);
   } finally {
     await evaluate(`(()=>{window.__codexPlusProfileProbe?.cleanup();delete window.__codexPlusProfileProbe})()`).catch(() => {});

@@ -51,6 +51,7 @@
     lastFingerprint: "",
     cache: new Map(),
     observer: null,
+    placementFrame: 0,
     /** 页面里出现过新版 composer 标记后就不再走旧版兜底。 */
     modernDom: false,
     /** 已经写过的诊断原因，每个页面生命周期一条只记一次。 */
@@ -631,8 +632,13 @@
           && (node.matches?.(selector) || node.querySelector?.(selector)));
       });
       if (!relevant) return;
-      const placement = codexPlusUsageSyncPlacement();
-      if (placement?.changed) codexPlusUsageSchedule(0);
+      if (codexPlusUsageState.placementFrame) return;
+      codexPlusUsageState.placementFrame = requestAnimationFrame(() => {
+        codexPlusUsageState.placementFrame = 0;
+        if (!codexPlusUsageState.running) return;
+        const placement = codexPlusUsageSyncPlacement();
+        if (placement?.changed) codexPlusUsageSchedule(0);
+      });
     });
     codexPlusUsageState.observer.observe(document.body, {
       subtree: true,
@@ -763,6 +769,8 @@
     codexPlusUsageState.timer = 0;
     codexPlusUsageState.observer?.disconnect();
     codexPlusUsageState.observer = null;
+    cancelAnimationFrame(codexPlusUsageState.placementFrame);
+    codexPlusUsageState.placementFrame = 0;
     // 把节点整个摘掉：留一个隐藏节点等于每次重载多挂一个。
     document.getElementById(codexPlusUsageStatusLineId)?.remove();
     codexPlusUsageState.lastFingerprint = "";

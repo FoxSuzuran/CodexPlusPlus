@@ -404,13 +404,15 @@ async fn agent_pet_image_returns_cached_data_uri_without_network() {
     let (ctx, cache_dir, _) = agent_pet_context();
     // 预先放好缓存：路由命中缓存就不会联网。
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
-    let url = agent_pet::builtin_image_url("fox", agent_pet::CDN_HOSTS[0]).unwrap();
     std::fs::create_dir_all(&cache_dir).unwrap();
-    std::fs::write(
-        cache_dir.join(agent_pet::cache_file_name(&url, agent_pet::ImageKind::Png)),
-        png,
-    )
-    .unwrap();
+    for id in ["fox", agent_pet::DEFAULT_IMAGE_ID] {
+        let url = agent_pet::builtin_image_url(id, agent_pet::CDN_HOSTS[0]).unwrap();
+        std::fs::write(
+            cache_dir.join(agent_pet::cache_file_name(&url, agent_pet::ImageKind::Png)),
+            png,
+        )
+        .unwrap();
+    }
     // 图片按拓展配置（请求参数）选择。
     let result = handle_bridge_request(ctx.clone(), "/agent-pet/image", json!({"image": "fox"})).await;
     assert_eq!(result["status"], "ok", "{result}");
@@ -418,6 +420,7 @@ async fn agent_pet_image_returns_cached_data_uri_without_network() {
     assert!(result["image"].as_str().unwrap().starts_with("data:image/png;base64,"));
     // 不认识的图库 id 按原来的设置规则回落到默认图片，不会拿去拼下载地址。
     let result = handle_bridge_request(ctx, "/agent-pet/image", json!({"image": "../../etc"})).await;
+    assert_eq!(result["status"], "ok", "{result}");
     assert_eq!(result["id"], agent_pet::DEFAULT_IMAGE_ID);
 }
 

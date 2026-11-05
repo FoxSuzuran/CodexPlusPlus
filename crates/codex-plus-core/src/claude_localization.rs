@@ -116,7 +116,7 @@ fn replace_copy_with(
     Ok(())
 }
 
-const ASSETS: &[(&str, &[u8])] = &[
+static ASSETS: std::sync::LazyLock<Vec<(&str, &[u8])>> = std::sync::LazyLock::new(|| vec![
     (
         "bash-timeout.js",
         include_bytes!("../../../assets/claude-localization/bash-timeout.js"),
@@ -155,7 +155,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ),
     (
         "catalogs/zh-Hans.json",
-        include_bytes!("../../../assets/claude-localization/catalogs/zh-Hans.json"),
+        crate::packed_assets::catalog().as_bytes(),
     ),
     (
         "catalogs/dynamic/zh-Hans.json",
@@ -165,7 +165,7 @@ const ASSETS: &[(&str, &[u8])] = &[
         "catalogs/zh-Hans.overrides.json",
         include_bytes!("../../../assets/claude-localization/catalogs/zh-Hans.overrides.json"),
     ),
-];
+]);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1112,7 +1112,7 @@ fn restore_shell_locale() -> Result<()> {
 }
 
 fn install_assets(root: &Path) -> Result<()> {
-    for (relative, bytes) in ASSETS {
+    for (relative, bytes) in ASSETS.iter() {
         let path = root.join(relative);
         fs::create_dir_all(path.parent().context("缺少运行目录")?)?;
         fs::write(path, bytes)?;

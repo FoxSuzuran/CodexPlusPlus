@@ -2450,6 +2450,16 @@ impl SettingsStore {
     /// 应用启动即崩。触发条件：聚合供应商的 `configContents` 非空（切换供应商时
     /// `backfill_relay_profile_from_live` 会把 live 配置回填进聚合档案）。
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
+        let parsed = self.load_parsed()?;
+        if parsed.settings_revision == "missing" || settings_normalize_depth() > 0 {
+            return Ok(parsed);
+        }
+        let _guard = SettingsNormalizeGuard::enter();
+        Ok(normalize_settings_config_sections(parsed))
+    }
+
+    /// 只读布尔开关的后台轮询无需重做供应商 TOML 归一化，文件校验与反序列化保持一致。
+    pub(crate) fn load_parsed(&self) -> anyhow::Result<BackendSettings> {
         let contents = match self.read_contents()? {
             Some(contents) => contents,
             None => {
@@ -2475,12 +2485,7 @@ impl SettingsStore {
                 }
             }
         }
-        if settings_normalize_depth() > 0 {
-            // 外层已经在归一化了：这里再归一化就会递归回本函数。
-            return Ok(parsed);
-        }
-        let _guard = SettingsNormalizeGuard::enter();
-        Ok(normalize_settings_config_sections(parsed))
+        Ok(parsed)
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
@@ -4746,6 +4751,51 @@ experimental_bearer_token = "sk-existing""#
         let mut expected = normalized_default_settings();
         expected.settings_revision = "missing".into();
         assert_eq!(store.load().unwrap(), expected);
+    }
+
+    #[test]
+    fn parsed_runtime_settings_preserve_flags_validation_and_revisions() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert_eq!(store.load_parsed().unwrap(), store.load().unwrap());
+        for enabled in [false, true] {
+            for look in [false, true] {
+                let contents = json!({
+                    "enhancementsEnabled": enabled,
+                    "codexAppPetRealMouseLook": look
+                }).to_string();
+                fs::write(&path, &contents).unwrap();
+                let parsed = store.load_parsed().unwrap();
+                let normalized = store.load().unwrap();
+                assert_eq!(parsed.enhancements_enabled, enabled);
+                assert_eq!(parsed.codex_app_pet_real_mouse_look, look);
+                assert_eq!(parsed.enhancements_enabled, normalized.enhancements_enabled);
+                assert_eq!(parsed.codex_app_pet_real_mouse_look, normalized.codex_app_pet_real_mouse_look);
+                assert_eq!(parsed.settings_revision, normalized.settings_revision);
+                assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+            }
+        }
+        for invalid in ["{bad json", r#"{"enhancementsEnabled":"yes"}"#] {
+            fs::write(&path, invalid).unwrap();
+            assert!(store.load_parsed().is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual read-only settings performance comparison"]
+    fn compare_runtime_settings_read() {
+        let path = std::env::var_os("CODEX_PLUS_PROFILE_SETTINGS").expect("set a settings snapshot path");
+        let store = SettingsStore::new(path.into());
+        for (name, normalize) in [("normalized", true), ("parsed", false)] {
+            let started = std::time::Instant::now();
+            for _ in 0..30 {
+                let settings = if normalize { store.load() } else { store.load_parsed() }.unwrap();
+                std::hint::black_box(settings);
+            }
+            println!("{name}: 30 reads in {:?}", started.elapsed());
+        }
     }
 
     /// 坏 JSON 不再静默退回默认设置：解析失败必须报错，避免拿默认值把磁盘上的

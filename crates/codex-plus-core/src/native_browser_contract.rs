@@ -1,7 +1,6 @@
 use super::*;
 use std::process::{Command, Stdio};
 
-const INSPECTOR: &[u8] = include_bytes!("../../../assets/native-browser/inspect-service.cjs");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,15 +79,16 @@ pub(super) fn inspect(node: &Path, state: &Path, source: &[u8], entry: &[u8]) ->
         source.len() as u64 <= MAX_SERVICE,
         "Oversized service input"
     );
-    let helper = state.join(format!("inspector-{}.cjs", sha(INSPECTOR)));
+    let inspector = crate::packed_assets::inspector().as_bytes();
+    let helper = state.join(format!("inspector-{}.cjs", sha(inspector)));
     let _guards = pin_parents(&helper)?;
     if helper.exists() {
         ensure!(
-            read_regular(&helper, 4 * 1024 * 1024)? == INSPECTOR,
+            read_regular(&helper, 4 * 1024 * 1024)? == inspector,
             "Inspector changed externally"
         );
     } else {
-        write_new(&helper, INSPECTOR)?;
+        write_new(&helper, inspector)?;
     }
     let request = serde_json::to_vec(&json!({
         "service": std::str::from_utf8(source)?,

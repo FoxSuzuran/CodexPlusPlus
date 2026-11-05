@@ -6,8 +6,8 @@ const { test } = require("node:test");
 
 const source = fs.readFileSync(path.join(__dirname, "profile-renderer.cjs"), "utf8");
 
-async function record(mode, failure = false, occupied = false) {
-  const calls = [], files = new Map(), marks = new Map();
+async function record(mode, failure = false, occupied = false, port = "9229") {
+  const calls = [], files = new Map(), marks = new Map(), requests = [];
   let finish, clock = 0;
   const closed = new Promise(resolve => { finish = resolve; });
   const window = occupied ? { __codexPlusProfileProbe: { existing: true } } : {};
@@ -50,7 +50,7 @@ async function record(mode, failure = false, occupied = false) {
     }
     close() { finish(); }
   }
-  const process = { argv: ["node", "profile-renderer.cjs", mode, "3"], exitCode: 0 };
+  const process = { argv: ["node", "profile-renderer.cjs", mode, "3", port], exitCode: 0 };
   vm.runInNewContext(source, {
     require: name => name === "node:fs" ? {
       mkdirSync() {},
@@ -63,7 +63,10 @@ async function record(mode, failure = false, occupied = false) {
       closeSync() {}, statSync: name => ({ size: files.get(name).length }),
     } : require(name),
     __dirname, process, console: { log() {}, error() {} }, WebSocket: Socket, AbortSignal,
-    fetch: async () => ({ json: async () => [{ type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://fixture" }] }),
+    fetch: async (url) => {
+      requests.push(url);
+      return { json: async () => [{ type: "page", url: "app://-/index.html", webSocketDebuggerUrl: "ws://fixture" }] };
+    },
     setTimeout: (fn, ms) => setTimeout(fn, ms === 3000 ? 0 : ms), clearTimeout,
   });
   let timeout;
@@ -73,7 +76,7 @@ async function record(mode, failure = false, occupied = false) {
     })]);
   } finally { clearTimeout(timeout); }
   await new Promise(resolve => setImmediate(resolve));
-  return { calls, files, marks, window, exitCode: process.exitCode };
+  return { calls, files, marks, requests, window, exitCode: process.exitCode };
 }
 
 for (const mode of ["baseline", "cpu", "trace"]) {
@@ -118,4 +121,18 @@ test("an existing recording is left untouched", async () => {
   assert.equal(result.exitCode, 1);
   assert.equal(result.window.__codexPlusProfileProbe.existing, true);
   assert.equal(result.calls.includes("Profiler.start"), false);
+});
+
+test("recording follows an explicit relocated CDP port", async () => {
+  const result = await record("baseline", false, false, "58429");
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.requests, ["http://127.0.0.1:58429/json/list"]);
+  const report = JSON.parse([...result.files.values()][0]);
+  assert.equal(report.port, 58429);
+});
+
+test("recording rejects invalid ports before connecting", async () => {
+  for (const port of ["0", "65536", "-1", "localhost", "9229/path"]) {
+    await assert.rejects(record("baseline", false, false, port), /CDP port must be/);
+  }
 });

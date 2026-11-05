@@ -1130,7 +1130,8 @@ pub async fn install_bridge(
             )
             .await?;
 
-        for script in new_document_scripts {
+        for (index, script) in new_document_scripts.iter().enumerate() {
+            let started = std::time::Instant::now();
             let message_id = next_message_id();
             let response = session
                 .send_command(
@@ -1140,6 +1141,7 @@ pub async fn install_bridge(
                 )
                 .await?;
             collect_script_identifier(&response, &mut registered_script_ids);
+            let registered_ms = started.elapsed().as_millis();
             let message_id = next_message_id();
             session
                 .send_command(
@@ -1148,6 +1150,15 @@ pub async fn install_bridge(
                     runtime_evaluate_params(script),
                 )
                 .await?;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.script_installed",
+                json!({
+                    "index": index,
+                    "bytes": script.len(),
+                    "registration_ms": registered_ms,
+                    "evaluation_ms": started.elapsed().as_millis().saturating_sub(registered_ms),
+                }),
+            );
         }
         Ok(())
     }

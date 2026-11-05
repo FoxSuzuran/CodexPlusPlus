@@ -36,6 +36,55 @@ function declaration(name: string): string {
   assert.fail(`分片里找不到 ${name}`);
 }
 
+test("placement mutations share one frame and stop cancels pending placement", () => {
+  let observe: (records: unknown[]) => void = () => {};
+  let reads = 0;
+  const frames = new Map<number, () => void>();
+  let nextFrame = 0;
+  const source = [
+    declaration("codexPlusUsageState"),
+    declaration("codexPlusUsageCardSelector"),
+    declaration("codexPlusUsageLegacyCardSelector"),
+    declaration("codexPlusUsageObserve"),
+    declaration("stopCodexPlusUsageStatusLine"),
+    'const codexPlusUsageStatusLineId = "usage", codexPlusUsageStyleId = "style";',
+    "return { state: codexPlusUsageState, start: codexPlusUsageObserve, stop: stopCodexPlusUsageStatusLine };",
+  ].join("\n");
+  const runtime = new Function(
+    "document", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame",
+    "codexPlusUsageSyncPlacement", "codexPlusUsageSchedule", "clearTimeout", source,
+  )(
+    { body: {}, getElementById: () => null },
+    class {
+      constructor(callback: typeof observe) { observe = callback; }
+      observe() {}
+      disconnect() {}
+    },
+    (callback: () => void) => { frames.set(++nextFrame, callback); return nextFrame; },
+    (id: number) => frames.delete(id),
+    () => { reads += 1; return { changed: false }; },
+    () => {},
+    () => {},
+  );
+  runtime.state.running = true;
+  runtime.start();
+  for (let index = 0; index < 20; index += 1) {
+    observe([{ type: "attributes", target: { closest: () => null } }]);
+  }
+  assert.equal(reads, 0);
+  assert.equal(frames.size, 1);
+  const pending = [...frames.values()][0]!;
+  frames.clear();
+  pending();
+  assert.equal(reads, 1);
+  observe([{ type: "attributes", target: { closest: () => null } }]);
+  const cancelled = [...frames.values()][0]!;
+  runtime.stop();
+  assert.equal(frames.size, 0);
+  cancelled();
+  assert.equal(reads, 1);
+});
+
 const sandboxSource = [
   declaration("codexPlusUsageStaleMs"),
   declaration("codexPlusUsagePercent"),

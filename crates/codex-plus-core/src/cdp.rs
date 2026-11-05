@@ -194,10 +194,7 @@ fn decode_probe_chunked_body(body: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(CDP_HTTP_TIMEOUT)
-        .build()
+    let client = crate::http_client::loopback_client(CDP_HTTP_TIMEOUT)
         .context("failed to build CDP HTTP client")?;
 
     let urls = [
@@ -219,10 +216,7 @@ pub async fn list_targets(debug_port: u16) -> anyhow::Result<Vec<CdpTarget>> {
 }
 
 pub async fn browser_identity(debug_port: u16) -> anyhow::Result<CdpBrowserIdentity> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(CDP_HTTP_TIMEOUT)
-        .build()
+    let client = crate::http_client::loopback_client(CDP_HTTP_TIMEOUT)
         .context("failed to build CDP HTTP client")?;
     let urls = [
         format!("http://127.0.0.1:{debug_port}/json/version"),

@@ -6236,7 +6236,7 @@ async fn pet_overlay_has_screen_point_hook(websocket_url: &str) -> anyhow::Resul
 /// 桌宠跟随鼠标：增强总开关、功能开关、内置拓展「pet-real-mouse」三者都开着才驱动。
 /// 设置关着时短路，不去扫拓展目录。
 fn pet_real_mouse_enabled() -> bool {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_parsed().unwrap_or_default();
     settings.enhancements_enabled
         && settings.codex_app_pet_real_mouse_look
         && !crate::builtin_takeover::replaced("pet-real-mouse")
@@ -6334,7 +6334,7 @@ async fn run_pet_real_mouse_target_driver(debug_port: u16, target: crate::cdp::C
         std::time::Duration::from_millis(100),
         || {
             if ticks_until_settings_check == 0 {
-                let settings = SettingsStore::default().load().unwrap_or_default();
+                let settings = SettingsStore::default().load_parsed().unwrap_or_default();
                 if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
                     return Ok(None);
                 }

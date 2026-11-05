@@ -70,7 +70,6 @@ const AGENT_PET_SETTINGS_PAGE: &str = include_str!("../../../assets/extensions/a
 const AGENT_PET_SETTINGS_HTML: &str = include_str!("../../../assets/extensions/agent-pet/settings.html");
 const AGENT_PET_SETTINGS_PLACEHOLDER: &str = "/*__AGENT_PET_SETTINGS_SCRIPTS__*/";
 /// 大肥鱼的上游引擎（原样保留，许可见 `assets/inject/upstream/whale-widget/PROVENANCE.md`）。
-const WHALE_ENGINE: &str = include_str!("../../../assets/inject/upstream/whale-widget/full-widget-codex.js");
 const AGENT_PET_ASSETS: &[(&str, &[u8])] = &[
     ("assets/icon.svg", include_bytes!("../../../assets/extensions/agent-pet/assets/icon.svg")),
     ("assets/sounds/Ya1.mp3", include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3")),
@@ -82,8 +81,9 @@ const AGENT_PET_ASSETS: &[(&str, &[u8])] = &[
 /// 引擎包成一个函数声明：上游引擎用词法宿主（参数就是被代理的 window、document、定时器……），
 /// 页面不必开放 unsafe-eval。和其余页面脚本拼在同一个拓展作用域里，由 whale.js 调用。
 fn whale_engine_source() -> String {
+    let engine = crate::packed_assets::whale();
     format!(
-        "  function codexPlusWhaleEngine(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{WHALE_ENGINE}\n  }}\n"
+        "  function codexPlusWhaleEngine(window,document,fetch,localStorage,setTimeout,clearTimeout,setInterval,clearInterval,requestAnimationFrame,cancelAnimationFrame,MutationObserver,ResizeObserver,AudioContext,webkitAudioContext,Image,Audio) {{\n{engine}\n  }}\n"
     )
 }
 

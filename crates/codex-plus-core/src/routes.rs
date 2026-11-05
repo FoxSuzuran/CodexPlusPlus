@@ -727,10 +727,10 @@ pub async fn handle_bridge_request(
             .and_then(|result| result.map_err(|error| anyhow::anyhow!(error.to_string())))
             .map(|entries| json!({ "status": "ok", "entries": entries }))
         }
-        "/proxy-status" => {
+        "/proxy-status" => async {
             // 代理进程的实时请求状态只存在管理器内存里；桥接进程通过本地 helper
             // 的只读路由取一份快照，供 Codex 页面里的状态条轮询。
-            let client = reqwest::Client::new();
+            let client = crate::http_client::loopback_client(std::time::Duration::from_secs(2))?;
             match client
                 .post(format!(
                     "http://127.0.0.1:{}/proxy-status",
@@ -751,6 +751,7 @@ pub async fn handle_bridge_request(
                 })),
             }
         }
+        .await,
         _ => {
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "bridge.unknown_path",

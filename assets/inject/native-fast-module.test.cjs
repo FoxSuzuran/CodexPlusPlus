@@ -170,16 +170,24 @@ async function runContentDiscoveryTests(source, url, { index, main, mainImport, 
   const run = async (sources) => {
     const env = browser();
     const fetched = [];
+    let reading = 0, peak = 0;
     const result = await env.api.prepareDocumentModules({
       document, location,
-      fetchText: async (target) => { fetched.push(target); return sources.get(target) ?? null; },
+      fetchText: async (target) => {
+        fetched.push(target);
+        reading++;
+        peak = Math.max(peak, reading);
+        await new Promise(setImmediate);
+        reading--;
+        return sources.get(target) ?? null;
+      },
     });
-    return { env, result, fetched };
+    return { env, result, fetched, peak };
   };
 
   // 换名后仍经 app-main 引用：名字找不到，按内容在两层内找到，入口标记随补丁落在新名字的块上。
   {
-    const { env, result, fetched } = await run(new Map([
+    const { env, result, fetched, peak } = await run(new Map([
       [index, mainImport],
       [main, `${unrelated.map(reference).join("")}${reference(renamed)}`],
       ...unrelated.map((target) => [target, "export const unrelated = true;"]),
@@ -192,6 +200,7 @@ async function runContentDiscoveryTests(source, url, { index, main, mainImport, 
     assert.ok(result.modules[0].patchedSource.includes('__codexPlusNativeFastCompiled="v1"'), "入口标记跟着补丁走");
     assert.equal(fetched.at(-1), renamed, "找到目标块后立即停止扫描");
     assert.equal(new Set(fetched).size, fetched.length, "同一块不重复读取");
+    assert.equal(peak, 4, "内容发现最多并行读取四块");
     // 安装时按完成标记认入口，不再依赖 app-initial 文件名。
     const installed = env.api.installModules([{ url: new URL("./side.js", url).href, patchedSource: "export {};" }, ...result.modules]);
     assert.equal(installed.ok, true, JSON.stringify(installed.diagnostics));
@@ -205,13 +214,13 @@ async function runContentDiscoveryTests(source, url, { index, main, mainImport, 
     assert.deepEqual(fetched, [index, main, url]);
   }
 
-  // 按内容扫描找到第一块完整的就停（控制读取量），不再继续读后面的同类块。
+  // 同批预读不改变按广度顺序选中第一块的行为。
   {
     const twin = new URL("./app-boot-twin.js", url).href;
     const { result, fetched } = await run(new Map([[index, mainImport], [main, `${reference(renamed)}${reference(twin)}`], [renamed, source], [twin, source]]));
     assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
     assert.equal(result.modules[0].url, renamed);
-    assert.ok(!fetched.includes(twin), "找到后不再读取");
+    assert.deepEqual(fetched.slice(-2), [renamed, twin], "只预读当前批，不继续读取后续批次");
   }
 
   // 已读到的两个不同名块都含完整门控（例如都由入口直接引用）：无法确定是哪个，整体放弃。
@@ -237,6 +246,25 @@ async function runContentDiscoveryTests(source, url, { index, main, mainImport, 
     const { result, fetched } = await run(new Map([[index, mainImport], [main, reference(deeper)], [deeper, reference(renamed)], [renamed, source]]));
     assert.equal(result.ok, false);
     assert.ok(!fetched.includes(renamed), "第三层不读取");
+  }
+
+  {
+    const chunks = Array.from({ length: 400 }, (_, i) => new URL(`./chunk-limit-${i}.js`, url).href);
+    const { result, fetched } = await run(new Map([[index, mainImport], [main, chunks.map(reference).join("")]]));
+    assert.equal(result.ok, false);
+    assert.equal(fetched.length, 322, "保留已知入口，不超过 320 次内容读取");
+    assert.equal(new Set(fetched).size, fetched.length);
+  }
+
+  {
+    const large = "x".repeat(24 * 1024 * 1024);
+    const { result, fetched, peak } = await run(new Map([
+      [index, mainImport], [main, unrelated.map(reference).join("")],
+      ...unrelated.map(target => [target, large]),
+    ]));
+    assert.equal(result.ok, false);
+    assert.equal(fetched.length, 10, "在途的四块也计入 192 MiB 内容预算");
+    assert.equal(peak, 4);
   }
 }
 

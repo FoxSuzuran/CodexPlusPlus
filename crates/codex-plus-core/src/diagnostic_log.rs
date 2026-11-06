@@ -78,16 +78,12 @@ impl LogSink {
     /// 追加一行（含结尾换行）。`line` 必须带 `\n`。
     fn write_line(&mut self, path: &Path, line: &[u8]) -> std::io::Result<()> {
         let now = Instant::now();
-        if self.file.is_none() || self.path != path {
+        let mut compaction = Ok(());
+        if self.file.is_none() || self.path != path || now >= self.next_size_check {
             self.close()?;
             let owned = path.to_path_buf();
-            compact_diagnostic_log_if_needed(&owned)?;
-            self.open(path)?;
-        } else if now >= self.next_size_check {
-            // 压缩会重写整个文件，句柄必须先落下再重开。
-            self.flush_now()?;
-            let owned = path.to_path_buf();
-            compact_diagnostic_log_if_needed(&owned)?;
+            compaction = compact_diagnostic_log_if_needed(&owned);
+            // 轮转失败也重开并前移检查时间，继续保存记录，避免每条日志重复轮转。
             self.open(path)?;
         }
         let file = self
@@ -95,7 +91,8 @@ impl LogSink {
             .as_mut()
             .ok_or_else(|| std::io::Error::other("诊断日志句柄未就绪"))?;
         // 一次 write_all 就是一次追加写：不做用户态缓冲，进程随时退出都不丢最近的记录。
-        file.write_all(line)
+        file.write_all(line)?;
+        compaction
     }
 }
 
@@ -302,5 +299,51 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&first).unwrap(), "{\"a\":1}\n");
         assert_eq!(std::fs::read_to_string(&second).unwrap(), "{\"b\":2}\n");
+    }
+
+    fn grow_log_past_limit(path: &Path) {
+        let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_len(MAX_DIAGNOSTIC_LOG_BYTES + 1).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        file.write_all(b"\nkept\n").unwrap();
+    }
+
+    #[test]
+    fn log_sink_rotates_an_open_log_and_keeps_appending_to_the_new_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        let mut sink = LogSink::new();
+        sink.write_line(&path, b"old\n").unwrap();
+        grow_log_past_limit(&path);
+        sink.next_size_check = Instant::now();
+
+        sink.write_line(&path, b"after rotation\n").unwrap();
+        sink.write_line(&path, b"next record\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "kept\nafter rotation\nnext record\n"
+        );
+    }
+
+    #[test]
+    fn log_sink_backs_off_failed_rotation_and_still_writes_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        let mut sink = LogSink::new();
+        sink.write_line(&path, b"old\n").unwrap();
+        grow_log_past_limit(&path);
+        std::fs::create_dir(path.with_extension("log.tmp")).unwrap();
+        sink.next_size_check = Instant::now();
+
+        assert!(sink.write_line(&path, b"rotation failed\n").is_err());
+        assert!(sink.next_size_check > Instant::now());
+        sink.write_line(&path, b"next record\n").unwrap();
+
+        let mut file = std::fs::File::open(&path).unwrap();
+        file.seek(SeekFrom::End(-28)).unwrap();
+        let mut tail = String::new();
+        file.read_to_string(&mut tail).unwrap();
+        assert_eq!(tail, "rotation failed\nnext record\n");
     }
 }

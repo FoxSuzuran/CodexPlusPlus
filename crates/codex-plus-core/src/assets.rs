@@ -108,38 +108,6 @@ pub fn whale_media() -> Value {
     })
 }
 
-#[cfg(windows)]
-const DREAM_TARGET_CSS: &str =
-    include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
-#[cfg(not(windows))]
-const DREAM_TARGET_CSS: &str =
-    include_str!("../../../assets/inject/upstream/dream-skin/macos/dream-skin.css");
-#[cfg(windows)]
-const DREAM_TARGET_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js");
-#[cfg(not(windows))]
-const DREAM_TARGET_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js");
-#[cfg(windows)]
-const CIDALA_TARGET_CSS: &str =
-    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/dream-skin.css");
-#[cfg(not(windows))]
-const CIDALA_TARGET_CSS: &str =
-    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/dream-skin.css");
-#[cfg(windows)]
-const CIDALA_TARGET_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/cidala-tiger/windows/renderer-inject.js");
-#[cfg(not(windows))]
-const CIDALA_TARGET_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/cidala-tiger/macos/renderer-inject.js");
-const CODEX_SNOW_CSS: &str =
-    include_str!("../../../assets/inject/upstream/snow-skin/dream-skin.css");
-const CODEX_SNOW_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/snow-skin/renderer-inject.js");
-const GLASS_VISION_CSS: &str =
-    include_str!("../../../assets/inject/upstream/glass-vision/glass-vision.css");
-const GLASS_VISION_RENDERER: &str =
-    include_str!("../../../assets/inject/upstream/glass-vision/renderer-inject.js");
 const DREAM_SKIN_COMMUNITY_COMPAT_CSS: &str =
     include_str!("../../../assets/inject/dream-skin-community-compat.css");
 #[cfg(windows)]
@@ -233,12 +201,26 @@ fn dream_skin_target_assets(
     let style_preset =
         crate::settings::resolve_dream_skin_style_preset(&theme.id, &theme.style_preset);
     match style_preset.as_str() {
-        "codex-snow" => ("snow", CODEX_SNOW_RENDERER, CODEX_SNOW_CSS),
-        "glass-vision" => ("glass-vision", GLASS_VISION_RENDERER, GLASS_VISION_CSS),
-        value if uses_cidala_target_engine(value) => {
-            ("cidala-tiger", CIDALA_TARGET_RENDERER, CIDALA_TARGET_CSS)
-        }
-        _ => ("dream-skin", DREAM_TARGET_RENDERER, DREAM_TARGET_CSS),
+        "codex-snow" => (
+            "snow",
+            crate::packed_assets::snow_renderer(),
+            crate::packed_assets::snow_css(),
+        ),
+        "glass-vision" => (
+            "glass-vision",
+            crate::packed_assets::glass_renderer(),
+            crate::packed_assets::glass_css(),
+        ),
+        value if uses_cidala_target_engine(value) => (
+            "cidala-tiger",
+            crate::packed_assets::cidala_renderer(),
+            crate::packed_assets::cidala_css(),
+        ),
+        _ => (
+            "dream-skin",
+            crate::packed_assets::dream_renderer(),
+            crate::packed_assets::dream_css(),
+        ),
     }
 }
 

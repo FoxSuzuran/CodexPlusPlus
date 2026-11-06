@@ -139,13 +139,15 @@ describe("dream skin theme helpers", () => {
 
   it("runs the unmodified target renderers instead of the rewritten theme packages", async () => {
     const assets = await readFile(new URL("../../../crates/codex-plus-core/src/assets.rs", import.meta.url), "utf8");
+    const packedBuild = await readFile(new URL("../../../crates/codex-plus-core/build.rs", import.meta.url), "utf8");
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
-    assert.match(assets, /upstream\/dream-skin/);
-    assert.match(assets, /upstream\/cidala-tiger/);
-    assert.match(assets, /upstream\/snow-skin/);
-    assert.match(assets, /upstream\/glass-vision/);
+    assert.match(packedBuild, /upstream\/dream-skin/);
+    assert.match(packedBuild, /upstream\/cidala-tiger/);
+    assert.match(packedBuild, /upstream\/snow-skin/);
+    assert.match(packedBuild, /upstream\/glass-vision/);
     assert.doesNotMatch(assets, /assets\/inject\/themes\//);
+    assert.doesNotMatch(packedBuild, /inject\/themes\//);
     assert.match(assets, /__DREAM_SKIN_CSS_JSON__/);
     assert.match(assets, /__GLASS_VISION_CSS_JSON__/);
     assert.match(renderer, /__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__/);

@@ -786,20 +786,32 @@
     let fetched = 0;
     let bytes = 0;
     while (queue.length && pending().length && fetched < 320 && bytes < 192 * 1024 * 1024) {
-      const { url, depth } = queue.shift();
-      if (seen.has(url)) continue;
-      seen.add(url);
-      let source = known.get(url);
-      if (source === undefined) {
-        fetched++;
-        try { source = await fetchText(url); } catch { source = null; }
-        if (typeof source !== "string") continue;
-        bytes += source.length;
-        if (pending().some((target) => containsAnchors(target, source))) found.push({ url, source });
+      const batch = [];
+      // 只预读同一批的四块，并为在途内容预留原有体积预算。
+      while (queue.length && batch.length < 4 && fetched < 320
+        && (batch.length === 0 || bytes + (batch.length + 1) * moduleSourceLimit <= 192 * 1024 * 1024)) {
+        const { url, depth } = queue.shift();
+        if (seen.has(url)) continue;
+        seen.add(url);
+        const source = known.get(url);
+        if (source === undefined) fetched++;
+        batch.push({ url, depth, source });
       }
-      if (depth >= 2) continue;
-      for (const match of source.matchAll(/["'`]\.\/([\w-]+\.js)["'`]/g)) {
-        try { queue.push({ url: new URL(`./${match[1]}`, url).href, depth: depth + 1 }); } catch { /* 忽略非法地址。 */ }
+      await Promise.all(batch.map(async (item) => {
+        if (item.source !== undefined) return;
+        try { item.source = await fetchText(item.url); } catch { item.source = null; }
+      }));
+      for (const { url, depth, source } of batch) {
+        if (typeof source !== "string") continue;
+        if (!known.has(url)) {
+          bytes += source.length;
+          if (pending().some((target) => containsAnchors(target, source))) found.push({ url, source });
+        }
+        if (!pending().length || bytes >= 192 * 1024 * 1024) break;
+        if (depth >= 2) continue;
+        for (const match of source.matchAll(/["'`]\.\/([\w-]+\.js)["'`]/g)) {
+          try { queue.push({ url: new URL(`./${match[1]}`, url).href, depth: depth + 1 }); } catch { /* 忽略非法地址。 */ }
+        }
       }
     }
   }

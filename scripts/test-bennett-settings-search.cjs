@@ -12,18 +12,29 @@ assert.ok(start >= 0 && end > start);
 function fixture(hasSidebar, exact = false, width = 300) {
   let queries = 0, measurements = 0;
   class Element {
-    constructor(text = "") { this.textContent = text; }
+    constructor(text = "", tagName = "DIV", parentElement = null) {
+      this.textContent = text;
+      this.tagName = tagName;
+      this.parentElement = parentElement;
+    }
     getBoundingClientRect() { measurements++; return { width, height: 600 }; }
   }
+  const body = new Element("", "BODY");
   const sidebar = new Element(exact || hasSidebar ?
-    "General Appearance Account" : "Conversation");
-  const nodes = [...Array.from({ length: 3000 }, () => new Element("Conversation")), sidebar];
+    "General Appearance Account" : "Conversation", "DIV", body);
+  const controls = Array.from({ length: 30 }, () => new Element("Conversation", "BUTTON", body));
+  if (hasSidebar) controls.push(new Element("General", "BUTTON", sidebar));
   const context = vm.createContext({
     HTMLElement: Element, SIDEBAR_SELECTOR: ".settings",
     compact: text => text.toLowerCase(),
     document: {
+      body,
       querySelector: () => exact ? sidebar : null,
-      querySelectorAll: () => { queries++; return nodes; },
+      querySelectorAll: selector => {
+        assert.equal(selector, "button, a");
+        queries++;
+        return controls;
+      },
     },
   });
   vm.runInContext(`${source.slice(start, end)};globalThis.find=findSettingsSidebar;`, context);

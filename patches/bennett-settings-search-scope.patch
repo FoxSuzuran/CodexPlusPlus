@@ -1,0 +1,34 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -6249,18 +6249,21 @@ const FEATURES = {
+     const findSettingsSidebar = () => {
+       const exact = document.querySelector(SIDEBAR_SELECTOR);
+       if (exact instanceof HTMLElement) return exact;
+-      const candidates = Array.from(document.querySelectorAll("div")).filter(
+-        (node) => {
+-          if (!(node instanceof HTMLElement)) return false;
++      for (const control of document.querySelectorAll("button, a")) {
++        if (compact(control.textContent) !== "general") continue;
++        const ancestors = [];
++        for (let node = control.parentElement; node && node !== document.body; node = node.parentElement) {
++          if (node instanceof HTMLElement && node.tagName === "DIV") ancestors.push(node);
++        }
++        for (const node of ancestors.reverse()) {
+           const text = compact(node.textContent);
+           if (!(
+-            text.includes("general") &&
+             text.includes("appearance") &&
+             (text.includes("configuration") || text.includes("account"))
+-          )) return false;
++          )) continue;
+           const rect = node.getBoundingClientRect();
+-          return rect.width >= 180 && rect.width <= 420 && rect.height >= 240;
+-        },
+-      );
+-      return candidates[0] instanceof HTMLElement ? candidates[0] : null;
++          if (rect.width >= 180 && rect.width <= 420 && rect.height >= 240) return node;
++        }
++      }
++      return null;
+     };

@@ -412,6 +412,16 @@ cargo test
 cargo build --release
 ```
 
+此 fork 的 Windows 本地发布使用固定的 `cargo xrelease` 配置和已有 Sherpa 1.13.8 静态库。在仓库根目录运行：
+
+```powershell
+# 首次安装构建缓存清理工具，缓存仍放在仓库 target。
+cargo install cargo-sweep --version 0.8.0 --locked --root target/tools/cargo-sweep --target-dir target --jobs 4
+.\scripts\build-windows.ps1
+```
+
+该入口编译当前 dev/test 图、完整构建前端和单应用 EXE；成功后自动清理历史 Cargo 指纹，保留当前 dev/release 产物及 incremental 缓存。产物为 `target\release\codex-plus-plus.exe`，构建与清理明细位于 `target\temp\windows-build`。
+
 修改 renderer 注入分片后，运行 `node scripts/assemble-renderer-inject.mjs` 重新组装产物。
 
 </details>

@@ -21,3 +21,13 @@ it("选择模式时同时备份进设置文件，启动时本地缺失就从设�
   const lib = await read("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::set_manager_agent_focus,/);
 });
+
+it("使用模式只手动打开，「稍后设置」也记住（#2936）", async () => {
+  const app = await read("./App.tsx");
+  assert.match(app, /const \[agentFocusOpen, setAgentFocusOpen\] = useState\(false\);/);
+  assert.doesNotMatch(app, /resolveAgentFocusPrompt|needAgentFocusPrompt|agentFocusChecking/);
+  assert.match(app, /onChangeMode=\{\(\) => setAgentFocusOpen\(true\)\}/);
+  assert.match(app, /setupOpen && !agentFocusOpen \?/);
+  // 第一次问就点「稍后设置」：按全部功能记下（本地 + 设置文件），下次不再追问。
+  assert.match(app, /if \(!agentFocus\) \{\n\s*\/\/[^\n]*\n\s*saveAgentFocus\("all"\);\n\s*setSetupOpen\(false\);/);
+});

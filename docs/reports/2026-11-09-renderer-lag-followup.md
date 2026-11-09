@@ -124,18 +124,32 @@ ResizeObserver 取消已不属于当前布局的障碍节点，销毁时释放�
 ## Windows 交付
 
 完整前端生产构建通过，18 个资源文件内容与上一份交付一致；
-固定 `cargo xrelease` 通过，耗时 763.368 秒。
-EXE 源码提交 `02128214c693d5d3ee6ea9772d93c5881e34fd9f`。
+包含状态点动画修复的固定 `cargo xrelease` 通过，耗时 649.785 秒。
+EXE 源码提交 `36b6dbb74aef58cd990882b291a9c225d7e55b24`。
+最后的每日用量输入过滤提交 `9e5c93163b6c28719734250f44cf72299d47ea24`
+只涉及独立插件及测试/补丁，再次完整 Vite 构建和 `cargo xrelease` 通过，EXE 字节保持一致。
+上一份中间构建耗时 763.368 秒，已由本次验证通过的单 EXE 替换。
 
 已更新固定目录 `D:\Programming\Projects\CodexPlusPlus\dist\windows\latest`：
 
 - `codex-plus-plus.exe`：104,476,672 字节，Windows x64 GUI。
-- SHA-256：`5ca904f232aa48f446e12e58a185aa7585a22fbde6ae9544da6c3a57162efdfc`。
+- SHA-256：`2a598b74aaccabe65847ea9bc65ffce00d06f0f80203208c7f96b4e04213b6e1`。
 - README、manifest、SHA256SUMS 与 EXE 的校验信息一致，目录内只有这一套交付文件。
 - EXE 的 PDB GUID/age 与本轮生成的符号文件匹配。
 - 主注入脚本采用已有 Zstandard 压缩：本轮 `renderer.zst` 的完整字节确实存在于新 EXE，
   解压结果与当前组装脚本逐字节一致，含活动页选择与恢复窗口复用修复。
   仅在 EXE 中搜索未压缩函数名不能用于判定该脚本版本。
+- 状态点原始内置脚本包含 `will-change:opacity` 与新透明度关键帧，
+  不再使用原来的阴影关键帧。最终状态条浏览器回归与完整前端再次通过；
+  Rust 用户脚本 9 项再次通过。
+- 每日用量最终补丁重新应用并核对完整哈希；22 项采集、18 种图片预览和输入过滤、
+  流式统计、隐藏明细、布局观察器、紧凑宽度回归再次通过。
+
+所有局部更新完成、编译结束后的 15.017 秒可见页面样本没有输入事件，
+记录 0 次长任务、0 次超过 50ms 的帧间隔。脚本 0.140 秒、样式 1.023 秒、
+主线程任务 11.594 秒，仍有持续绘制开销。不是打字/切会话验收，也不作为严格前后对照。
+记录为 `target/temp/renderer-baseline-1794203255859.json`
+和 `target/temp/lag-capture-20261109/final-live-baseline.json`。
 
 安装目录 `C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`
 的 SHA-256 仍为旧版 `ddb56fd587b75451306f1beb1c89d5056a8ff8dd76b92718a314e0998a1e7121`，

@@ -126,9 +126,11 @@ function functions(source, names) {
       const streamToolScans = toolScans;
       for (let i = 0; i < 100; i++) callback([{ target: editor }]);
       const editorLayouts = layouts - streamLayouts;
+      const editorToolScans = toolScans - streamToolScans;
       callback([{ target: document.querySelector("header") }]);
       callback([{ target: root }]);
-      return { streamLayouts, streamToolScans, editorLayouts, headerLayouts: layouts - streamLayouts - editorLayouts, toolScans };
+      return { streamLayouts, streamToolScans, editorLayouts, editorToolScans,
+        headerLayouts: layouts - streamLayouts - editorLayouts, toolScans };
     }, dailySource.slice(from, to));
     if (process.env.STUTTER_EXPECT_BASELINE === "1") {
       assert.ok(context.steadyMutations >= 1000);
@@ -142,11 +144,13 @@ function functions(source, names) {
       assert.equal(daily.headerReads, 1);
       assert.equal(scheduling.streamLayouts, 0);
       assert.equal(scheduling.editorLayouts, 0, "typing cannot rescan every page control");
+      assert.equal(scheduling.editorToolScans, 0, "typing cannot rescan existing tool outputs");
     }
     assert.equal(daily.obstacles, 40);
     assert.equal(scheduling.streamToolScans, 100, "streamed tool events still need accounting");
     assert.equal(scheduling.headerLayouts, 1);
-    assert.equal(scheduling.toolScans, 201, "own UI changes must not schedule either scan");
+    assert.equal(scheduling.toolScans, process.env.STUTTER_EXPECT_BASELINE === "1" ? 201 : 101,
+      "own UI and editor changes must not rescan existing tool outputs");
     await page.setContent(`<header style="position:fixed;top:30px;left:0">
       <button id="header" style="width:20px;height:20px"></button></header>
       <main>${"<button>chat action</button><a href='#'>file</a>".repeat(1000)}</main>

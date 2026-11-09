@@ -97,12 +97,13 @@
      restoreStandaloneCapture();
      window.removeEventListener?.("codex-message-from-view", handleCodexMessage, true);
      window.removeEventListener?.("message", handleWindowMessage, true);
-@@ -5759,7 +5773,7 @@
+@@ -5757,7 +5771,8 @@
+     refresh();
+ 
      observer = new MutationObserver((records) => {
-       const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target));
+-      const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target));
++      const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target)
++        && !record.target.closest?.('[contenteditable="true"], textarea'));
        if (!external.length) return;
--      if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose'))) scheduleMountRoot();
-+      if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose, [contenteditable="true"], textarea'))) scheduleMountRoot();
+       if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose'))) scheduleMountRoot();
        scheduleDomToolScan();
-     });
-     observer.observe(document.documentElement, {

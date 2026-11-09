@@ -92,7 +92,8 @@ async function main() {
             delete request.model;
             request.startedAtMs = 0;
             runtime.api.render();
-            check(error.hidden && !error.textContent && !error.title && meta.hidden,
+            check(error.hidden && !error.textContent && !error.title && meta.hidden
+              && getComputedStyle(error).display === "none" && getComputedStyle(meta).display === "none",
               "proxy clears stale metadata and errors");
             runtime.api.state.requests = [];
             runtime.api.render();

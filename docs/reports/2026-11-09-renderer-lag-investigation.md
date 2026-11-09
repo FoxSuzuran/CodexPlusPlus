@@ -68,4 +68,19 @@
 - TypeScript 检查通过；前端 1,824 项通过、2 项已有跳过。
 - `cargo test -p codex-plus-core user_scripts -- --test-threads=4`：9 项通过。
 - 完整 `npm --prefix apps/codex-plus-manager run vite:build` 通过。
-- 固定 Windows EXE 构建、产物校验及修复后自然使用采样结果随交付记录更新。
+- 两处局部重载后，20.017 秒、页面可见且无输入事件的采样记录 3 次长任务，
+  合计 243ms，最长 134ms，最大帧间隔 141.7ms。负载不同，不作为严格前后对照。
+- 随后 5 秒样式失效记录中，彩虹上下文条旧、新选择器相关失效均为 0；
+  仍有 14 次其它规则引起的 SVG 失效。该次记录时正在编译，未用其耗时作性能对照。
+- 实页另观察状态条 6.012 秒：3 次文本变化、0 次子节点重建、2 次属性变化，
+  节点从隐藏恢复可见，仍为固定 4 个子节点。
+- 固定 `cargo xrelease` 通过，耗时 679.240 秒。新 EXE 的 x64 架构、Windows GUI 子系统、
+  内置状态条修复源码及配套 PDB 的 GUID/age 匹配均通过。
+- 已更新固定交付目录 `dist/windows/latest` 的 EXE、说明、清单与校验文件。
+  EXE 为 104,476,672 字节，SHA-256：
+  `5ab7098bf062ddecae4c6dab990129fa5cc7039885bbec7f7ecac2890e42c753`。
+  EXE 源码提交为 `4b98f03690f0c0398f211b7a20128cf298360d58`。
+- 安装目录 EXE 的哈希仍与修复前一致。没有用新 EXE 重启；未重跑整个 Rust workspace。
+  应由用户退出程序后，将固定交付目录的单个 EXE 替换到原安装位置。
+- 构建前保存了仍在运行的旧 EXE 对应 PDB，采集器同时搜索旧、新符号目录，
+  避免更新 `target/release` 后丢失旧进程的符号分析能力。

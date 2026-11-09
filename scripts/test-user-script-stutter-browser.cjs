@@ -114,6 +114,8 @@ function functions(source, names) {
       const root = document.createElement("div"), panel = document.createElement("section");
       const stream = document.createElement("article");
       stream.setAttribute("data-message-author-role", "assistant");
+      const editor = document.createElement("div");
+      editor.contentEditable = "true";
       let callback, layouts = 0, toolScans = 0;
       const MutationObserver = class { constructor(fn) { callback = fn; } };
       const scheduleMountRoot = () => { layouts++; };
@@ -122,9 +124,11 @@ function functions(source, names) {
       for (let i = 0; i < 100; i++) callback([{ target: stream }, { target: root }]);
       const streamLayouts = layouts;
       const streamToolScans = toolScans;
+      for (let i = 0; i < 100; i++) callback([{ target: editor }]);
+      const editorLayouts = layouts - streamLayouts;
       callback([{ target: document.querySelector("header") }]);
       callback([{ target: root }]);
-      return { streamLayouts, streamToolScans, headerLayouts: layouts - streamLayouts, toolScans };
+      return { streamLayouts, streamToolScans, editorLayouts, headerLayouts: layouts - streamLayouts - editorLayouts, toolScans };
     }, dailySource.slice(from, to));
     if (process.env.STUTTER_EXPECT_BASELINE === "1") {
       assert.ok(context.steadyMutations >= 1000);
@@ -137,11 +141,12 @@ function functions(source, names) {
       assert.deepEqual(mount, { firstQueries: 1, invalidatedQueries: 1, expiredQueries: 1 });
       assert.equal(daily.headerReads, 1);
       assert.equal(scheduling.streamLayouts, 0);
+      assert.equal(scheduling.editorLayouts, 0, "typing cannot rescan every page control");
     }
     assert.equal(daily.obstacles, 40);
     assert.equal(scheduling.streamToolScans, 100, "streamed tool events still need accounting");
     assert.equal(scheduling.headerLayouts, 1);
-    assert.equal(scheduling.toolScans, 101, "own UI changes must not schedule either scan");
+    assert.equal(scheduling.toolScans, 201, "own UI changes must not schedule either scan");
     await page.setContent(`<header style="position:fixed;top:30px;left:0">
       <button id="header" style="width:20px;height:20px"></button></header>
       <main>${"<button>chat action</button><a href='#'>file</a>".repeat(1000)}</main>
@@ -169,6 +174,87 @@ function functions(source, names) {
     assert.deepEqual(dailyGeometry.ids, ["floating", "header"]);
     assert.equal(dailyGeometry.geometryReads, process.env.STUTTER_EXPECT_BASELINE === "1" ? 2003 : 2,
       "chat actions and hidden controls must not force geometry");
-    console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry }));
+    if (process.env.STUTTER_EXPECT_BASELINE === "1") {
+      console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry }));
+      return;
+    }
+    const resize = await page.evaluate(script => {
+      const root = null, panel = null, CODEX_PLUS_MENU_ID = "codex-plus-menu";
+      const resizeObservedNodes = new Set();
+      let resizeObserver = null;
+      const unobserved = [];
+      const ResizeObserver = class { observe() {} unobserve(node) { unobserved.push(node.id); } };
+      const findAppHeaderElement = () => document.querySelector("header");
+      return eval(`(() => { ${script}
+        const old = document.getElementById("floating");
+        updateLayoutResizeObservers([{ node: old }]);
+        const before = resizeObservedNodes.size;
+        old.remove();
+        updateLayoutResizeObservers([{ node: document.getElementById("hidden") }]);
+        return { before, after: resizeObservedNodes.size, released: unobserved };
+      })()`);
+    }, functions(dailySource, ["observeLayoutNode", "updateLayoutResizeObservers"]));
+    assert.deepEqual(resize, { before: 3, after: 3, released: ["floating"] },
+      "rebuilding chrome must release old resize targets");
+
+    const detailPage = await browser.newPage();
+    const detailErrors = [];
+    detailPage.on("pageerror", error => detailErrors.push(error.message));
+    await detailPage.route("**/*", route => route.fulfill({ contentType: "text/html",
+      body: '<header class="draggable"></header><main></main>' }));
+    await detailPage.goto("https://fixture.invalid/");
+    await detailPage.addScriptTag({ content: dailySource });
+    const detail = await detailPage.evaluate(async () => {
+      const api = window.__codexDailyTokenUsage, root = document.getElementById("codex-daily-token-usage");
+      const panel = document.getElementById("codex-daily-token-usage-panel");
+      const observer = new MutationObserver(() => {});
+      observer.observe(panel, { childList: true, subtree: true, characterData: true });
+      const update = total => {
+        api.__test.processCapturePayload({ id: "lazy-panel", model: "fixture-model", conversation_id: "fixture",
+          usage: { input_tokens: total - 10, output_tokens: 10, total_tokens: total } }, "fixture");
+        api.refresh();
+      };
+      update(30);
+      update(60);
+      const closedMutations = observer.takeRecords().length;
+      const totalNode = root.querySelector(".codex-daily-total").firstChild;
+      const closedTotal = totalNode.data;
+      root.querySelector("button").click();
+      const openedTotal = panel.querySelector(".codex-daily-hero").textContent;
+      const trendBuilt = panel.querySelectorAll(".codex-daily-trend-svg circle").length > 0;
+      const modelBuilt = panel.querySelector(".codex-daily-model-name").textContent;
+      update(90);
+      const liveTotal = panel.querySelector(".codex-daily-hero").textContent;
+      const reusedText = root.querySelector(".codex-daily-total").firstChild === totalNode;
+      observer.disconnect();
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      update(120);
+      root.querySelector("button").click();
+      const reopenedTotal = panel.querySelector(".codex-daily-hero").textContent;
+      const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+      update(10000001);
+      await frame(); await frame(); await frame();
+      const compactBefore = root.querySelector(".codex-daily-total").textContent;
+      const queryAll = document.body.querySelectorAll.bind(document.body);
+      let stableWidthScans = 0;
+      document.body.querySelectorAll = selector => {
+        if (selector.includes("[data-testid]")) stableWidthScans++;
+        return queryAll(selector);
+      };
+      update(10000002);
+      await frame(); await frame();
+      const compactUnchanged = root.querySelector(".codex-daily-total").textContent === compactBefore;
+      document.body.querySelectorAll = queryAll;
+      api.destroy();
+      return { closedMutations, closedTotal, openedTotal, trendBuilt, modelBuilt, liveTotal, reusedText,
+        reopenedTotal, compactUnchanged, stableWidthScans };
+    });
+    assert.deepEqual(detail, { closedMutations: 0, closedTotal: "60", openedTotal: "60", trendBuilt: true,
+      modelBuilt: "fixture-model", liveTotal: "90", reusedText: true, reopenedTotal: "120",
+      compactUnchanged: true, stableWidthScans: 0 },
+      "closed details defer DOM work while totals, opening, live updates and reopening stay current");
+    assert.deepEqual(detailErrors, []);
+    await detailPage.close();
+    console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry, resize, detail }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

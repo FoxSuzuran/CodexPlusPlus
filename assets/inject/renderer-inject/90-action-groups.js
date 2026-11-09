@@ -553,7 +553,12 @@
   }
 
   function conversationRoot() {
-    return document.querySelector(".thread-scroll-container") || document.querySelector("main") || document.querySelector('[role="main"]');
+    const scope = document.querySelector('[data-app-shell-active-page="true"]') || document;
+    for (const selector of [".thread-scroll-container", "main", '[role="main"]']) {
+      const root = scope.matches?.(selector) ? scope : scope.querySelector(selector);
+      if (root) return root;
+    }
+    return null;
   }
 
   function nodeOrAncestorLooksLikeCodexUserBubble(node) {
@@ -579,7 +584,8 @@
       const style = getComputedStyle(current);
       if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight) return current;
     }
-    return document.querySelector(".thread-scroll-container") || document.scrollingElement || document.documentElement;
+    const root = conversationRoot();
+    return root?.matches(".thread-scroll-container") ? root : document.scrollingElement || document.documentElement;
   }
 
   // 旧版（26.9xx 之前）内容容器类名清单。保留它当候选之一，但**不再当唯一判据**：

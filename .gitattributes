@@ -43,3 +43,4 @@ patches/daily-token-usage-stutter.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-image-preview.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-obstacle-geometry.patch text eol=lf whitespace=-blank-at-eol
 patches/rainbow-context-bar-performance.patch text eol=lf whitespace=-blank-at-eol
+patches/daily-token-lazy-panel.patch text eol=lf whitespace=-blank-at-eol

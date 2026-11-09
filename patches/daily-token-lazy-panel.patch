@@ -1,0 +1,108 @@
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -194,7 +194,7 @@
+   const nativeUsageByThread = new Map();
+   const nativeUsageSyncs = new Map();
+   const nativeHistoryRequests = new Set();
+-  const resizeObservedNodes = new WeakSet();
++  const resizeObservedNodes = new Set();
+ 
+   function toCount(value) {
+     const number = Number(value);
+@@ -4947,6 +4947,7 @@
+   function showPanel() {
+     if (!root || !panel) return;
+     cancelPanelClose();
++    renderPanel(aggregateDay(selectedDateKey), getDateKey(Date.now()));
+     positionPanel();
+     root.classList.add("is-open");
+     root.querySelector(".codex-daily-trigger")?.setAttribute("aria-expanded", "true");
+@@ -5229,10 +5230,14 @@
+   }
+ 
+   function updateLayoutResizeObservers(obstacleEntries = []) {
+-    observeLayoutNode(document.body);
+-    observeLayoutNode(findAppHeaderElement());
+-    observeLayoutNode(document.getElementById(CODEX_PLUS_MENU_ID));
+-    for (const entry of obstacleEntries) observeLayoutNode(entry.node);
++    const current = new Set([document.body, findAppHeaderElement(),
++      document.getElementById(CODEX_PLUS_MENU_ID), ...obstacleEntries.map((entry) => entry.node)]);
++    for (const node of resizeObservedNodes) {
++      if (current.has(node)) continue;
++      resizeObserver?.unobserve(node);
++      resizeObservedNodes.delete(node);
++    }
++    for (const node of current) observeLayoutNode(node);
+   }
+ 
+   function handleWindowResize() {
+@@ -5524,18 +5529,9 @@
+     }
+   }
+ 
+-  function render({ animate = false } = {}) {
+-    if (!root) return;
+-    const todayKey = getDateKey(Date.now());
+-    const todaySnapshot = aggregateDay(todayKey);
+-    const snapshot = aggregateDay(selectedDateKey);
+-    const totalChanged = lastRenderedTotal >= 0 && todaySnapshot.total !== lastRenderedTotal;
+-    lastRenderedTotal = todaySnapshot.total;
+-
++  function renderPanel(snapshot, todayKey) {
+     const connected = sourceMode === "external" || sourceMode === "standalone";
+-    root.classList.toggle("is-connected", connected);
+     panel?.classList.toggle("is-connected", connected);
+-    root.querySelector(".codex-daily-total").textContent = formatCompact(todaySnapshot.total);
+     panel.querySelector(".codex-daily-title").textContent =
+       selectedDateKey === todayKey ? "今日 Token 用量" : "Token 用量";
+     panel.querySelector(".codex-daily-hero").textContent = formatExact(snapshot.total);
+@@ -5561,6 +5557,24 @@
+     if (panel.querySelector(".codex-daily-price-panel")?.hidden === false && !isEditingPriceSettings()) {
+       renderPriceSettings(snapshot);
+     }
++  }
++
++  function render({ animate = false } = {}) {
++    if (!root) return;
++    const todayKey = getDateKey(Date.now());
++    const todaySnapshot = aggregateDay(todayKey);
++    const totalChanged = lastRenderedTotal >= 0 && todaySnapshot.total !== lastRenderedTotal;
++    lastRenderedTotal = todaySnapshot.total;
++
++    const connected = sourceMode === "external" || sourceMode === "standalone";
++    root.classList.toggle("is-connected", connected);
++    const total = root.querySelector(".codex-daily-total");
++    const text = formatCompact(todaySnapshot.total);
++    if (total.firstChild.data !== text) {
++      total.firstChild.data = text;
++      scheduleMountRoot();
++    }
++    if (panel?.classList.contains("is-visible")) renderPanel(aggregateDay(selectedDateKey), todayKey);
+ 
+     if (animate && totalChanged) {
+       root.classList.remove("is-updated");
+@@ -5603,7 +5617,6 @@
+     const changed = sourceChanged || domToolChanged;
+     const signature = renderStateSignature(currentDateKey, selectedDateKey);
+     if (signature !== lastRenderSignature) {
+-      mountRoot();
+       render({ animate: changed });
+     }
+     return aggregateDay();
+@@ -5634,6 +5647,7 @@
+     }
+     observer?.disconnect();
+     resizeObserver?.disconnect();
++    resizeObservedNodes.clear();
+     restoreStandaloneCapture();
+     window.removeEventListener?.("codex-message-from-view", handleCodexMessage, true);
+     window.removeEventListener?.("message", handleWindowMessage, true);
+@@ -5759,7 +5773,7 @@
+     observer = new MutationObserver((records) => {
+       const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target));
+       if (!external.length) return;
+-      if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose'))) scheduleMountRoot();
++      if (external.some((record) => !record.target.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose, [contenteditable="true"], textarea'))) scheduleMountRoot();
+       scheduleDomToolScan();
+     });
+     observer.observe(document.documentElement, {

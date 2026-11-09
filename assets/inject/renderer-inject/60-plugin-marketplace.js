@@ -1151,9 +1151,8 @@
   }
 
   function currentThreadScroller() {
-    const explicit = document.querySelector(".thread-scroll-container");
-    if (explicit?.isConnected) return explicit;
     const root = conversationRoot();
+    if (root?.isConnected && root.matches(".thread-scroll-container")) return root;
     if (!root?.isConnected) return document.scrollingElement || document.documentElement;
     const style = getComputedStyle(root);
     if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
@@ -1265,6 +1264,7 @@
 
   function prepareThreadScrollRestoreLock(sessionId) {
     const key = validThreadScrollSessionKey(sessionId);
+    if (activeThreadScrollRestoreLock(key)) return;
     const entry = key ? readThreadScrollEntries()[key] : null;
     if (entry) startThreadScrollRestoreLock(key, entry);
   }
@@ -1433,15 +1433,16 @@
     if (!codexPlusSettings().threadScrollRestore) return;
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !validThreadScrollEntry(scroller)) return;
-    if (activeThreadScrollRestoreLock(key)) return;
+    if (!key || !scroller || activeThreadScrollRestoreLock(key)) return;
     const snapshot = {
       top: finiteScrollNumber(scroller.scrollTop),
       scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
       clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
-      atBottom: threadScrollNearBottom(scroller, scroller.scrollTop),
       at: Date.now(),
     };
+    if (!validThreadScrollEntry(snapshot)) return;
+    const bottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, snapshot.scrollHeight - snapshot.clientHeight);
+    snapshot.atBottom = Math.abs(bottom - snapshot.top) <= Math.max(24, snapshot.clientHeight * 0.15);
     if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
     const entries = readThreadScrollEntries();
     entries[key] = snapshot;
@@ -1487,17 +1488,25 @@
   }
 
   function scheduleThreadScrollRestore(sessionId) {
-    clearThreadScrollRestoreTimers();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) {
+      clearThreadScrollRestoreTimers();
+      return;
+    }
+    const lock = activeThreadScrollRestoreLock(key);
+    // 路由的多次补扫共用一个恢复窗口，避免每次再展开七个计时器并延长锁定。
+    if (lock && lock.restoreRevision === window.__codexThreadScrollRestoreRevision
+        && window.__codexThreadScrollRestoreTimers?.length) return;
+    clearThreadScrollRestoreTimers();
     const entry = readThreadScrollEntries()[key];
-    if (!entry) {
+    if (!validThreadScrollEntry(entry)) {
       clearThreadScrollRestoreLock();
       return;
     }
-    startThreadScrollRestoreLock(key, entry);
+    const nextLock = startThreadScrollRestoreLock(key, entry);
     const restoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
     window.__codexThreadScrollRestoreRevision = restoreRevision;
+    nextLock.restoreRevision = restoreRevision;
     window.__codexThreadScrollRestoreTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
       if (window.__codexThreadScrollRestoreRevision !== restoreRevision) return;
       restoreThreadScrollPosition(key);

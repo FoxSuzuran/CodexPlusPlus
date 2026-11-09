@@ -7,6 +7,9 @@ const source = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-i
 const helpers = source.slice(source.indexOf("  function finiteNonNegativeNumber("), source.indexOf("  async function postJson("));
 const prelude = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-inject/00-prelude.js"), "utf8");
 const constants = [...prelude.matchAll(/^  const codexThreadScroll\w+ = .+;$/gm)].map(match => match[0]).join("\n");
+const actions = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-inject/90-action-groups.js"), "utf8");
+const conversationHelpers = ["conversationRoot", "nearestScrollableAncestor"].map(name =>
+  actions.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"))[0]).join("\n");
 
 async function main() {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -28,21 +31,44 @@ async function main() {
         const storage=new Map();
         const localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
         ${constants}
+        ${conversationHelpers}
         ${helpers}
         window.scrollTest={saveThreadScrollPositionNow,restoreThreadScrollPosition,scheduleThreadScrollRestore,
           cancelThreadScrollRestoreForUserIntent,clearThreadScrollRestoreTimers,clearThreadScrollSyncTimers,
           threadScrollRuntime,readThreadScrollEntries,writeThreadScrollEntries,startThreadScrollRestoreLock,
-          shouldBlockThreadScrollAutobottom,installThreadScrollProgrammaticScrollGuard,updateThreadScrollHandlers};
+          currentThreadScroller,prepareThreadScrollRestoreLock,shouldBlockThreadScrollAutobottom,
+          installThreadScrollProgrammaticScrollGuard,updateThreadScrollHandlers};
       `);
+      const activeSelection = await page.evaluate(() => {
+        const api = window.scrollTest, scroller = document.querySelector(".thread-scroll-container");
+        const legacy = api.currentThreadScroller() === scroller;
+        const active = document.createElement("section"), inactive = document.createElement("section");
+        active.setAttribute("data-app-shell-active-page", "true");
+        inactive.setAttribute("data-app-shell-active-page", "false");
+        inactive.hidden = true;
+        inactive.append(scroller.cloneNode(true));
+        scroller.replaceWith(active);
+        active.append(scroller);
+        document.body.prepend(inactive);
+        const preferredActive = api.currentThreadScroller() === scroller;
+        const replacement = scroller.cloneNode(true);
+        scroller.replaceWith(replacement);
+        const rebuilt = api.currentThreadScroller() === replacement;
+        active.removeAttribute("data-app-shell-active-page");
+        replacement.setAttribute("data-app-shell-active-page", "true");
+        return { legacy, preferredActive, rebuilt, rootIsActivePage: api.currentThreadScroller() === replacement };
+      });
+      assert.deepEqual(activeSelection, { legacy: true, preferredActive: true, rebuilt: true, rootIsActivePage: true },
+        "hidden cached conversations cannot capture scroll restoration");
       // Save at the bottom, then reopen after messages/images increase the content height.
       let result = await page.evaluate(() => {
-        const api = window.scrollTest, scroller = document.querySelector(".thread-scroll-container");
+        const api = window.scrollTest, scroller = api.currentThreadScroller();
         const runtime = api.threadScrollRuntime();
         runtime.activeSessionId = "test-session-0001";
         runtime.activeScroller = scroller;
         scroller.scrollTop = getComputedStyle(scroller).flexDirection === "column-reverse" ? 0 : scroller.scrollHeight;
         api.saveThreadScrollPositionNow();
-        document.querySelector(".content").style.height = "2400px";
+        scroller.querySelector(".content").style.height = "2400px";
         api.updateThreadScrollHandlers();
         api.installThreadScrollProgrammaticScrollGuard();
         api.scheduleThreadScrollRestore(runtime.activeSessionId);
@@ -102,6 +128,45 @@ async function main() {
         return { unchanged, invalidIgnored: top === scroller.scrollTop };
       });
       assert.deepEqual(result, { unchanged: true, invalidIgnored: true });
+      result = await page.evaluate(() => {
+        const api = window.scrollTest, runtime = api.threadScrollRuntime();
+        const nativeTimeout = window.setTimeout, nativeClear = window.clearTimeout, nativeNow = Date.now;
+        let clock = nativeNow(), nextTimer = -1, registrations = 0;
+        const scheduled = new Map();
+        window.setTimeout = (fn, delay) => { registrations++; const id = nextTimer--; scheduled.set(id, delay); return id; };
+        window.clearTimeout = id => scheduled.delete(id);
+        Date.now = () => clock;
+        try {
+          runtime.restoreLock = null;
+          api.writeThreadScrollEntries({ [runtime.activeSessionId]: {
+            top: 500, scrollHeight: 2400, clientHeight: 400, at: clock, atBottom: false,
+          } });
+          api.scheduleThreadScrollRestore(runtime.activeSessionId);
+          const lock = runtime.restoreLock;
+          for (let attempt = 0; attempt < 6; attempt++) {
+            api.prepareThreadScrollRestoreLock(runtime.activeSessionId);
+            api.scheduleThreadScrollRestore(runtime.activeSessionId);
+          }
+          const firstTimers = [...scheduled.values()];
+          const firstRegistrations = registrations;
+          const sameLock = runtime.restoreLock === lock;
+          const cancelled = {};
+          Object.defineProperty(cancelled, "scrollHeight", { get() { throw Error("Locked save read layout"); } });
+          api.saveThreadScrollPositionNow(runtime.activeSessionId, cancelled);
+          clock += 3300;
+          api.scheduleThreadScrollRestore(runtime.activeSessionId);
+          return { firstTimers, firstRegistrations, sameLock, newLock: runtime.restoreLock !== lock,
+            nextTimers: [...scheduled.values()] };
+        } finally {
+          api.clearThreadScrollRestoreTimers();
+          window.setTimeout = nativeTimeout;
+          window.clearTimeout = nativeClear;
+          Date.now = nativeNow;
+        }
+      });
+      const delays = [0, 80, 220, 500, 1000, 1800, 2800];
+      assert.deepEqual(result, { firstTimers: delays, firstRegistrations: 7, sameLock: true, newLock: true, nextTimers: delays },
+        `navigation retries share one restoration window and locked saves skip layout; reversed=${reversed}`);
       console.log(`PASS history scroll: bottom growth, legacy snapshot, reading position, user intent and loading state; reversed=${reversed}`);
     }
     assert.deepEqual(errors, []);

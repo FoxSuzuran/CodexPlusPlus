@@ -1,0 +1,45 @@
+--- a/renderer.js
++++ b/renderer.js
+@@ -3,7 +3,9 @@
+     const id = 'rainbow-context-bar';
+     const selector = '[data-composer-surface-overflow] span[role="img"][aria-label^="上下文用量"]';
+     const marker = '[data-codex-plus-ext="rainbow-context-bar"][data-rainbow-part="meter"]';
+-    const target = `${selector}:has(> ${marker})`;
++    const hostMarker = 'data-codex-plus-rainbow-context-meter';
++    // 两个属性保留原 :has() 的优先级，避免子节点变化让全页 SVG 失效。
++    const target = `${selector}[${hostMarker}][${hostMarker}]`;
+     const configuredWidth = Number(ctx.config.barWidth);
+     const width = Number.isFinite(configuredWidth) ? Math.max(36, Math.min(140, configuredWidth)) : 64;
+     const meters = new Map();
+@@ -69,6 +71,7 @@
+     function refresh() {
+       for (const [host, meter] of meters) {
+         if (!host.isConnected || !host.matches(selector)) {
++          host.removeAttribute(hostMarker);
+           meter.root.remove();
+           meters.delete(host);
+         }
+@@ -91,6 +94,7 @@
+           meters.set(host, meter);
+         }
+         if (meter.root.parentNode !== host) host.append(meter.root);
++        if (!host.hasAttribute(hostMarker)) host.setAttribute(hostMarker, '');
+         const progress = `${percent}%`;
+         if (meter.fill.style.width !== progress) meter.fill.style.width = progress;
+         if (meter.label.textContent !== progress) meter.label.textContent = progress;
+@@ -116,9 +120,12 @@
+     return () => {
+       disposed = true;
+       observer.disconnect();
+-      for (const meter of meters.values()) meter.root.remove();
++      for (const [host, meter] of meters) {
++        host.removeAttribute(hostMarker);
++        meter.root.remove();
++      }
+       meters.clear();
+       style.remove();
+     };
+   });
+-});
+\ No newline at end of file
++});

@@ -50,7 +50,7 @@ async function main() {
         };
         const api = new Function("codexPlus", "window", "setTimeout", "clearTimeout", sources[kind] + (kind === "usage"
           ? "\nreturn { tick: codexPlusUsageTick, state: codexPlusUsageState };"
-          : "\nreturn { tick: codexPlusProxyStatusRefresh, state: codexPlusProxyStatusState };"))({
+          : "\nreturn { tick: codexPlusProxyStatusRefresh, render: codexPlusProxyStatusRender, state: codexPlusProxyStatusState };"))({
           extension: fn => fn(ctx), currentSession: () => ({ id: threadId }), currentSessionId: () => threadId,
         }, clock, clock.setTimeout, clock.clearTimeout);
         return { api, timers, resolve: () => resolve(response), stop: () => [...cleanups].reverse().forEach(fn => fn?.()) };
@@ -64,6 +64,45 @@ async function main() {
           await Promise.resolve();
           await runtime.api.tick();
           check(document.getElementById(id)?.textContent.length > 0, `${kind} paints on enable`);
+          if (kind === "proxy" && round === 0) {
+            const node = document.getElementById(id);
+            const parts = [...node.children], textNodes = parts.map(part => part.firstChild);
+            const phase = node.querySelector(".codex-plus-proxy-phase");
+            const meta = node.querySelector(".codex-plus-proxy-meta");
+            const error = node.querySelector(".codex-plus-proxy-error");
+            const changes = new MutationObserver(() => {});
+            changes.observe(node, { childList: true, characterData: true, subtree: true });
+            const request = runtime.api.state.requests[0];
+            for (let elapsed = 1; elapsed <= 5; elapsed++) {
+              runtime.api.state.nowMs = request.startedAtMs + elapsed * 1000;
+              runtime.api.render();
+              check(meta.textContent.includes(`${elapsed}s`), "proxy duration advances");
+            }
+            check(changes.takeRecords().every(record => record.type !== "childList"),
+              "proxy duration updates existing text without rebuilding nodes");
+            check(parts.every((part, index) => node.children[index] === part && part.firstChild === textNodes[index]),
+              "proxy preserves status parts and text nodes");
+            request.phase = "retrying";
+            request.autoRetries = 2;
+            request.attemptDetails = [{ code: "fixture-error", message: "fixture detail" }];
+            runtime.api.render();
+            check(phase.textContent.includes("2") && !error.hidden && error.title === "fixture detail",
+              "proxy phase and error still update");
+            request.attemptDetails = [];
+            delete request.model;
+            request.startedAtMs = 0;
+            runtime.api.render();
+            check(error.hidden && !error.textContent && !error.title && meta.hidden,
+              "proxy clears stale metadata and errors");
+            runtime.api.state.requests = [];
+            runtime.api.render();
+            check(node.dataset.hidden === "true", "proxy hides on idle");
+            runtime.api.state.requests = [{ threadId, phase: "waiting" }];
+            runtime.api.render();
+            check(node.dataset.hidden === "false" && node.dataset.phase === "waiting",
+              "proxy returns after idle");
+            changes.disconnect();
+          }
           document.getElementById(id).remove();
           await runtime.api.tick();
           check(document.getElementById(id)?.textContent.length > 0, `${kind} reacquires rebuilt DOM`);

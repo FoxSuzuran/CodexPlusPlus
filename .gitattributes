@@ -42,3 +42,4 @@ patches/context-used-meter-stutter.patch -text whitespace=-blank-at-eol,cr-at-eo
 patches/daily-token-usage-stutter.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-image-preview.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-obstacle-geometry.patch text eol=lf whitespace=-blank-at-eol
+patches/rainbow-context-bar-performance.patch text eol=lf whitespace=-blank-at-eol

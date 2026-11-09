@@ -140,6 +140,12 @@
       node.id = codexPlusProxyStatusId;
       node.setAttribute("data-codex-plus-ext", codexPlusProxyStatusOwner);
       node.setAttribute("role", "status");
+      for (const part of ["dot", "phase", "meta", "error"]) {
+        const child = document.createElement("span");
+        child.className = `codex-plus-proxy-${part}`;
+        child.appendChild(document.createTextNode(""));
+        node.appendChild(child);
+      }
       codexPlusProxyStatusState.lastFingerprint = "";
     }
     if (slotHost) {
@@ -223,29 +229,22 @@
     const fingerprint = JSON.stringify([phase, label, meta, lastError, lastErrorMessage, text.lastError, text.aria]);
     if (fingerprint === codexPlusProxyStatusState.lastFingerprint && node.dataset.hidden === "false" && node.isConnected) return;
     codexPlusProxyStatusState.lastFingerprint = fingerprint;
-    node.dataset.hidden = "false";
-    node.dataset.phase = phase || "requesting";
-    node.setAttribute("aria-label", text.aria);
-    node.replaceChildren();
-    const dot = document.createElement("span");
-    dot.className = "codex-plus-proxy-dot";
-    const phaseNode = document.createElement("span");
-    phaseNode.className = "codex-plus-proxy-phase";
-    phaseNode.textContent = label;
-    node.append(dot, phaseNode);
-    if (meta.length) {
-      const metaNode = document.createElement("span");
-      metaNode.className = "codex-plus-proxy-meta";
-      metaNode.textContent = meta.join(" · ");
-      node.appendChild(metaNode);
+    if (node.dataset.hidden !== "false") node.dataset.hidden = "false";
+    if (node.dataset.phase !== (phase || "requesting")) node.dataset.phase = phase || "requesting";
+    if (node.getAttribute("aria-label") !== text.aria) node.setAttribute("aria-label", text.aria);
+    // 更新已有文本，避免每秒重建节点触发祖先 :has() 的整片样式失效。
+    for (const [part, value] of [
+      ["phase", label],
+      ["meta", meta.join(" · ")],
+      ["error", lastError ? `${text.lastError} ${lastError}` : ""],
+    ]) {
+      const child = node.querySelector(`.codex-plus-proxy-${part}`);
+      if (child.firstChild.data !== value) child.firstChild.data = value;
+      if (child.hidden !== !value) child.hidden = !value;
     }
-    if (lastError) {
-      const errorNode = document.createElement("span");
-      errorNode.className = "codex-plus-proxy-error";
-      errorNode.textContent = `${text.lastError} ${lastError}`;
-      errorNode.title = lastErrorMessage || lastErrorCode;
-      node.appendChild(errorNode);
-    }
+    const errorNode = node.querySelector(".codex-plus-proxy-error");
+    const errorTitle = lastError ? lastErrorMessage || lastErrorCode : "";
+    if (errorNode.title !== errorTitle) errorNode.title = errorTitle;
   }
 
   /**

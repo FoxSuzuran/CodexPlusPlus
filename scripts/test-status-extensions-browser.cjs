@@ -70,6 +70,12 @@ async function main() {
             const phase = node.querySelector(".codex-plus-proxy-phase");
             const meta = node.querySelector(".codex-plus-proxy-meta");
             const error = node.querySelector(".codex-plus-proxy-error");
+            const dot = node.querySelector(".codex-plus-proxy-dot");
+            const pulse = dot.getAnimations().find(animation => animation.animationName === "codex-plus-proxy-pulse");
+            check(pulse && pulse.effect.getKeyframes().every(frame =>
+              typeof frame.opacity === "string" && !("boxShadow" in frame)),
+              "proxy pulse animates opacity without per-frame shadow painting");
+            check(getComputedStyle(dot).willChange === "opacity", "proxy pulse keeps its own compositing layer");
             const changes = new MutationObserver(() => {});
             changes.observe(node, { childList: true, characterData: true, subtree: true });
             const request = runtime.api.state.requests[0];

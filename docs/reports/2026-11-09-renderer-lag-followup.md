@@ -2,6 +2,8 @@
 
 本轮接续 `2026-11-09-renderer-lag-investigation.md`，继续检查当前机器的真实页面、注入调度、
 滚动恢复、每日用量、扩展轮询和动画绘制。运行中的安装版 EXE 未替换，页面未整体刷新。
+修复前已检索上游 Issue/PR，核对 #2241 的重注入资源清理及 #2916 的热重载待确认行为；
+没有发现可直接覆盖本轮隐藏会话误选和每日用量关闭面板渲染的问题。
 
 ## 已修复
 
@@ -85,6 +87,27 @@ ResizeObserver 取消已不属于当前布局的障碍节点，销毁时释放�
 - Rust 用户脚本 9 项、CDP bridge 172 项、renderer 诊断 1 项通过；
   另一个原有浏览器级联夹具默认 ignored。未重跑整个 Rust workspace。
 - 注入分片组装一致，JS 语法及 Git diff 检查通过。
+- 直接使用本机已有 Chrome 运行原来 ignored 的浏览器夹具，12 种皮肤级联组合通过；
+  梦皮流式/命令菜单过滤、节点重建与打字动画不逐帧读布局检查通过。
 
-Windows 发布构建与交付信息在构建通过后补充。安装目录旧 EXE 不自动覆盖，
-滚动恢复修复需要换用本轮新 EXE；每日用量与上一轮彩虹上下文条已在当前进程生效。
+## Windows 交付
+
+完整前端生产构建通过，18 个资源文件内容与上一份交付一致；
+固定 `cargo xrelease` 通过，耗时 763.368 秒。
+EXE 源码提交 `02128214c693d5d3ee6ea9772d93c5881e34fd9f`。
+
+已更新固定目录 `D:\Programming\Projects\CodexPlusPlus\dist\windows\latest`：
+
+- `codex-plus-plus.exe`：104,476,672 字节，Windows x64 GUI。
+- SHA-256：`5ca904f232aa48f446e12e58a185aa7585a22fbde6ae9544da6c3a57162efdfc`。
+- README、manifest、SHA256SUMS 与 EXE 的校验信息一致，目录内只有这一套交付文件。
+- EXE 的 PDB GUID/age 与本轮生成的符号文件匹配。
+- 主注入脚本采用已有 Zstandard 压缩：本轮 `renderer.zst` 的完整字节确实存在于新 EXE，
+  解压结果与当前组装脚本逐字节一致，含活动页选择与恢复窗口复用修复。
+  仅在 EXE 中搜索未压缩函数名不能用于判定该脚本版本。
+
+安装目录 `C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`
+的 SHA-256 仍为旧版 `ddb56fd587b75451306f1beb1c89d5056a8ff8dd76b92718a314e0998a1e7121`，
+未覆盖，也未重启。滚动恢复修复需要退出程序后手动替换该单个 EXE；
+每日用量与上一轮彩虹上下文条已在当前进程生效。
+仍未验收新 EXE 的实际重启操作，未重跑整个 Rust workspace。

@@ -5961,6 +5961,15 @@ async fn upstream_request_parts(
     official_base: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
+    let local_warmup = crate::responses_websocket::preferred()
+        && relay.requires_protocol_proxy_conversion()
+        && request_json.get("generate").and_then(Value::as_bool) == Some(false);
+    if crate::responses_websocket::preferred()
+        && (relay.requires_protocol_proxy_conversion()
+            || request_json.get("background").and_then(Value::as_bool) == Some(true))
+    {
+        request_json = crate::responses_websocket::http_request(request_json)?;
+    }
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
@@ -6019,7 +6028,7 @@ async fn upstream_request_parts(
     let request_conversion =
         !crate::extension_gateway::builtin_replaced("builtin:request-conversion");
     let mut body = match relay.protocol {
-        _ if !request_conversion => request_json,
+        _ if !request_conversion || local_warmup => request_json,
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
@@ -6133,6 +6142,7 @@ async fn upstream_request_parts(
     }
 
     let wire_api = match relay.protocol {
+        _ if local_warmup => UpstreamWireApi::Responses,
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
         RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
@@ -6173,6 +6183,12 @@ async fn send_responses_upstream_request(
     official_credential: Option<&crate::official_login::OfficialCredential>,
     header_timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
+    if crate::responses_websocket::preferred()
+        && relay.requires_protocol_proxy_conversion()
+        && upstream_body.get("generate").and_then(Value::as_bool) == Some(false)
+    {
+        return crate::responses_websocket::warmup_response(upstream_body);
+    }
     let builder = build_responses_upstream_request(
         relay, endpoint, upstream_body, wire_api, is_stream,
         original_user_agent, beta_features, session_headers, official_credential,
@@ -6184,7 +6200,11 @@ async fn send_responses_upstream_request(
         && !upstream_body.get("background").and_then(Value::as_bool).unwrap_or(false)
     {
         // WS 分支装箱，避免扩大多层 HTTP 管线的 future 导致 Windows 默认栈溢出。
-        return Box::pin(crate::responses_websocket::send_upstream(builder, upstream_body, header_timeout)).await;
+        let route_id = format!("{}:{:?}", relay.id, relay.gateway_proxy);
+        return Box::pin(crate::responses_websocket::send_upstream(
+            builder, upstream_body, header_timeout, &route_id,
+            &effective_user_agent(&relay.user_agent, original_user_agent),
+        )).await;
     }
     send_upstream_request_with_header_timeout(builder, header_timeout).await
 }

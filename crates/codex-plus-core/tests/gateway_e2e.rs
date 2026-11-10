@@ -1236,7 +1236,7 @@ async fn gateway_end_to_end() {
         let upstream = tokio::spawn(async move {
             let mut cancel_started = Some(cancel_started);
             let mut cancel_finished = Some(cancel_finished);
-            for turn in 0..3 {
+            for connection in 0..4 {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut head = String::new();
                 let mut socket = tokio_tungstenite::accept_hdr_async(
@@ -1250,31 +1250,71 @@ async fn gateway_end_to_end() {
                         Ok(response)
                     },
                 ).await.unwrap();
-                let frame = socket.next().await.unwrap().unwrap();
-                let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                capture.lock().unwrap().push((head, create));
-                if turn == 2 {
+                if connection == 2 {
+                    let frame = socket.next().await.unwrap().unwrap();
+                    let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    capture.lock().unwrap().push((head, create));
                     cancel_started.take().unwrap().send(()).unwrap();
                     let closed = tokio::time::timeout(
                         std::time::Duration::from_secs(5), socket.next(),
                     ).await.expect("cancel must close the pending upstream WS");
                     assert!(!matches!(closed, Some(Ok(Message::Text(_)))));
                     cancel_finished.take().unwrap().send(()).unwrap();
-                    break;
+                    continue;
                 }
-                let response = json!({
-                    "id":"resp_ws_e2e", "object":"response", "status":"completed", "model":"gpt-ws",
-                    "output":[{"type":"message","id":"msg_ws","role":"assistant","status":"completed",
-                        "content":[{"type":"output_text","text":"WS原生回答","annotations":[]}]}],
-                    "usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
-                });
-                socket.send(Message::text(json!({
-                    "type":"response.created",
-                    "response":{"id":"resp_ws_e2e","output":[],"status":"in_progress"}
-                }).to_string())).await.unwrap();
-                socket.send(Message::text(json!({
-                    "type":"response.completed","response":response
-                }).to_string())).await.unwrap();
+                if connection == 3 {
+                    let frame = socket.next().await.unwrap().unwrap();
+                    let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    capture.lock().unwrap().push((head, create));
+                    socket.send(Message::text(json!({
+                        "type":"response.completed",
+                        "response":{"id":"resp_upstream_close","output":[],"status":"completed"}
+                    }).to_string())).await.unwrap();
+                    socket.close(None).await.unwrap();
+                    continue;
+                }
+                for turn in 0..3 {
+                    let frame = tokio::time::timeout(
+                        std::time::Duration::from_secs(10), socket.next(),
+                    ).await.expect("all turns must reuse the upstream connection").unwrap().unwrap();
+                    let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    if turn == 0 {
+                        assert_eq!(create["generate"], false);
+                    } else {
+                        assert_eq!(create["previous_response_id"], format!("resp_ws_{connection}_{}", turn - 1));
+                        assert_eq!(create["input"].as_array().unwrap().len(), 1);
+                        if turn == 2 {
+                            assert_eq!(create["input"][0]["type"], "function_call_output");
+                            assert_eq!(create["input"][0]["call_id"], "call_ws");
+                        }
+                    }
+                    capture.lock().unwrap().push((head.clone(), create));
+                    let output = match turn {
+                        0 => json!([]),
+                        1 => json!([
+                            {"type":"reasoning","id":"rs_ws","encrypted_content":"opaque-ws","summary":[]},
+                            {"type":"function_call","id":"fc_ws","call_id":"call_ws","name":"ws_tool","arguments":"{}"}
+                        ]),
+                        _ => json!([{"type":"message","id":"msg_ws","role":"assistant","status":"completed",
+                            "content":[{"type":"output_text","text":"WS原生回答","annotations":[]}]}]),
+                    };
+                    let response = json!({
+                        "id":format!("resp_ws_{connection}_{turn}"), "object":"response",
+                        "status":"completed", "model":"gpt-ws", "output":output,
+                        "usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
+                    });
+                    socket.send(Message::text(json!({
+                        "type":"response.created",
+                        "response":{"id":response["id"],"output":[],"status":"in_progress"}
+                    }).to_string())).await.unwrap();
+                    socket.send(Message::text(json!({
+                        "type":"response.completed","response":response
+                    }).to_string())).await.unwrap();
+                }
+                let closed = tokio::time::timeout(
+                    std::time::Duration::from_secs(5), socket.next(),
+                ).await.expect("closing the client must release its idle upstream connection");
+                assert!(!matches!(closed, Some(Ok(Message::Text(_)))));
             }
         });
         let mut ws_gateway = gateway.clone();
@@ -1302,19 +1342,36 @@ async fn gateway_end_to_end() {
             request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
             request.headers_mut().insert("thread-id", thread.parse().unwrap());
             let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-            socket.send(Message::text(json!({
-                "type":"response.create","model":"gpt-ws","instructions":"You are Codex.",
-                "input":[{"role":"user","content":"hi"}],"store":false
-            }).to_string())).await.unwrap();
-            loop {
-                let frame = tokio::time::timeout(
-                    std::time::Duration::from_secs(10), socket.next(),
-                ).await.unwrap().unwrap().unwrap();
-                let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                assert_ne!(event["type"], "error", "{event}");
-                if event["type"] == "response.completed" {
-                    assert_eq!(event["response"]["output"][0]["content"][0]["text"], "WS原生回答");
-                    break;
+            let mut previous = Value::Null;
+            for turn in 0..3 {
+                let input = match turn {
+                    0 => json!([]),
+                    1 => json!([{"role":"user","content":"hi"}]),
+                    _ => json!([{"type":"function_call_output","call_id":"call_ws","output":"done"}]),
+                };
+                let mut create = json!({
+                    "type":"response.create","model":"gpt-ws","instructions":"You are Codex.",
+                    "input":input,"store":false
+                });
+                if turn == 0 {
+                    create["generate"] = json!(false);
+                } else {
+                    create["previous_response_id"] = previous.clone();
+                }
+                socket.send(Message::text(create.to_string())).await.unwrap();
+                loop {
+                    let frame = tokio::time::timeout(
+                        std::time::Duration::from_secs(10), socket.next(),
+                    ).await.unwrap().unwrap().unwrap();
+                    let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    assert_ne!(event["type"], "error", "{event}");
+                    if event["type"] == "response.completed" {
+                        previous = event["response"]["id"].clone();
+                        if turn == 2 {
+                            assert_eq!(event["response"]["output"][0]["content"][0]["text"], "WS原生回答");
+                        }
+                        break;
+                    }
                 }
             }
             socket.close(None).await.unwrap();
@@ -1331,6 +1388,28 @@ async fn gateway_end_to_end() {
         cancel.close(None).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(10), wait_cancel_finished)
             .await.unwrap().unwrap();
+        let mut idle = format!("ws://127.0.0.1:{port}/v1/responses")
+            .into_client_request().unwrap();
+        idle.headers_mut().insert("thread-id", "ws-upstream-close-e2e".parse().unwrap());
+        let (mut idle, _) = tokio_tungstenite::connect_async(idle).await.unwrap();
+        idle.send(Message::text(json!({
+            "type":"response.create","model":"gpt-ws","input":"close after the response"
+        }).to_string())).await.unwrap();
+        let mut completed = false;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), idle.next())
+                .await.unwrap().unwrap().unwrap();
+            if frame.is_close() {
+                assert!(completed, "upstream closure must not discard the completed response");
+                break;
+            }
+            let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+            assert_ne!(event["type"], "error", "{event}");
+            if event["type"] == "response.completed" {
+                assert_eq!(event["response"]["id"], "resp_upstream_close");
+                completed = true;
+            }
+        }
         tokio::time::timeout(std::time::Duration::from_secs(10), upstream)
             .await.unwrap().unwrap();
         for (head, create) in seen.lock().unwrap().iter() {
@@ -1347,13 +1426,66 @@ async fn gateway_end_to_end() {
             let ws_entries: Vec<_> = entries.iter()
                 .filter(|entry| matches!(entry.thread_id.as_deref(), Some("ws-legacy-e2e" | "ws-gateway-e2e")))
                 .collect();
-            if ws_entries.len() == 2 {
+            if ws_entries.len() == 6 {
                 assert!(ws_entries.iter().all(|entry| entry.agent.as_deref() == Some("codex")));
                 break;
             }
             assert!(tokio::time::Instant::now() < deadline, "WS requests were not logged exactly once");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        let (chat_base, chat_seen) = mock_upstream(vec![
+            (200, "text/event-stream", chat_tool_sse()),
+            (200, "text/event-stream", chat_sse("兼容回答")),
+        ]).await;
+        ws_gateway.providers = providers(vec![relay(
+            "ws-chat", &chat_base, "sk-chat", RelayProtocol::ChatCompletions, "chat-ws",
+        )]);
+        ws_gateway.bindings.insert("codex".into(), binding("chat-ws", "cpx-gw-codex-e2e"));
+        save(&ws_gateway);
+        let mut request = format!("ws://127.0.0.1:{port}/gw/codex/v1/responses")
+            .into_client_request().unwrap();
+        request.headers_mut().insert("authorization", "Bearer cpx-gw-codex-e2e".parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let mut previous = Value::Null;
+        for turn in 0..3 {
+            let mut create = json!({
+                "type":"response.create","model":"chat-ws","store":false,
+                "tools":[{"type":"function","name":"Bash","parameters":{"type":"object","properties":{}}}],
+                "input":match turn {
+                    0 => json!([]),
+                    1 => json!([{"role":"user","content":"run a tool"}]),
+                    _ => json!([{"type":"function_call_output","call_id":"call_7","output":"tool result"}]),
+                },
+            });
+            if turn == 0 {
+                create["generate"] = json!(false);
+            } else {
+                create["previous_response_id"] = previous.clone();
+            }
+            socket.send(Message::text(create.to_string())).await.unwrap();
+            loop {
+                let frame = tokio::time::timeout(
+                    std::time::Duration::from_secs(10), socket.next(),
+                ).await.unwrap().unwrap().unwrap();
+                let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                assert_ne!(event["type"], "error", "{event}");
+                if event["type"] == "response.completed" {
+                    previous = event["response"]["id"].clone();
+                    break;
+                }
+            }
+            if turn == 0 {
+                assert!(chat_seen.lock().unwrap().is_empty(), "HTTP warmup must not start generation");
+            }
+        }
+        socket.close(None).await.unwrap();
+        let chat_seen = chat_seen.lock().unwrap();
+        assert_eq!(chat_seen.len(), 2);
+        assert!(chat_seen.iter().all(|(head, _)| head.starts_with("POST /v1/chat/completions")));
+        let messages = chat_seen[1].1["messages"].as_array().unwrap();
+        assert!(messages.iter().any(|message| message["role"] == "user"));
+        assert!(messages.iter().any(|message| message["role"] == "assistant" && message["tool_calls"].is_array()));
+        assert!(messages.iter().any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_7"));
         save(&gateway);
     }
     assert!(

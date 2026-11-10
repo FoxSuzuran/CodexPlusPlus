@@ -277,7 +277,7 @@
       wire_api: "responses",
       experimental_bearer_token: "codex-plus-aggregate",
       requires_openai_auth: false,
-      supports_websockets: false,
+      supports_websockets: true,
     };
     const next = { ...params, modelProvider: connection.provider, config };
     delete next.model_provider;

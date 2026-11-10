@@ -6177,6 +6177,15 @@ async fn send_responses_upstream_request(
         relay, endpoint, upstream_body, wire_api, is_stream,
         original_user_agent, beta_features, session_headers, official_credential,
     )?;
+    if crate::responses_websocket::preferred()
+        && wire_api == UpstreamWireApi::Responses
+        && is_stream
+        && !is_local_protocol_proxy_base_url(endpoint)
+        && !upstream_body.get("background").and_then(Value::as_bool).unwrap_or(false)
+    {
+        // WS 分支装箱，避免扩大多层 HTTP 管线的 future 导致 Windows 默认栈溢出。
+        return Box::pin(crate::responses_websocket::send_upstream(builder, upstream_body, header_timeout)).await;
+    }
     send_upstream_request_with_header_timeout(builder, header_timeout).await
 }
 
@@ -6212,6 +6221,7 @@ fn build_responses_upstream_request(
     // 只发往本机回环地址，外部中转站看不到这个头。
     if is_local_protocol_proxy_base_url(endpoint) {
         builder = builder.header(crate::extension_gateway::EXTENSIONS_APPLIED_HEADER, "1");
+        builder = crate::responses_websocket::mark_request(builder);
     }
     if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
         // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
@@ -6681,7 +6691,7 @@ fn image_endpoint_url(base_url: &str, endpoint: &str) -> String {
     url
 }
 
-fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
+pub(crate) fn is_local_protocol_proxy_base_url(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
         return false;
     };
@@ -7509,7 +7519,7 @@ impl ChatSseState {
     }
 }
 
-fn take_sse_block(buffer: &mut String) -> Option<String> {
+pub(crate) fn take_sse_block(buffer: &mut String) -> Option<String> {
     let lf = buffer.find("\n\n").map(|index| (index, 2));
     let crlf = buffer.find("\r\n\r\n").map(|index| (index, 4));
     let (index, delimiter_len) = match (lf, crlf) {
@@ -7528,7 +7538,7 @@ fn take_sse_block(buffer: &mut String) -> Option<String> {
     Some(block)
 }
 
-fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
@@ -13029,7 +13039,7 @@ fn sse_event_type_from_prefix(prefix: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-fn extract_sse_data(event_str: &str) -> Option<String> {
+pub(crate) fn extract_sse_data(event_str: &str) -> Option<String> {
     let mut parts = Vec::new();
     for line in event_str.lines() {
         if let Some(rest) = line.strip_prefix("data:") {

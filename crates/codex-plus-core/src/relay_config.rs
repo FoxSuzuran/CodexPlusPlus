@@ -495,6 +495,7 @@ fn sync_managed_session_provider(doc: &mut DocumentMut, needed: bool) -> bool {
         builtin["name"] = toml_edit::value("OpenAI");
         builtin["wire_api"] = toml_edit::value("responses");
         builtin["requires_openai_auth"] = toml_edit::value(true);
+        builtin["supports_websockets"] = toml_edit::value(true);
         provider = Some(Item::Table(builtin));
     }
     let Some(mut provider) = provider else {
@@ -6445,6 +6446,12 @@ fn complete_relay_profile_config_with_proxy_port(
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());
     }
+    if (provider_base_url == crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
+        || crate::protocol_proxy::is_local_protocol_proxy_base_url(&provider_base_url))
+        && provider.get("supports_websockets").is_none()
+    {
+        provider["supports_websockets"] = toml_edit::value(true);
+    }
     if profile.uses_no_auth() {
         provider["experimental_bearer_token"] =
             toml_edit::value(crate::protocol_proxy::NO_AUTH_PROXY_BEARER_TOKEN);
@@ -7183,6 +7190,7 @@ http_headers = { "Authorization" = "unused" }
         assert!(sync_managed_session_provider(&mut doc, false));
         let provider = &doc["model_providers"][MANAGED_SESSION_PROVIDER];
         assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+        assert_eq!(provider["supports_websockets"].as_bool(), Some(true));
         assert_eq!(
             provider["base_url"].as_str(),
             Some("http://127.0.0.1:64001/v1")

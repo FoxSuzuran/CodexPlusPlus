@@ -1694,7 +1694,7 @@ experimental_bearer_token = "synthetic-old-key"
             let provider = &doc["model_providers"]["codex_plus_managed"];
             assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
             assert_eq!(provider["wire_api"].as_str(), Some("responses"));
-            assert_eq!(provider.get("supports_websockets").and_then(toml_edit::Item::as_bool), official_http.then_some(false));
+            assert_eq!(provider.get("supports_websockets").and_then(toml_edit::Item::as_bool), Some(!official_http));
             for credential in ["base_url", "experimental_bearer_token", "env_key", "http_headers"] {
                 assert!(provider.get(credential).is_none());
             }

@@ -429,6 +429,7 @@ describe("managed aggregate session connection", () => {
     assert.equal(params.config.model_providers.codex_plus_managed.env_key, "MISSING");
     assert.equal(patched.config["model_providers.codex_plus_managed"].base_url, "http://127.0.0.1:62021/v1");
     assert.equal(patched.config["model_providers.codex_plus_managed"].experimental_bearer_token, "codex-plus-aggregate");
+    assert.equal(patched.config["model_providers.codex_plus_managed"].supports_websockets, true);
     assert.equal(patched.config["model_providers.codex_plus_managed.base_url"], undefined);
     assert.equal(params.config["model_providers.codex_plus_managed.base_url"], "https://changed.invalid");
   });

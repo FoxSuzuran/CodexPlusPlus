@@ -1222,6 +1222,140 @@ async fn gateway_end_to_end() {
         assert_eq!(head.matches("originator:").count(), 1, "{head}");
     }
     assert_eq!(identity_seen.lock().unwrap().len(), 2);
+    // WS 经直连代理和网关两条入口都保留选路、鉴权与请求日志，官方登录凭据不外传。
+    {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let ws_base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen: Captured = Arc::default();
+        let capture = seen.clone();
+        let (cancel_started, wait_cancel_started) = tokio::sync::oneshot::channel();
+        let (cancel_finished, wait_cancel_finished) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let mut cancel_started = Some(cancel_started);
+            let mut cancel_finished = Some(cancel_finished);
+            for turn in 0..3 {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut head = String::new();
+                let mut socket = tokio_tungstenite::accept_hdr_async(
+                    stream,
+                    |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                     response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        assert_eq!(request.uri().path(), "/v1/responses");
+                        for (name, value) in request.headers() {
+                            head.push_str(&format!("{name}: {}\n", value.to_str().unwrap()));
+                        }
+                        Ok(response)
+                    },
+                ).await.unwrap();
+                let frame = socket.next().await.unwrap().unwrap();
+                let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                capture.lock().unwrap().push((head, create));
+                if turn == 2 {
+                    cancel_started.take().unwrap().send(()).unwrap();
+                    let closed = tokio::time::timeout(
+                        std::time::Duration::from_secs(5), socket.next(),
+                    ).await.expect("cancel must close the pending upstream WS");
+                    assert!(!matches!(closed, Some(Ok(Message::Text(_)))));
+                    cancel_finished.take().unwrap().send(()).unwrap();
+                    break;
+                }
+                let response = json!({
+                    "id":"resp_ws_e2e", "object":"response", "status":"completed", "model":"gpt-ws",
+                    "output":[{"type":"message","id":"msg_ws","role":"assistant","status":"completed",
+                        "content":[{"type":"output_text","text":"WS原生回答","annotations":[]}]}],
+                    "usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
+                });
+                socket.send(Message::text(json!({
+                    "type":"response.created",
+                    "response":{"id":"resp_ws_e2e","output":[],"status":"in_progress"}
+                }).to_string())).await.unwrap();
+                socket.send(Message::text(json!({
+                    "type":"response.completed","response":response
+                }).to_string())).await.unwrap();
+            }
+        });
+        let mut ws_gateway = gateway.clone();
+        ws_gateway.providers = providers(vec![relay(
+            "ws-native", &ws_base, "sk-ws", RelayProtocol::Responses, "gpt-ws",
+        )]);
+        ws_gateway.bindings.insert("codex".into(), binding("gpt-ws", "cpx-gw-codex-e2e"));
+        save(&ws_gateway);
+
+        let mut unauthorized = format!("ws://127.0.0.1:{port}/gw/codex/v1/responses")
+            .into_client_request().unwrap();
+        unauthorized.headers_mut().insert("authorization", "Bearer wrong".parse().unwrap());
+        let error = tokio_tungstenite::connect_async(unauthorized).await.unwrap_err();
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => assert_eq!(response.status(), 401),
+            other => panic!("expected gateway authentication error, got {other}"),
+        }
+
+        for (path, token, thread) in [
+            ("/v1/responses", "chatgpt-access-token", "ws-legacy-e2e"),
+            ("/gw/codex/v1/responses", "cpx-gw-codex-e2e", "ws-gateway-e2e"),
+        ] {
+            let mut request = format!("ws://127.0.0.1:{port}{path}")
+                .into_client_request().unwrap();
+            request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+            request.headers_mut().insert("thread-id", thread.parse().unwrap());
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+            socket.send(Message::text(json!({
+                "type":"response.create","model":"gpt-ws","instructions":"You are Codex.",
+                "input":[{"role":"user","content":"hi"}],"store":false
+            }).to_string())).await.unwrap();
+            loop {
+                let frame = tokio::time::timeout(
+                    std::time::Duration::from_secs(10), socket.next(),
+                ).await.unwrap().unwrap().unwrap();
+                let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                assert_ne!(event["type"], "error", "{event}");
+                if event["type"] == "response.completed" {
+                    assert_eq!(event["response"]["output"][0]["content"][0]["text"], "WS原生回答");
+                    break;
+                }
+            }
+            socket.close(None).await.unwrap();
+        }
+        let mut cancel = format!("ws://127.0.0.1:{port}/v1/responses")
+            .into_client_request().unwrap();
+        cancel.headers_mut().insert("thread-id", "ws-cancel-e2e".parse().unwrap());
+        let (mut cancel, _) = tokio_tungstenite::connect_async(cancel).await.unwrap();
+        cancel.send(Message::text(json!({
+            "type":"response.create","model":"gpt-ws","input":"cancel this response"
+        }).to_string())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_cancel_started)
+            .await.unwrap().unwrap();
+        cancel.close(None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), wait_cancel_finished)
+            .await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), upstream)
+            .await.unwrap().unwrap();
+        for (head, create) in seen.lock().unwrap().iter() {
+            assert!(head.contains("authorization: Bearer sk-ws"), "{head}");
+            assert!(!head.contains("chatgpt-access-token"), "{head}");
+            assert!(!head.contains("cpx-gw-codex-e2e"), "{head}");
+            assert!(!head.contains("x-codex-plus-responses-websocket"), "{head}");
+            assert_eq!(create["type"], "response.create");
+            assert_eq!(create["model"], "gpt-ws");
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let entries = codex_plus_core::request_log::read_request_logs(100).unwrap();
+            let ws_entries: Vec<_> = entries.iter()
+                .filter(|entry| matches!(entry.thread_id.as_deref(), Some("ws-legacy-e2e" | "ws-gateway-e2e")))
+                .collect();
+            if ws_entries.len() == 2 {
+                assert!(ws_entries.iter().all(|entry| entry.agent.as_deref() == Some("codex")));
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "WS requests were not logged exactly once");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        save(&gateway);
+    }
     assert!(
         state_dir
             .path()

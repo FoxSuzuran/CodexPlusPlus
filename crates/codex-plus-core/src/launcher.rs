@@ -2188,7 +2188,7 @@ pub(crate) async fn handle_helper_connection_on(
     }
     // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
     // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
-    if method == "POST"
+    if (method == "POST" || crate::extension_backend::is_websocket_upgrade(&request_headers))
         && is_billable_proxy_path(path)
         && header_value_from_headers(&request_headers, "origin")
             .is_some_and(|origin| !origin.trim().is_empty())
@@ -2301,26 +2301,7 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
-        let body = serde_json::to_vec(&serde_json::json!({
-            "status": "upgrade_required",
-            "message": "WebSocket transport is not supported by the local protocol proxy; retry with HTTP."
-        }))?;
-        write_http_response(
-            &mut stream,
-            "426 Upgrade Required",
-            "application/json; charset=utf-8",
-            &body,
-        )
-        .await?;
-        log_helper_response(
-            "helper.responses_websocket_upgrade_required",
-            method,
-            path,
-            "426 Upgrade Required",
-            remote_addr_text,
-        );
-        stream.shutdown().await?;
-        return Ok(());
+        return crate::responses_websocket::serve(&mut stream, &request_headers, raw_path).await;
     }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "POST" {
         let request_body = match decode_protocol_proxy_request_body(
@@ -2354,7 +2335,7 @@ pub(crate) async fn handle_helper_connection_on(
         // 只有转给网关的那一跳才用得上（见 handle_protocol_proxy_connection），这里先取出来（#2783）。
         let request_client_identity =
             crate::protocol_proxy::codex_client_identity_headers(&request_headers);
-        return handle_protocol_proxy_connection(
+        return crate::responses_websocket::with_transport(&request_headers, handle_protocol_proxy_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
@@ -2369,7 +2350,7 @@ pub(crate) async fn handle_helper_connection_on(
             path,
             remote_addr_text,
             ProxyOpener::Legacy,
-        )
+        ))
         .await;
     }
     let request_body = String::from_utf8_lossy(&request.body);
@@ -3076,7 +3057,7 @@ async fn handle_protocol_proxy_connection_inner(
     // 经网关的非 Codex 客户端（Grok 等）不认识 ChatGPT 订阅后端的私有事件。
     let foreign_client =
         matches!(&opener, ProxyOpener::Gateway(agent) if *agent != crate::tools::ToolId::Codex);
-    let opened = match &opener {
+    let opening = Box::pin(async { match &opener {
         ProxyOpener::Legacy => {
             crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers_and_live_id(
                 request_body,
@@ -3102,6 +3083,18 @@ async fn handle_protocol_proxy_connection_inner(
             )
             .await
         }
+    }});
+    let opened = if crate::responses_websocket::preferred() {
+        tokio::select! {
+            opened = opening => Some(opened),
+            _ = crate::gateway::pipeline::client_gone(Some(&*stream)) => None,
+        }
+    } else {
+        Some(opening.await)
+    };
+    let Some(opened) = opened else {
+        request_log.record_error("499 Client Closed Request", "WebSocket client disconnected".to_string());
+        return Ok(());
     };
     // `_key_slot`：网关的限速名额，持有到这个函数返回（响应转发完、出错或客户端断开）才释放。
     let (mut upstream, _key_slot) =
@@ -4568,7 +4561,7 @@ fn resolve_http_body_bytes(env_value: Option<&str>, setting_bytes: usize) -> usi
         .unwrap_or_else(|| normalize_http_body_bytes(setting_bytes))
 }
 
-fn configured_http_body_bytes() -> usize {
+pub(crate) fn configured_http_body_bytes() -> usize {
     let stored = CONFIGURED_HTTP_BODY_BYTES.load(std::sync::atomic::Ordering::Relaxed);
     let setting_bytes = if stored == 0 {
         DEFAULT_HTTP_BODY_BYTES
@@ -7774,13 +7767,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helper_returns_426_for_responses_websocket_upgrade() {
+    async fn helper_rejects_invalid_responses_websocket_upgrade() {
         let response = send_raw_helper_request(
             b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
         )
         .await;
 
-        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[tokio::test]
+    async fn helper_rejects_browser_origin_before_responses_websocket_upgrade() {
+        let response = send_raw_helper_request(
+            b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: https://example.invalid\r\n\r\n",
+        ).await;
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 403 Forbidden"));
     }
 
     #[tokio::test]

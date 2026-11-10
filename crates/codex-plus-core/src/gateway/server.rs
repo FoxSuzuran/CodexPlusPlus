@@ -170,6 +170,9 @@ pub(crate) async fn handle(
         .await;
     }
     match (&agent, method, tail.as_str()) {
+        (ToolId::Grok | ToolId::Codex | ToolId::Unknown(_), "GET", "/responses") => {
+            crate::responses_websocket::serve(stream, headers, path).await
+        }
         (ToolId::Unknown(_), "POST", "/chat/completions") => {
             handle_claude_messages(
                 stream,
@@ -226,7 +229,7 @@ pub(crate) async fn handle(
             let beta_features = header_value_from_headers(headers, "x-codex-beta-features");
             // Codex 的客户端身份头（originator、x-codex-* 等）照原样带给上游（#2783）。
             let client_identity = client_identity_headers(&agent, headers);
-            handle_protocol_proxy_connection(
+            crate::responses_websocket::with_transport(headers, handle_protocol_proxy_connection(
                 stream,
                 &request_body,
                 user_agent.as_deref(),
@@ -241,7 +244,7 @@ pub(crate) async fn handle(
                 path,
                 remote_addr_text,
                 ProxyOpener::Gateway(agent),
-            )
+            ))
             .await
         }
         (_, "POST", "/images/generations" | "/images/edits") => {

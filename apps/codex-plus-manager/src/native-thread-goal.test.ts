@@ -1003,7 +1003,7 @@ describe("native thread goal renderer integration", () => {
         "installCodexCollaborationModePatch", "installCodexModelSubmitPreparationPatch",
         "installAppServerModelRequestPatch", "installCodexAppServerClientCapture",
         "installDictationSupportPatch", "installModelJsonResponsePatch", "patchAppServerModelMessages",
-        "loadCodexModelCatalog", "patchStatsigModelWhitelist",
+        "loadCodexModelCatalog", "patchStatsigModelWhitelist", "syncCodexPlusGroupModelQueries",
       ]) {
         f.context[name] = () => { calls.push(name); return Promise.resolve(); };
       }

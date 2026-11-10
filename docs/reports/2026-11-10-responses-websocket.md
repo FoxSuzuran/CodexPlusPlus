@@ -22,10 +22,31 @@ Handshake rejections with HTTP 400/404/405/426/501 fall back before sending a
 generation. Authentication errors and invalid 101 responses do not trigger a
 second POST. Other wire protocols retain HTTP/SSE conversion.
 
-The frontend connection stays open across turns. The latest completed response's
-input and output resolve incremental `previous_response_id` locally, including
-tool calls, tool results and encrypted reasoning. Unknown response IDs are kept
-for upstream resolution. Disconnecting cancels a pending upstream response.
+Both connections stay open across turns. Each client WebSocket owns its upstream
+connection through an opaque, process-local session identifier passed between
+the existing HTTP pipeline's loopback hops. Connections are reused only while
+the selected route, model, credentials and stable headers match. The identity
+fingerprint reuses the existing request-negotiation cache helper, without
+including tool declarations or volatile turn headers. Existing gateway Key
+stickiness continues to select credentials; limits, health checks and failover
+are still evaluated for every request.
+
+Native Responses requests retain `previous_response_id` and incremental input.
+`generate = false` is sent to the real upstream, and its response ID remains
+unchanged. The proxy does not fabricate warmup state or expand native request
+history. Request errors, including `previous_response_not_found`, preserve their
+native error fields so Codex can perform its normal full-context recovery.
+A background reader answers upstream Ping frames between turns. Closing the
+client releases an idle upstream or cancels an in-flight response. An upstream
+close is propagated after queued response events, allowing Codex to discard the
+old connection and reconnect through its original client mechanism.
+
+Only HTTP fallback and non-Responses protocol conversion resolve the latest
+completed response's cached input and output locally, including tool calls,
+tool results and encrypted reasoning. HTTP-only warmup remains local and never
+starts a generation; the WebSocket-only `stream_id` is removed from HTTP bodies.
+The initial `476f8512` patch recreated the upstream per response and simulated
+all warmups locally. This revision removes those native-path limitations.
 
 Internal managed providers advertise `supports_websockets = true`. Generated
 providers that point at the local protocol proxy enable it only when the user
@@ -33,40 +54,50 @@ has not specified the option. Direct providers retain their configuration.
 
 Limitations:
 
-- Each generated response opens a new upstream WS connection. Connection pooling
-  and its latency improvements are not implemented.
-- `generate = false` caches warmup context locally without upstream prefill.
+- One response may be active per client WebSocket. Parallel named-stream
+  multiplexing is outside this change.
 - Third-party private WS protocols are outside this change.
 - The installed executable is not replaced by this task. The user must replace
   the installed single executable and restart Codex++ and Codex to use it.
 
 Validation:
 
-- Eight focused WS tests passed: native handshake and identity, auth failure,
-  invalid handshake, HTTP fallback, warmup, incremental tool context, malformed
-  frontend handshake and browser Origin rejection.
-- The core library run passed 2,310 tests with 18 ignored. Its only failure
-  requires a real Windows 8.3 alias, unavailable on this machine; that one
-  environment-dependent case was excluded from the final rerun.
+- Eleven focused WS tests passed: native handshake and identity, native
+  warmup/incremental reuse on one connection, idle Ping/Pong, native error
+  recovery, client/route/credential/model isolation, HTTP fallback without
+  duplicate generation, fallback warmup/context, malformed frontend handshake
+  and browser Origin rejection.
+- The core library run passed 2,313 tests with 18 ignored. One existing case
+  requires a real Windows 8.3 alias, unavailable on this machine, and was
+  excluded as in the initial patch validation.
 - The existing Windows default-stack stream regression passed after boxing the
   new transport boundary; no build profile or thread stack override was used.
-- The real-helper gateway end-to-end test passed, including both WS entry
-  points, token checks, credential isolation, single request logging and
-  cancellation before the first upstream event.
-- All 237 relay configuration tests passed. Their subprocess pins
+- The real-helper gateway end-to-end test passed. Both WS entrances use exactly
+  one upstream handshake for warmup, a tool call with encrypted reasoning, and
+  its incremental tool result. It also verifies token checks, credential
+  isolation, per-response request logging, idle connection cleanup, upstream
+  close propagation without dropping the completed response, and cancellation
+  before the first event. A Chat upstream verifies that fallback
+  warmup performs no upstream generation and subsequent tool history survives
+  protocol conversion.
+- The preceding patch's 237 relay configuration tests passed. Their subprocess pins
   `CODEX_PLUS_PROTOCOL_PROXY_PORT=57321`, as the fixtures expect; the persisted
   live helper port is different and was not changed.
-- Frontend: 1,824 passed, two skipped; TypeScript and Vite production build passed.
+- Frontend is unchanged in this revision. The preceding patch's 1,824 passing
+  tests (two skipped) and TypeScript check remain applicable. Vite is rebuilt
+  for each Windows delivery.
 
-Detailed test and build logs are kept under `target/temp/responses-ws-*`.
+Current test and build logs are under `target/temp/responses-ws-reuse-*`.
+The initial patch's logs remain under `target/temp/responses-ws-*`.
 
 Windows delivery:
 
 - `npm --prefix apps/codex-plus-manager run vite:build` and `cargo xrelease`
   passed using the fixed repository profiles, four jobs and Sherpa 1.13.8 static.
-- Source commit: `476f8512aa6f6c4ed1cf29d747b7f6f844aba5b7`.
-- `dist/windows/latest/codex-plus-plus.exe`: 103,265,280 bytes, Windows x64 GUI.
-- SHA-256: `b7ebe5d828dff9a1b2ac58a31c3bde683936ec2a172e8406d0a490793e369b0b`.
+  Vite took 10.35 seconds; the release build took 10 minutes 32 seconds.
+- Source commit: `180c206b5c4d7b4d08c72ed69c813ef35070051c`.
+- `dist/windows/latest/codex-plus-plus.exe`: 103,844,864 bytes, Windows x64 GUI.
+- SHA-256: `12b51367a8c64b8c45a95262406c0ae1af285e2fdda5fe5136288ebef12cd3c0`.
 - The compressed renderer in the EXE matches the current source byte for byte.
 - The fixed delivery directory contains this EXE and refreshed README, manifest
   and checksums. The installed executable remains unchanged.

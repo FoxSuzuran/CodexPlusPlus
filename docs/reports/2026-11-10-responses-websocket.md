@@ -59,3 +59,16 @@ Validation:
 - Frontend: 1,824 passed, two skipped; TypeScript and Vite production build passed.
 
 Detailed test and build logs are kept under `target/temp/responses-ws-*`.
+
+Windows delivery:
+
+- `npm --prefix apps/codex-plus-manager run vite:build` and `cargo xrelease`
+  passed using the fixed repository profiles, four jobs and Sherpa 1.13.8 static.
+- Source commit: `476f8512aa6f6c4ed1cf29d747b7f6f844aba5b7`.
+- `dist/windows/latest/codex-plus-plus.exe`: 103,265,280 bytes, Windows x64 GUI.
+- SHA-256: `b7ebe5d828dff9a1b2ac58a31c3bde683936ec2a172e8406d0a490793e369b0b`.
+- The compressed renderer in the EXE matches the current source byte for byte.
+- The fixed delivery directory contains this EXE and refreshed README, manifest
+  and checksums. The installed executable remains unchanged.
+- No live-provider generation or replacement of the running application was
+  performed. Those checks require launching the delivered executable.

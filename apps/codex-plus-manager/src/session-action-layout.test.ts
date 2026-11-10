@@ -34,3 +34,25 @@ it("forces one batched layout from the existing resize frame", async () => {
   assert.match(startup, /syncActionGroupsLayout\(true\)/);
   assert.doesNotMatch(startup, /sessionRows\(\)\.forEach|delete group\.dataset\.codexActionLayoutStable/);
 });
+it("lays out extension rows after attachment and preserves stable groups on catch-up", () => {
+  const rows = Array.from({ length: 160 }, () => ({
+    group: { dataset: { codexActionLayoutStable: "true" } },
+  }));
+  let attached = 0;
+  let layouts = 0;
+  const refresh = new Function(
+    "sessionRows", "tryAttachButton", "actionGroupFromRow", "syncActionGroupsLayout",
+    "archivedPageRows", "attachArchivedPageDeleteButton",
+    `${extract("refreshExtensionSessionRows")}; return refreshExtensionSessionRows;`,
+  )(
+    () => rows,
+    () => attached++,
+    (row: typeof rows[number]) => row.group,
+    () => { assert.equal(attached, rows.length); layouts++; },
+    () => [],
+    () => {},
+  );
+  refresh();
+  assert.equal(layouts, 1);
+  assert.ok(rows.every(row => row.group.dataset.codexActionLayoutStable === "true"));
+});

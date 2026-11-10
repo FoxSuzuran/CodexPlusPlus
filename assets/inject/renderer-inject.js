@@ -17700,7 +17700,6 @@
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
     installNativeSessionActionStyleSync(row);
-    syncActionGroupLayout(row, group);
   }
 
   function tryAttachButton(row) {
@@ -18753,12 +18752,11 @@
   function refreshExtensionSessionRows() {
     try {
       sessionRows().forEach((row) => {
-        const group = actionGroupFromRow(row);
-        if (group) delete group.dataset.codexActionLayoutStable;
         // 「…」按钮只在有菜单项时出现：拓展注册 / 注销会话行操作后立刻按新指纹
         // 重建（或摘掉）这一行的按钮组，不用等下一次扫描。
         tryAttachButton(row);
       });
+      syncActionGroupsLayout();
       archivedPageRows().forEach(attachArchivedPageDeleteButton);
     } catch {}
   }
@@ -23964,6 +23962,7 @@
     runCodexPlusScanSteps();
     // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
     sessionRows().forEach(tryAttachButton);
+    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     removeLegacyCodexServiceTierBadges();

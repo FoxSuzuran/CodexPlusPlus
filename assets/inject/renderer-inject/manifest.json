@@ -133,12 +133,12 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1253
+      "lines": 1252
     },
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 507
+      "lines": 506
     },
     {
       "name": "91-extension-runtime.js",
@@ -178,7 +178,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 710
+      "lines": 711
     },
     {
       "name": "96-builtin-extensions.js",

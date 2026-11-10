@@ -458,7 +458,6 @@
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
     installNativeSessionActionStyleSync(row);
-    syncActionGroupLayout(row, group);
   }
 
   function tryAttachButton(row) {

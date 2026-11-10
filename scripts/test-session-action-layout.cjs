@@ -68,6 +68,25 @@ const install = source => `const actionGroupClass='codex-session-actions';
   };
   window.layoutStable=()=>syncActionGroupsLayout();
   window.layoutSingle=()=>syncActionGroupLayout(sessionRows()[0],actionGroupFromRow(sessionRows()[0]));`;
+const installAttachment = `
+  const moreMenuClass='more-menu',moreButtonClass='more-button',actionButtonClass='action-button';
+  const codexActionGroupVersion='test';
+  let actionItems=[{id:'delete',label:'Delete',placement:'inline'}];
+  const sessionRowActionItems=()=>actionItems;
+  const sessionRefFromRow=()=>({session_id:'thread-test'});
+  const configureSvgActionButton=(button,label)=>{button.textContent=label};
+  const sessionRowActionIconMarkup=()=>'',applyNativeSessionActionStyle=()=>{};
+  const installActionButtonEvents=()=>{},refreshActionButton=()=>{};
+  const syncNativeSessionActionStyle=()=>{},installNativeSessionActionStyleSync=()=>{};
+  const setTimeout=()=>0,archivedPageRows=()=>[],attachArchivedPageDeleteButton=()=>{};
+  const runCodexPlusScanSteps=()=>{},removeLegacyCodexServiceTierBadges=()=>{};
+  const refreshCodexNativeFastShortcuts=()=>{},scheduleThreadScrollSync=()=>{};
+  const refreshCodexModelWhitelistFromScan=()=>{};
+  ${['removeActionGroups','sessionInlineActionsMissing','attachButton','tryAttachButton',
+    'refreshExtensionSessionRows','scanDeferred','updateDeleteButtonOffsets'].map(n=>extract(candidate,n)).join('\n')}
+  window.mountRows=()=>{document.querySelectorAll('.codex-session-actions').forEach(g=>g.remove());scanDeferred()};
+  window.refreshRows=()=>refreshExtensionSessionRows();
+  window.addAction=()=>{actionItems=[...actionItems,{id:'export',label:'Export',placement:'inline'}];refreshExtensionSessionRows()};`;
 const html = (zoom, mode) => `<!doctype html><html><head><style>
   html,body{margin:0;background:#202020;color:#ddd;font:14px Arial}
   #sidebar{width:320px;zoom:${zoom};${mode==='transform'?'transform:scale(.9);transform-origin:top left;':''}}
@@ -137,6 +156,45 @@ async function run(page, source, zoom, mode) {
   await page.evaluate(()=>{document.getElementById('sidebar').remove();layoutAll();});
   return {results,chromium};
 }
+async function runAttachment(page, zoom, mode) {
+  await page.setContent(html(zoom,mode));
+  await page.evaluate(install(candidate)+installAttachment);
+  const cdp=await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  const before=await cdp.send('Performance.getMetrics');
+  const result=await page.evaluate(()=>{
+    let writes=0;
+    const set=CSSStyleDeclaration.prototype.setProperty;
+    CSSStyleDeclaration.prototype.setProperty=function(...args){writes++;return set.apply(this,args)};
+    const start=performance.now();
+    mountRows();
+    const mounted=performance.now()-start;
+    const groups=[...document.querySelectorAll('.codex-session-actions')];
+    const stable=()=>groups.every(group=>group.dataset.codexActionLayoutStable==='true');
+    const mountedStable=stable();
+    const initialWrites=writes;
+    refreshRows();refreshRows();refreshRows();
+    const catchUpWrites=writes-initialWrites;
+    const catchUpStable=stable();
+    const preserved=groups.every((group,i)=>document.querySelectorAll('.codex-session-actions')[i]===group);
+    addAction();
+    return {mounted,mountedStable,catchUpWrites,catchUpStable,preserved,count:groups.length,
+      rebuilt:[...document.querySelectorAll('.codex-session-actions')].every((group,i)=>
+        group!==groups[i]&&group.dataset.codexActionLayoutStable==='true'&&group.children.length===2)};
+  });
+  const after=await cdp.send('Performance.getMetrics');
+  const metric=(values,name)=>values.metrics.find(m=>m.name===name)?.value||0;
+  result.layouts=metric(after,'LayoutCount')-metric(before,'LayoutCount');
+  await cdp.send('Performance.disable');await cdp.detach();
+  assert.equal(result.count,160);
+  assert.equal(result.mountedStable,true,'startup scan must lay out new groups');
+  assert.equal(result.catchUpWrites,0,'unchanged catch-up must keep completed layouts');
+  assert.equal(result.catchUpStable,true,'unchanged catch-up must preserve stable groups');
+  assert.equal(result.preserved,true,'unchanged catch-up must preserve group nodes');
+  assert.equal(result.rebuilt,true,'new actions must rebuild and lay out each group');
+  assert.ok(result.layouts<=10,`startup and registry rebuild must batch actual layouts: ${JSON.stringify(result)}`);
+  return result;
+}
 async function main(){
   const browser=await chromium.launch({channel:process.env.CODEX_TEST_BROWSER || 'msedge',
     executablePath:process.env.CODEX_TEST_BROWSER_PATH,headless:true}),results=[];
@@ -153,9 +211,10 @@ async function main(){
       }
       assert.ok(nextRun.chromium.layouts<=16,`actual Chromium layouts stay bounded: ${JSON.stringify(nextRun.chromium)}`);
       assert.ok(oldRun.chromium.layouts>300,`baseline actual Chromium thrashing: ${JSON.stringify(oldRun.chromium)}`);
+      const attachment=await runAttachment(page,zoom,mode);
       assert.deepEqual(errors,[]);
       results.push({zoom,mode,old:old.map(({ms,metrics})=>({ms,metrics})),next:next.map(({ms,metrics})=>({ms,metrics})),
-        chromium:{old:oldRun.chromium,next:nextRun.chromium}});
+        chromium:{old:oldRun.chromium,next:nextRun.chromium},attachment});
       await page.close();console.log(`PASS sidebar ${zoom}/${mode}`);
     }
     if(output)fs.writeFileSync(path.join(output,'sidebar-layout-verification.json'),JSON.stringify(results,null,2));

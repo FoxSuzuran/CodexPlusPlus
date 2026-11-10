@@ -651,6 +651,7 @@
     runCodexPlusScanSteps();
     // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
     sessionRows().forEach(tryAttachButton);
+    syncActionGroupsLayout();
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     removeLegacyCodexServiceTierBadges();

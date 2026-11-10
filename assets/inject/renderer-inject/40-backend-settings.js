@@ -127,7 +127,7 @@
         emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
           ? codexPlusChangedBackendSettingKeys(previous, next)
           : undefined);
-        if (signature === heartbeatSettingsSignature) return;
+        if (signature === heartbeatSettingsSignature) return loaded;
         if (previous && next && typeof emitCodexPlusRelaySettingsEvents === "function") emitCodexPlusRelaySettingsEvents(previous, next);
         // 管理器里改的设置：设置页开着时，开关与随总开关切换的说明也跟着变。
         syncCodexPlusBackendToggleButtons();
@@ -940,7 +940,9 @@
   function syncCodexPlusRailNativeSelection() {
     const root = document.documentElement;
     if (!root) return;
-    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+    const open = Boolean(document.querySelector(`.${codexPlusPageClass}`));
+    syncCodexPlusPagePopupStyle(open);
+    if (!open) {
       root.removeAttribute("data-codex-plus-page-open");
       root.style.removeProperty("--codex-plus-rail-dim");
       return;

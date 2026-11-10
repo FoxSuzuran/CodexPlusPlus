@@ -59,6 +59,7 @@ test("heartbeat retries settings revisions after failed or overlapping reads", a
     codexPlusBackendCheckSeq: 0, codexPlusBackendFailureCount: 0,
     codexPlusBackendSettingsRevision: "", codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: {}, CODEX_PLUS_BACKEND_FAILURE_THRESHOLD: 3,
+    codexPlusSettings: () => ({ conversationView: false }),
     postJson: async () => ({ status: "ok", settingsRevision: revision }),
     loadBackendSettingsState: () => { reads++; return new Promise<boolean>(resolve => pending.push(resolve)); },
     syncOfficialUsagePolicy: () => {}, emitCodexPlusSettingsLoaded: () => {},

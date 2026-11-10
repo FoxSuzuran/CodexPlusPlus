@@ -139,7 +139,7 @@ test("both skins keep the rare top-fade predicate native without marking the ful
       `../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url,
     ), "utf8");
     const predicates = JSON.parse(renderer.match(/^  const CSS_PREDICATES = (.+);?$/m)![1]);
-    assert.equal(predicates.length, 17, platform);
+    assert.equal(predicates.length, platform === "windows" ? 18 : 17, platform);
     assert.ok(!predicates.some((item: { selector: string }) => item.selector === ":has(*)"), platform);
     assert.ok(predicates.some((item: { attribute: string }) => item.attribute === "data-dream-has-12"));
     assert.ok(!renderer.includes('document.querySelectorAll("*")'), "no universal predicate scan");

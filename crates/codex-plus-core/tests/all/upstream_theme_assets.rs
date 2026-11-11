@@ -32,7 +32,7 @@ fn bundled_target_renderers_and_styles_match_verified_hashes() {
     for (path, hash) in [
         (
             "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
-            "DB2D86CB173E34E038E2687E18E6F1AA9BA3A24C0C798903E35645482A6C7476",
+            "D8EDC0CEA7DD2BFBF8CB5578E12F97758F8D0FCCE8AFA9581D86288E1918F3D7",
         ),
         (
             "assets/inject/upstream/dream-skin/windows/dream-skin.css",

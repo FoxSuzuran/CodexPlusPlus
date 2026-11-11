@@ -12,7 +12,6 @@ const extract = (source, name) => {
   assert.ok(match, name);
   return match[0];
 };
-const homeMarker = "data-dream-has-home-utility-above";
 const timelineMarker = "data-dream-has-timeline-composer";
 const layoutFixtures = process.env.CODEX_THEME_LAYOUT_CSS_OUTPUT
   ? JSON.parse(fs.readFileSync(process.env.CODEX_THEME_LAYOUT_CSS_OUTPUT, "utf8")) : null;
@@ -39,13 +38,9 @@ async function run() {
       };
       for (const [key, value] of Object.entries(values)) runtime = runtime.replaceAll(key, () => JSON.stringify(value));
       await page.setContent(`
-        <style>#home-chrome {border-radius: 3px} #backdrop {background:rgb(12,34,56)}</style>
+        <style>#backdrop {background:rgb(12,34,56)}</style>
         <aside class="app-shell-left-panel"></aside><header class="app-header-tint"></header>
         <main data-app-shell-main-surface>
-          <section id="home" data-codex-composer-root data-composer-placement="home">
-            <div id="utility" data-composer-home-utility-bar-position="above"></div>
-            <div id="home-chrome" class="composer-surface-chrome"></div>
-          </section>
           <section id="timeline" data-app-action-timeline-scroll>
             <div id="footer" class="pointer-events-none absolute">
               <div id="backdrop" class="pointer-events-none absolute bg-surface"></div>
@@ -61,10 +56,8 @@ async function run() {
       const marked = (id, marker, expected) => page.waitForFunction(
         ({id, marker, expected}) => document.getElementById(id).hasAttribute(marker) === expected,
         {id, marker, expected});
-      await marked("home", homeMarker, true);
       await marked("footer", timelineMarker, true);
       assert.equal(await page.$eval("#decoy", n => n.hasAttribute("data-dream-has-timeline-composer")), false);
-      assert.equal(await page.$eval("#home-chrome", n => getComputedStyle(n).borderTopLeftRadius), "22px");
       assert.equal(await page.$eval("#backdrop", n => getComputedStyle(n).backgroundColor), "rgba(0, 0, 0, 0)");
       const nativeHas = await page.evaluate(() => {
         const selectors = [];
@@ -80,14 +73,6 @@ async function run() {
         [], `${platform}: only the rare native top-fade owner may use :has()`);
 
       // 条件属性、归属属性、动态类名变化均须由真实 observer 刷新。
-      await page.$eval("#utility", n => n.setAttribute("data-composer-home-utility-bar-position", "below"));
-      await marked("home", homeMarker, false);
-      await page.$eval("#utility", n => n.setAttribute("data-composer-home-utility-bar-position", "above"));
-      await marked("home", homeMarker, true);
-      await page.$eval("#home", n => n.setAttribute("data-composer-placement", "thread"));
-      await marked("home", homeMarker, false);
-      await page.$eval("#home", n => n.setAttribute("data-composer-placement", "home"));
-      await marked("home", homeMarker, true);
       await page.$eval("#thread-chrome", n => n.className = "unrelated");
       await marked("footer", timelineMarker, false);
       assert.equal(await page.$eval("#backdrop", n => getComputedStyle(n).backgroundColor), "rgb(12, 34, 56)");
@@ -107,7 +92,7 @@ async function run() {
       await page.waitForFunction(() => !window.detachedFooter.hasAttribute("data-dream-has-timeline-composer"));
       await page.evaluate(runtime);
       await page.evaluate(() => window.__CODEX_DREAM_SKIN_STATE__.cleanup());
-      assert.equal(await page.locator(`[${homeMarker}], [${timelineMarker}]`).count(), 0);
+      assert.equal(await page.locator(`[${timelineMarker}]`).count(), 0);
       assert.equal(await page.evaluate(() => document.adoptedStyleSheets.length), 0);
       console.log(`${platform}: stylesheet, mutation and cleanup regressions passed`);
     }

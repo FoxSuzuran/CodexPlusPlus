@@ -5,7 +5,7 @@ import { it } from "node:test";
 const asset = (name: string) => readFile(new URL(`../../../assets/inject/${name}`, import.meta.url), "utf8");
 
 for (const platform of ["windows"]) {
-  it(`${platform}: removes stylesheet :has() dependencies from base and community themes`, async () => {
+  it(`${platform}: caches broad :has() dependencies in base and community themes`, async () => {
     const renderer = await asset(`upstream/dream-skin/${platform}/renderer-inject.js`);
     const css = [
       await asset(`upstream/dream-skin/${platform}/dream-skin.css`),

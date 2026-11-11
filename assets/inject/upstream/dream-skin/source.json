@@ -10,7 +10,7 @@
     {
       "file": "assets/inject/upstream/dream-skin/windows/renderer-inject.js",
       "upstreamSha256": "576c52af236d251e815c3398a8a8da419287e1281ebf2e05718ddd9fadb248cc",
-      "sha256": "db2d86cb173e34e038e2687e18e6f1aa9ba3a24c0c798903e35645482a6c7476"
+      "sha256": "d8edc0cea7dd2bfbf8cb5578e12f97758f8d0fcce8afa9581d86288e1918f3d7"
     },
     {
       "file": "assets/inject/upstream/dream-skin/macos/dream-skin.css",

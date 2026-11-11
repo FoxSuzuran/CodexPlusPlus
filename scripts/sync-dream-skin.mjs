@@ -38,6 +38,7 @@ for (const platform of ["windows", "macos"]) {
   const predicates = cssPredicateManifest(`${css}\n${runtimeCompatibility}`)
     .filter(({ selector }) => selector !== ":has(*)");
   if (platform === "windows") {
+    // The pinned skin removed the home :has(); scope the remaining timeline predicate.
     const timelineSelector = ':has(:is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]))';
     const timelineIndex = predicates.findIndex(({ selector }) => selector === timelineSelector);
     if (timelineIndex < 0) throw new Error("Windows timeline predicate changed; review the adapter");
@@ -48,13 +49,6 @@ for (const platform of ["windows", "macos"]) {
       branches: [{ selector: ':is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"])', relation: "descendant" }],
       replacement: ':is(:where([data-dream-has-timeline-composer]), :is(.composer-surface-chrome, [class*="_ComposerLayoutRoot_"]):not(*))',
     };
-    predicates.push({
-      selector: ':has([data-composer-home-utility-bar-position="above"])',
-      attribute: "data-dream-has-home-utility-above",
-      owner: '[data-codex-composer-root][data-composer-placement="home"]',
-      branches: [{ selector: '[data-composer-home-utility-bar-position="above"]', relation: "descendant" }],
-      replacement: ':is(:where([data-dream-has-home-utility-above]), [data-composer-home-utility-bar-position="above"]:not(*))',
-    });
   }
   if (predicates.some(({ selector }) => /:(?:empty|blank|dir)\b/.test(selector))) {
     throw new Error(`${platform}: text-sensitive predicate added; review the mutation filter`);
@@ -91,7 +85,7 @@ for (const platform of ["windows", "macos"]) {
       ? "!node.closest?.('[contenteditable=\"true\"], .ProseMirror') && (!owner || node.matches(owner)) && node.matches(selector)"
       : "!node.closest?.('[contenteditable=\"true\"], .ProseMirror') && node.matches(selector)")
     .replace('        "data-mention-list-scroll-area",', platform === "windows"
-      ? '        "data-mention-list-scroll-area",\n        "data-composer-placement", "data-composer-home-utility-bar-position",\n        "data-app-action-timeline-scroll",'
+      ? '        "data-mention-list-scroll-area",\n        "data-app-action-timeline-scroll",'
       : '        "data-mention-list-scroll-area",')
     .replace(branchAnchor, `      const visitedAncestors = new Set();\n${branchAnchor}`)
     .replace(ancestorAnchor, `            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) {

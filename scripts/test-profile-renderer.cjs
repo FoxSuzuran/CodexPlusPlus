@@ -6,8 +6,9 @@ const { test } = require("node:test");
 
 const source = fs.readFileSync(path.join(__dirname, "profile-renderer.cjs"), "utf8");
 
-async function record(mode, failure = false, occupied = false, port = "9229") {
+async function record(mode, failure = false, occupied = false, port = "9229", observeFrames = false) {
   const calls = [], files = new Map(), marks = new Map(), requests = [];
+  const observers = [];
   let finish, clock = 0;
   const closed = new Promise(resolve => { finish = resolve; });
   const window = occupied ? { __codexPlusProfileProbe: { existing: true } } : {};
@@ -20,8 +21,16 @@ async function record(mode, failure = false, occupied = false, port = "9229") {
       mark: name => { marks.set(name, clock); calls.push(name.endsWith(":start") ? "window:start" : "window:end"); },
       clearMarks: name => marks.delete(name),
     },
-    PerformanceObserver: { supportedEntryTypes: [] },
-    requestAnimationFrame: () => 1, cancelAnimationFrame: () => {},
+    PerformanceObserver: class {
+      static supportedEntryTypes = observeFrames ? ["long-animation-frame"] : [];
+      constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+      observe({type}) {
+        assert.equal(type, "long-animation-frame");
+        this.callback({getEntries: () => [{startTime: 10, duration: 90, blockingDuration: 40}]});
+      }
+      disconnect() { this.disconnected = true; }
+    },
+    requestAnimationFrame: () => { throw Error("The profiler must not drive new rendering frames"); },
   });
   class Socket extends EventTarget {
     constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); }
@@ -76,7 +85,7 @@ async function record(mode, failure = false, occupied = false, port = "9229") {
     })]);
   } finally { clearTimeout(timeout); }
   await new Promise(resolve => setImmediate(resolve));
-  return { calls, files, marks, requests, window, exitCode: process.exitCode };
+  return { calls, files, marks, requests, window, observers, exitCode: process.exitCode };
 }
 
 for (const mode of ["baseline", "cpu", "trace"]) {
@@ -89,6 +98,7 @@ for (const mode of ["baseline", "cpu", "trace"]) {
     const report = JSON.parse(result.files.get(names.find(name => name.endsWith(".json") && !name.endsWith(".trace.json"))));
     assert.equal(report.probe.timeOrigin, 123);
     assert.equal(report.probe.marks.length, 2);
+    assert.deepEqual(report.probe.longAnimationFrames, []);
     assert.equal(report.probe.surfaceAtStart.skinActive, true);
     assert.equal(report.probe.surfaceAtStart.skinTheme, "fixture");
     assert.deepEqual(report.probe.surfaceAtStart, report.probe.surfaceAtEnd);
@@ -106,6 +116,15 @@ for (const mode of ["baseline", "cpu", "trace"]) {
     }
   });
 }
+
+test("records existing long animation frames without requesting a rendering loop", async () => {
+  const result = await record("baseline", false, false, "9229", true);
+  assert.equal(result.exitCode, 0);
+  const report = JSON.parse([...result.files.values()][0]);
+  assert.deepEqual(report.probe.longAnimationFrames, [{at: 10, ms: 90, blockingMs: 40}]);
+  assert.equal(result.observers.length, 1);
+  assert.ok(result.observers.every(observer => observer.disconnected));
+});
 
 test("trace output failure still stops both profilers and removes the probe", async () => {
   const result = await record("trace", true);

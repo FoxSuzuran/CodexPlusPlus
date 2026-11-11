@@ -1,0 +1,29 @@
+--- a/renderer.js
++++ b/renderer.js
+@@ -5,8 +5,8 @@
+     style.setAttribute("data-codex-plus-ext", "rainbow-sidebar-active");
+     style.textContent = `
+       @keyframes codexpp-rainbow-sidebar-title-flow {
+-        0% { background-position: 0% 50%; }
+-        100% { background-position: 300% 50%; }
++        0% { filter: hue-rotate(0deg); }
++        100% { filter: hue-rotate(360deg); }
+       }
+ 
+       #app-shell-sidebar [data-app-action-sidebar-thread-row][data-sidebar-indicator="working"] span[data-marquee-content="true"] {
+@@ -27,6 +27,7 @@
+         color: transparent;
+         -webkit-text-fill-color: transparent;
+         animation: codexpp-rainbow-sidebar-title-flow 3.2s linear infinite;
++        will-change: filter;
+       }
+ 
+       #app-shell-sidebar [data-app-action-sidebar-thread-row][data-sidebar-indicator="working"] span[data-marquee-content="true"] * {
+@@ -37,6 +38,7 @@
+       @media (prefers-reduced-motion: reduce) {
+         #app-shell-sidebar [data-app-action-sidebar-thread-row][data-sidebar-indicator="working"] span[data-marquee-content="true"] {
+           animation: none;
++          will-change: auto;
+         }
+       }
+     `;

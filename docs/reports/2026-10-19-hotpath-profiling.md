@@ -124,7 +124,12 @@ node scripts/profile-renderer.cjs trace 15
 - `.cpuprofile`：CPU 模式，供 DevTools/speedscope 查看。
 - `.trace.json`：trace 模式，供本地 Perfetto 查看。
 
-启动录制后照常操作，录制结束会清理观察器和帧回调。未采集输入文字或截图；trace 本身可能包含 URL 和元素诊断信息，因此只留在本地。三种模式均完成 3 秒实机录制及清理断言。
+启动录制后照常操作，录制结束会清理观察器。2026-11-11 起移除主动 requestAnimationFrame 循环，
+以被动 `long-animation-frame` 观察器记录 `longAnimationFrames`（`at`、`ms`、`blockingMs`）；
+旧 `frames` 间隔数组不再输出。不支持此观察器的浏览器输出空数组，长任务和 Event Timing 仍可用。
+原因是持续 rAF 本身会使原本可休眠的渲染主线程重新繁忙，不能用这种记录判断空闲负载。
+未采集输入文字或截图；trace 本身可能包含 URL 和元素诊断信息，因此只留在本地。
+最初三种模式均完成 3 秒实机录制及清理断言；更新后的验证见 2026-11-11 深入排查报告。
 
 另验证了两个异常分支：输出文件写入失败时仍清理观察器；已有录制标记时拒绝启动，并保留已有标记。采样检查期间创建的标记均已清理。
 

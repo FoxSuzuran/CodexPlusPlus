@@ -70,7 +70,7 @@ async function main() {
       }); tracing = true;
     }
     await evaluate(`(() => {
-      const p={started:performance.now(),timeOrigin:performance.timeOrigin,tasks:[],events:[],frames:[],
+      const p={started:performance.now(),timeOrigin:performance.timeOrigin,tasks:[],events:[],longAnimationFrames:[],
         marks:[${JSON.stringify(`${markPrefix}:start`)},${JSON.stringify(`${markPrefix}:end`)}]}, observers=[];
       p.surface=()=>{
         const skin=window.__CODEX_DREAM_SKIN_STATE__||window.__CODEX_GLASS_VISION_SKIN_STATE__;
@@ -89,12 +89,12 @@ async function main() {
         name:e.name,at:e.startTime,ms:e.duration,delay:e.processingStart-e.startTime,
         processing:e.processingEnd-e.processingStart,interactionId:e.interactionId
       })},{durationThreshold:16});
-      let frame,last=performance.now();
-      function tick(now){if(now-last>50&&p.frames.length<1000)p.frames.push({at:now,gap:now-last});
-        last=now;frame=requestAnimationFrame(tick)}
-      frame=requestAnimationFrame(tick);
+      // A continuous rAF probe itself wakes rendering; observe existing frames instead.
+      observe("long-animation-frame",e=>{if(p.longAnimationFrames.length<1000)p.longAnimationFrames.push({
+        at:e.startTime,ms:e.duration,blockingMs:e.blockingDuration
+      })});
       p.cleanup=()=>{
-        observers.forEach(o=>o.disconnect());cancelAnimationFrame(frame);
+        observers.forEach(o=>o.disconnect());
         performance.mark(p.marks[1]);p.marks.forEach(name=>performance.clearMarks(name));
       };
       window.__codexPlusProfileProbe=p;
@@ -106,7 +106,8 @@ async function main() {
     const probe = await evaluate(`(() => {
       const p=window.__codexPlusProfileProbe;p.cleanup();delete window.__codexPlusProfileProbe;
       return {started:p.started,ended:performance.now(),timeOrigin:p.timeOrigin,marks:p.marks,
-        tasks:p.tasks,events:p.events,frames:p.frames,surfaceAtStart:p.surfaceAtStart,surfaceAtEnd:p.surface(),
+        tasks:p.tasks,events:p.events,longAnimationFrames:p.longAnimationFrames,
+        surfaceAtStart:p.surfaceAtStart,surfaceAtEnd:p.surface(),
         visible:document.visibilityState,nodes:document.getElementsByTagName("*").length};
     })()`);
     assert.ok(probe.ended > probe.started);

@@ -178,6 +178,40 @@ function functions(source, names) {
     assert.deepEqual(dailyGeometry.ids, ["floating", "header"]);
     assert.equal(dailyGeometry.geometryReads, process.env.STUTTER_EXPECT_BASELINE === "1" ? 2003 : 2,
       "chat actions and hidden controls must not force geometry");
+    if (process.env.STUTTER_EXPECT_BASELINE !== "1") {
+      await page.setContent(`<header><button id="active" style="width:20px;height:20px"></button></header>
+        <div data-app-shell-active-page="false"><section style="display:none">
+          ${"<button>cached chat action</button>".repeat(300)}
+          <button id="restored" style="position:fixed;top:60px;left:60px;width:20px;height:20px"></button>
+        </section></div>`);
+      const cachedPages = await page.evaluate(script => {
+        const root = null, panel = null, CODEX_PLUS_MENU_ID = "codex-plus-menu";
+        const TOP_OBSTACLE_SELECTOR = "button", APP_HEADER_SURFACE_SELECTOR = "header", FLOATING_SCAN_TOP = 120;
+        const normalizeRect = rect => rect;
+        const rectsOverlap = () => false;
+        const findAppHeaderElement = () => document.querySelector("header");
+        const nativeStyle = window.getComputedStyle;
+        let inactiveReads = 0;
+        window.getComputedStyle = (node, ...args) => {
+          if (node.closest('[data-app-shell-active-page="false"]')) inactiveReads++;
+          return nativeStyle(node, ...args);
+        };
+        try {
+          return eval(`(() => { ${script}
+            const ids = collectTopObstacleEntries().map(({ node }) => node.id);
+            const skippedReads = inactiveReads;
+            document.querySelector('[data-app-shell-active-page]').setAttribute('data-app-shell-active-page', 'true');
+            document.querySelector('section').style.display = 'block';
+            const restoredIds = collectTopObstacleEntries().map(({ node }) => node.id).sort();
+            return { ids, skippedReads, restoredIds };
+          })()`);
+        } finally { window.getComputedStyle = nativeStyle; }
+      }, functions(dailySource, ["isPrimaryTopObstacleNode", "isTopChromeObstacleNode", "collectTopObstacleEntries"]));
+      assert.deepEqual(cachedPages, { ids: ["active"], skippedReads: 0, restoredIds: ["active", "restored"] },
+        "cached inactive chats must not read computed styles during top chrome layout");
+      await page.setContent(`<header><button id="header"></button></header>
+        <button id="floating"></button><button id="hidden"></button>`);
+    }
     if (process.env.STUTTER_EXPECT_BASELINE === "1") {
       console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry }));
       return;

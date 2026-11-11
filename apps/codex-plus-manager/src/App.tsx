@@ -15543,7 +15543,7 @@ function RelayFileEditors({
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.relayPreserveNonproviderSettings === true}
               onChange={(event) => onFormChange({ ...form, relayPreserveNonproviderSettings: event.currentTarget.checked })} />
-            {t("切换时保留缺失的项目信任设置与通知命令")}
+            {t("切换时保留缺失的项目信任设置、通知命令，以及实时配置里改过的 MCP 条目")}
           </label>
           <SyncedTextarea
             className="relay-file-textarea"
@@ -16331,9 +16331,11 @@ type ClaudeLocalConfig = {
   computerUse: boolean;
   backgroundMode: boolean;
   displayName?: string;
+  email?: string;
   plan?: string;
   sessionSync?: boolean;
   listAllModels?: boolean;
+  hideUnroutedModels?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16881,6 +16883,24 @@ function ClaudeLocalizationScreen(
               <ToggleVisual />
             </label>
           </CxRow>
+          <CxRow
+            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留供应商池里的模型；改完需要重新启动本地服务。")}
+            title={t("隐藏无供应商的模型")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("隐藏无供应商的模型")}
+                checked={local?.config.hideUnroutedModels ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, hideUnroutedModels: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{local?.config.hideUnroutedModels ?? true ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
           <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("用户名")}>
             <Input
               aria-label={t("用户名")}
@@ -16894,6 +16914,22 @@ function ClaudeLocalizationScreen(
                 if (event.key === "Enter") event.currentTarget.blur();
               }}
               placeholder={t("Local User")}
+            />
+          </CxRow>
+          <CxRow detail={t("只改 Claude 里显示的账号邮箱，从这里启动后生效。")} title={t("邮箱")}>
+            <Input
+              aria-label={t("邮箱")}
+              defaultValue={local?.config.email ?? ""}
+              disabled={localDisabled || !local?.supported}
+              key={local?.config.email ?? ""}
+              onBlur={(event) => {
+                if (local && event.currentTarget.value !== (local.config.email ?? "")) void configureLocal({ ...local.config, email: event.currentTarget.value });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              placeholder="local@claude.local"
+              type="email"
             />
           </CxRow>
           <CxRow title={t("套餐")}>

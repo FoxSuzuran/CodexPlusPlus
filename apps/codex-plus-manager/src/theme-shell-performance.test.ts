@@ -26,6 +26,7 @@ for (const platform of ["windows"]) {
 it("keeps the popup parent rule installed only while the manager page is open", async () => {
   const styleSource = await asset("renderer-inject/10-style.js");
   const pageSource = await asset("renderer-inject/40-backend-settings.js");
+  assert.equal(styleSource.match(/function syncCodexPlusPagePopupStyle\(/g)?.length, 1);
   const extract = (source: string, name: string) => {
     const match = source.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"));
     assert.ok(match, name);

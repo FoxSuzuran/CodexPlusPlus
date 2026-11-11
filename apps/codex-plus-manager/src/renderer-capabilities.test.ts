@@ -226,6 +226,8 @@ describe("captured request clients continue forwarding requests", () => {
       const verifyCodexPureApiResumeResult = () => {};
       const codexManagedSessionConnection = () => null;
       const prepareCodexManagedSessionConnection = async (_method, params) => params;
+      const prepareCodexThreadContextStart = async (_method, params) => params;
+      const noteCodexThreadRuntimeContext = () => {};
       const sendCodexManagedSessionTurn = async () => null;
       const noteCodexManagedSessionStart = () => {};
       const prewarmCodexManagedSession = (_client, prewarm, params, options) => prewarm(params, options);

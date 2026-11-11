@@ -1,0 +1,14 @@
+diff --git a/market-codex-daily-token-usage.js b/market-codex-daily-token-usage.js
+index 058a41b1..23b18989 100644
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -5167,7 +5167,8 @@
+     if (!document.body?.querySelectorAll) return [];
+     const header = findAppHeaderElement();
+     const entries = Array.from(document.body.querySelectorAll(TOP_OBSTACLE_SELECTOR))
+-      .filter((node) => !root?.contains(node) && !panel?.contains(node))
++      .filter((node) => !root?.contains(node) && !panel?.contains(node)
++        && !node.closest?.('[data-app-shell-active-page="false"]'))
+       .map((node) => {
+         const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+         if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;

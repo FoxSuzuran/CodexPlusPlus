@@ -1,5 +1,6 @@
   retireSessionSharing();
   retireCodexPlusAdvertising();
+  installCodexPlusNativeStyleCache();
   installCodexConfigReadDeadline();
   void installCodexForkReadinessFallback();
   installCodexForkStatsigFallback();

@@ -16,6 +16,11 @@
       "lines": 2826
     },
     {
+      "name": "11-native-style-cache.js",
+      "description": "原生静态样式去重与样式表生命周期恢复",
+      "lines": 110
+    },
+    {
       "name": "20-menu.js",
       "description": "Codex++ 菜单、后端设置加载、插件解锁策略与版本判定",
       "lines": 627
@@ -208,7 +213,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 45
+      "lines": 46
     },
     {
       "name": "99-tail.js",

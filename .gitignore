@@ -22,6 +22,8 @@ docs/superpowers/
 Thumbs.db
 .env
 tools/codex-wechat/config.local.json
+# 后端迁出后仍需保留旧本地证书的忽略规则。
+/tools/claude-local/ca/
 
 # pnpm artifacts (project uses npm)
 pnpm-lock.yaml

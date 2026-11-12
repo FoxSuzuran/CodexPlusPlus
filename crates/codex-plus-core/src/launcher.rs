@@ -464,6 +464,10 @@ pub trait LaunchHooks: Send + Sync {
     fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
         true
     }
+    /// Codex 桌面端是否在运行。运行中改 `.codex-global-state.json` 会被它的内存状态覆盖回去。
+    fn codex_desktop_running(&self) -> bool {
+        false
+    }
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -602,7 +606,7 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -928,6 +932,13 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        // #2947 / #3018：非官方登录时 Codex 每次启动都清空匿名身份的项目，开关打开时启动前挪走账号容器。
+        crate::codex_app_state::reconcile_account_scope_nonfatal(
+            &home,
+            &settings,
+            hooks.codex_desktop_running(),
+            "launcher.before_launch",
+        );
         if hooks.has_pending_remote_control_session_recoveries()
             && hooks.remote_control_session_recovery_is_safe_to_run()
         {
@@ -1262,6 +1273,19 @@ impl DefaultLaunchHooks {
     pub async fn set_bridge_reinjector(&self, reinjector: BridgeReinjector) {
         *self.bridge_reinjector.lock().await = Some(reinjector);
     }
+
+    /// 不再开始重注入，等待已经开始的工作完成后再释放 helper。
+    pub async fn stop_bridge_watchdog(&self) {
+        let mut slot = self.bridge_watchdog.lock().await;
+        if let Some(runtime) = slot.as_mut() {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            // 退出等待可能被宿主 stop 分支取消；保留句柄让外层清理继续等待。
+            let _ = (&mut runtime.task).await;
+        }
+        slot.take();
+    }
 }
 
 fn helper_bind_host() -> String {
@@ -1357,6 +1381,10 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
         crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
+    fn codex_desktop_running(&self) -> bool {
+        !crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
@@ -1922,13 +1950,15 @@ impl LaunchHooks for DefaultLaunchHooks {
                 let _ = pet_cursor_task.await;
             }
         });
-        if let Some(runtime) = self
+        if let Some(mut runtime) = self
             .bridge_watchdog
             .lock()
             .await
-            .replace(BridgeWatchdogRuntime { shutdown, task })
+            .replace(BridgeWatchdogRuntime { shutdown: Some(shutdown), task })
         {
-            let _ = runtime.shutdown.send(());
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
             let _ = runtime.task.await;
         }
         Ok(())
@@ -2009,10 +2039,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
-        if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
+        self.stop_bridge_watchdog().await;
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -8114,6 +8141,47 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stopping_bridge_watchdog_waits_for_its_cleanup_and_is_idempotent() {
+        let hooks = super::DefaultLaunchHooks::default();
+        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let done = cleaned.clone();
+        let task = tokio::spawn(async move {
+            let _ = stopped.await;
+            tokio::task::yield_now().await;
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        hooks.stop_bridge_watchdog().await;
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+        hooks.stop_bridge_watchdog().await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_watchdog_stop_keeps_the_join_handle_for_outer_cleanup() {
+        let hooks = std::sync::Arc::new(super::DefaultLaunchHooks::default());
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            stopped.await.unwrap();
+            entered.send(()).unwrap();
+            finished.await.unwrap();
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        let stopping = hooks.clone();
+        let stop = tokio::spawn(async move { stopping.stop_bridge_watchdog().await });
+        waiting.await.unwrap();
+        stop.abort();
+        let _ = stop.await;
+        assert!(hooks.bridge_watchdog.lock().await.is_some());
+        finish.send(()).unwrap();
+        hooks.stop_bridge_watchdog().await;
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -8902,7 +8970,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let watchdog = hooks.bridge_watchdog.lock().await.take().unwrap();
-        watchdog.shutdown.send(()).unwrap();
+        watchdog.shutdown.unwrap().send(()).unwrap();
         let mut task = watchdog.task;
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(1), &mut task).await;
         task.abort();

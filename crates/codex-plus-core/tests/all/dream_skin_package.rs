@@ -102,7 +102,11 @@ fn package_compatibility_uses_dream_skin_version_instead_of_product_version() {
     );
     assert!(validate_and_read_package(&supported, "macos").is_ok());
 
-    for minimum in ["1.5.21", "26.805.11740"] {
+    // 上游 v1.5.21 的包能导入（#3050），再往上的未来引擎版本仍要拒绝。
+    let v1_5_21 = package_bytes_with_min_client_version("macos", css, None, "", "1.5.21");
+    assert!(validate_and_read_package(&v1_5_21, "macos").is_ok());
+
+    for minimum in ["1.5.22", "26.805.11740"] {
         let bytes = package_bytes_with_min_client_version("macos", css, None, "", minimum);
         let error = validate_and_read_package(&bytes, "macos")
             .unwrap_err()
@@ -137,20 +141,20 @@ fn validates_package_inside_one_top_level_directory() {
 }
 
 #[test]
-fn supports_dream_skin_1_5_20_without_accepting_future_clients() {
+fn supports_dream_skin_1_5_21_without_accepting_future_clients() {
     let css = br#"[data-ds-part="root"] { color: #ffffff; }"#;
-    for version in ["0.0.0", "1.5.12", "1.5.18", "1.5.19", "1.5.20"] {
+    for version in ["0.0.0", "1.5.12", "1.5.18", "1.5.19", "1.5.20", "1.5.21"] {
         let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         validate_and_read_package(&bytes, "windows").unwrap();
     }
-    for version in ["1.5.21", "1.6.0", "2.0.0"] {
+    for version in ["1.5.22", "1.6.0", "2.0.0"] {
         let bytes = package_bytes_with_min_client_version("windows", css, None, "", version);
         let error = validate_and_read_package(&bytes, "windows")
             .err()
             .expect("future clients must be rejected")
             .to_string();
         assert!(error.contains(version), "{error}");
-        assert!(error.contains("当前支持 1.5.20"), "{error}");
+        assert!(error.contains(&format!("当前支持 {DREAM_SKIN_PACKAGE_CLIENT_VERSION}")), "{error}");
     }
 }
 

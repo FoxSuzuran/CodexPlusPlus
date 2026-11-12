@@ -433,7 +433,7 @@
   const codexPlusSettingsKey = "codexPlusSettings";
   const codexThreadScrollKey = "codexThreadScroll";
   const codexServiceTierRequestOverrideVersion = "10";
-  const codexAppServerModelRequestPatchVersion = "37";
+  const codexAppServerModelRequestPatchVersion = "38";
   const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "8";
@@ -3442,6 +3442,7 @@
 
   /** 滚动位置恢复关掉时（设置关、或内置拓展停用）撤掉排着的保存 / 恢复定时器，作废进行中的轮次。 */
   function stopThreadScrollRestore() {
+    if (window.__codexThreadScrollRuntime?.activeScroller) bindThreadScrollListener(null);
     clearTimeout(window.__codexThreadScrollSaveTimer);
     window.__codexThreadScrollSaveTimer = null;
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
@@ -6084,7 +6085,7 @@
   }
 
   function userScriptStatusLabel(status) {
-    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
+    return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中", unknown: "状态待确认" }[status] || status || "未知";
   }
 
   // 使用已安装 Lucide Search / RotateCw / Plus / ArrowLeft / Settings 的 ISC 图标路径。
@@ -6401,8 +6402,9 @@
    */
   async function reloadUserScriptsAfterChange() {
     const result = await postJson("/user-scripts/reload", {});
-    if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
-    await loadUserScripts();
+    if (result?.status === "unknown") showToast(result.message, { type: "warn" });
+    else if (!result?.scripts) showToast(`拓展重载失败：${result?.message || "未知错误"}，重启 Codex 后生效`, { type: "error" });
+    await loadUserScripts("/user-scripts/list", {}, result?.status === "unknown");
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
@@ -6480,12 +6482,13 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusPageNav(codexPlusExtensionsTab);
   }
 
-  async function loadUserScripts(path = "/user-scripts/list", payload = {}) {
+  async function loadUserScripts(path = "/user-scripts/list", payload = {}, runtimeUnknown = false) {
     const requestPayload = path === "/user-scripts/list"
       ? { ...payload, runtime_status: window.__codexPlusUserScripts?.scripts || {} }
       : payload;
     const result = await postJson(path, requestPayload);
     if (result?.scripts) {
+      if (runtimeUnknown) result.scripts.forEach((script) => { script.status = "unknown"; });
       codexPlusUserScripts = result;
       codexPlusUserScriptsLoaded = true;
       renderUserScripts();
@@ -9811,6 +9814,12 @@
     return match ? decodeURIComponent(match[1]) : "";
   }
 
+  function threadScrollRestoreEnabled() {
+    return codexPlusBackendSettingsLoaded
+      && codexPlusBackendSettings.codexAppThreadScrollRestore === true
+      && codexPlusSettings().threadScrollRestore;
+  }
+
   function finiteNonNegativeNumber(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
@@ -9841,9 +9850,15 @@
     return { session_id: locationThreadId(), title: "" };
   }
 
+  function currentThreadScrollSessionId() {
+    return validThreadScrollSessionKey(currentSessionRef().session_id)
+      || validThreadScrollSessionKey(codexPlusCurrentSessionId());
+  }
+
   function readThreadScrollEntries() {
     if (window.__codexThreadScrollEntries && typeof window.__codexThreadScrollEntries === "object") {
-      return { ...window.__codexThreadScrollEntries };
+      return Object.fromEntries(Object.entries(window.__codexThreadScrollEntries)
+        .filter(([, value]) => finiteNonNegativeNumber(value?.scrollHeight) > 0 && finiteNonNegativeNumber(value?.clientHeight) > 0));
     }
     try {
       const parsed = JSON.parse(localStorage.getItem(codexThreadScrollKey) || "{}");
@@ -9856,6 +9871,7 @@
       Object.entries(rawEntries).forEach(([key, value]) => {
         const safeKey = validThreadScrollSessionKey(key);
         if (!safeKey || !value || typeof value !== "object") return;
+        if (!finiteNonNegativeNumber(value.scrollHeight) || !finiteNonNegativeNumber(value.clientHeight)) return;
         entries[safeKey] = {
           top: finiteScrollNumber(value.top),
           scrollHeight: finiteNonNegativeNumber(value.scrollHeight),
@@ -9863,6 +9879,7 @@
           ...(typeof value.atBottom === "boolean" ? { atBottom: value.atBottom } : {}),
           at: finiteNonNegativeNumber(value.at),
         };
+        if (typeof value.atBottom === "boolean") entries[safeKey].atBottom = value.atBottom;
       });
       window.__codexThreadScrollEntries = entries;
       return { ...entries };
@@ -9901,6 +9918,10 @@
   }
 
   function currentThreadScroller() {
+    const explicit = [...document.querySelectorAll(".thread-scroll-container")];
+    if (explicit.length) {
+      return explicit.find((node) => node.isConnected && node.clientWidth > 0 && node.clientHeight > 0) || null;
+    }
     const root = conversationRoot();
     if (root?.isConnected && root.matches(".thread-scroll-container")) return root;
     if (!root?.isConnected) return document.scrollingElement || document.documentElement;
@@ -9943,13 +9964,15 @@
     threadScrollRuntime().restoreLock = null;
   }
 
-  function cancelThreadScrollRestoreForUserIntent() {
+  function cancelThreadScrollRestoreForUserIntent(sessionId) {
     const runtime = threadScrollRuntime();
-    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
-      || validThreadScrollSessionKey(currentSessionRef().session_id)
+    const cancelledSessionId = validThreadScrollSessionKey(sessionId)
+      || validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
+      || currentThreadScrollSessionId()
       || validThreadScrollSessionKey(runtime.activeSessionId);
     runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
     runtime.userCancelledRestoreSessionId = cancelledSessionId;
+    runtime.pendingNavigation = null;
     window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
     window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
     clearThreadScrollRestoreTimers();
@@ -10021,12 +10044,10 @@
 
   function threadScrollTargetTop(scroller, entry) {
     const range = threadScrollRange(scroller);
-    const top = finiteScrollNumber(entry.targetTop ?? entry.top);
-    const previousBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
-    // 旧快照没有底部标记，用保存时的高度识别，不能拿旧绝对位置锁住新消息。
-    const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom
-      : Math.abs(previousBottom - top) <= Math.max(24, entry.clientHeight * 0.15);
-    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, top));
+    const targetTop = finiteScrollNumber(entry.targetTop ?? entry.top);
+    const savedBottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, entry.scrollHeight - entry.clientHeight);
+    const atBottom = typeof entry.atBottom === "boolean" ? entry.atBottom : Math.abs(targetTop - savedBottom) <= 2;
+    return atBottom ? range.bottom : Math.max(range.min, Math.min(range.max, targetTop));
   }
 
   function threadScrollNearBottom(scroller, top) {
@@ -10048,7 +10069,7 @@
   function shouldBlockThreadScrollAutobottom(scroller, top) {
     const runtime = threadScrollRuntime();
     const lock = currentThreadScrollRestoreLock();
-    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
+    if (!lock || !threadScrollRestoreEnabled()) return false;
     const guardScroller = threadScrollGuardScroller(scroller);
     if (runtime.applyingRestore || !guardScroller) return false;
     const targetTop = threadScrollTargetTop(guardScroller, lock);
@@ -10174,13 +10195,13 @@
     }
     runtime.activeScroller = scroller;
     runtime.scrollListenerUsesWindow = nextUsesWindow;
-    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
+    if (!scroller || !threadScrollRestoreEnabled()) return;
     const target = nextUsesWindow ? window : scroller;
     target.addEventListener("scroll", runtime.scrollListener, true);
   }
 
   function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
-    if (!codexPlusSettings().threadScrollRestore) return;
+    if (!threadScrollRestoreEnabled()) return;
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
     if (!key || !scroller || activeThreadScrollRestoreLock(key)) return;
@@ -10191,8 +10212,9 @@
       at: Date.now(),
     };
     if (!validThreadScrollEntry(snapshot)) return;
-    const bottom = threadScrollIsReversed(scroller) ? 0 : Math.max(0, snapshot.scrollHeight - snapshot.clientHeight);
-    snapshot.atBottom = Math.abs(bottom - snapshot.top) <= Math.max(24, snapshot.clientHeight * 0.15);
+    // 会话加载时的空容器不能覆盖之前的阅读位置。
+    if (snapshot.scrollHeight <= snapshot.clientHeight && !scroller.querySelector("[data-turn-key]")) return;
+    snapshot.atBottom = Math.abs(threadScrollRange(scroller).bottom - snapshot.top) <= 2;
     if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
     const entries = readThreadScrollEntries();
     entries[key] = snapshot;
@@ -10203,7 +10225,7 @@
   }
 
   function scheduleThreadScrollSave() {
-    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
+    if (!threadScrollRestoreEnabled() || window.__codexThreadScrollSaveTimer) return;
     window.__codexThreadScrollSaveTimer = setTimeout(() => {
       window.__codexThreadScrollSaveTimer = null;
       saveThreadScrollPositionNow();
@@ -10213,7 +10235,8 @@
   function restoreThreadScrollPosition(sessionId) {
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    if (!threadScrollRestoreEnabled() || !key || runtime.activeSessionId !== key
+        || currentThreadScrollSessionId() !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
     const lock = activeThreadScrollRestoreLock(key);
     const entry = lock || readThreadScrollEntries()[key];
     if (!validThreadScrollEntry(entry)) return;
@@ -10239,7 +10262,7 @@
 
   function scheduleThreadScrollRestore(sessionId) {
     const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) {
+    if (!threadScrollRestoreEnabled() || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) {
       clearThreadScrollRestoreTimers();
       return;
     }
@@ -10265,10 +10288,9 @@
 
   function syncThreadScrollState(forceRestore = false) {
     const runtime = threadScrollRuntime();
-    const currentRef = currentSessionRef();
-    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
+    const nextSessionId = currentThreadScrollSessionId();
     if (!nextSessionId) return;
-    if (!codexPlusSettings().threadScrollRestore) {
+    if (!threadScrollRestoreEnabled()) {
       bindThreadScrollListener(null);
       clearThreadScrollRestoreTimers();
       clearThreadScrollRestoreLock();
@@ -10295,7 +10317,7 @@
   }
 
   function scheduleThreadScrollSyncAttempts(forceRestore = true) {
-    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
+    const currentKey = currentThreadScrollSessionId() || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
     if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
     clearThreadScrollSyncTimers();
     const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
@@ -10307,7 +10329,7 @@
   }
 
   function captureThreadScrollNavigation(targetSessionId) {
-    if (!codexPlusSettings().threadScrollRestore) return;
+    if (!threadScrollRestoreEnabled()) return;
     const runtime = threadScrollRuntime();
     const targetKey = validThreadScrollSessionKey(targetSessionId);
     const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
@@ -10330,6 +10352,14 @@
   }
 
   function eventTargetsActiveThreadScroller(event) {
+    if (event?.type === "click") {
+      const button = event.target?.closest?.("button");
+      const root = currentThreadScroller()?.closest?.("[data-request-input-activity-root]");
+      return !!root && !!button?.classList?.contains("group/scroll-to-bottom")
+        && !!button.closest("[data-thread-scroll-footer], .conversation-footer")
+        && button.closest("[data-request-input-activity-root]") === root
+        && !button.closest("dialog, [role='dialog']");
+    }
     const runtime = threadScrollRuntime();
     const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
     if (!scroller) return false;
@@ -10339,8 +10369,12 @@
   }
 
   function markThreadScrollUserIntent(event) {
-    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
-    cancelThreadScrollRestoreForUserIntent();
+    const waitingForSettings = (!codexPlusBackendSettingsLoaded
+      || typeof codexPlusBackendSettings.codexAppThreadScrollRestore !== "boolean")
+      && codexPlusBackendSettings.enhancementsEnabled !== false
+      && !globalThis.__codexPlusBuiltinInactive?.has("thread-scroll-restore");
+    if ((!threadScrollRestoreEnabled() && !waitingForSettings) || !eventTargetsActiveThreadScroller(event)) return;
+    cancelThreadScrollRestoreForUserIntent(event?.type === "click" ? currentThreadScrollSessionId() : null);
   }
 
   function markThreadScrollKeyboardIntent(event) {
@@ -10390,19 +10424,20 @@
     document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
     document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
     const navigationHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      if (!threadScrollRestoreEnabled()) return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
       window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
     };
     const clickHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+      if (!threadScrollRestoreEnabled()) return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
       window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
     };
     const keyboardHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
+      if (!threadScrollRestoreEnabled()) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       const row = event.target?.closest?.(selectors.sidebarThread);
       if (!row) return;
@@ -11776,6 +11811,10 @@
         changed = true;
         return next;
       });
+      // 请求包装没装上时（新版 Codex 的 model/list 可能不经 sendRequest），原生查询
+      // 拿到的是 app-server 启动时的旧目录（#3038）：在副本上按当前目录补齐 / 剔除，
+      // 与包装路径的结果一致。patchModelArray 只替换元素、不改原生对象，重复执行不再变化。
+      if (patchModelArray(models, true, "local")) changed = true;
       // 原生悬停和输入框都订阅此缓存；发布新对象，并保留网络请求的更新时间。
       if (changed) client.setQueryData(query.queryKey, { ...response, data: models }, { updatedAt: query.state.dataUpdatedAt });
     }
@@ -12367,6 +12406,25 @@
     return { requestMethod, threadId, model };
   }
 
+  function codexThreadContextSignature(config) {
+    // 路由别名交给原生 turn/start；只有实际窗口配置变化才需要卸载线程。
+    return JSON.stringify([config.model_context_window, config.model_auto_compact_token_limit]);
+  }
+
+  function codexThreadContextMatches(cached, context) {
+    if (cached === context.signature) return true;
+    try {
+      // 热重注入保留了旧版内存缓存：[modelAlias, config]。
+      const previous = JSON.parse(cached);
+      return Array.isArray(previous) && previous.length === 2
+        && typeof previous[0] === "string" && previous[1]
+        && typeof previous[1] === "object" && !Array.isArray(previous[1])
+        && codexThreadContextSignature(previous[1]) === context.signature;
+    } catch {
+      return false;
+    }
+  }
+
   async function codexThreadRuntimeContext(params) {
     const catalog = await loadCodexModelCatalog(true);
     const runtime = catalog.runtimeContext;
@@ -12377,7 +12435,7 @@
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
     const config = runtime.models[model];
-    return config ? { model, config, signature: JSON.stringify([model, config]) } : null;
+    return config ? { model, config, signature: codexThreadContextSignature(config) } : null;
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -12406,7 +12464,7 @@
       model_auto_compact_token_limit: params.config.model_auto_compact_token_limit,
     };
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    contexts.set(state.threadId, JSON.stringify([state.model, config]));
+    contexts.set(state.threadId, codexThreadContextSignature(config));
     if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
   }
 
@@ -12425,7 +12483,7 @@
     const context = await codexThreadRuntimeContext(params);
     if (!context) return null;
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    if (contexts.get(threadId) === context.signature) return null;
+    if (codexThreadContextMatches(contexts.get(threadId), context)) return null;
     if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
         || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");
@@ -12435,13 +12493,23 @@
     try {
       const recoveryOptions = codexManagedSessionRecoveryOptions(options);
       const read = await originalSendRequest("thread/read", { threadId, includeTurns: false }, recoveryOptions);
+      // 侧边聊天是 ephemeral 分叉：没有 rollout、不能卸载恢复，上下文已在分叉时写入（#3041）。
+      if (read.thread?.ephemeral === true) {
+        contexts.set(threadId, context.signature);
+        return null;
+      }
       if (!["idle", "notLoaded"].includes(read.thread.status.type)) {
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
       const turns = await originalSendRequest("thread/turns/list",
         { threadId, limit: 1, itemsView: "notLoaded" }, recoveryOptions);
-      if (turns.data.length === 0) throw new Error("此新会话尚无历史，请重新新建会话以应用上下文配置");
+      // 还没有历史的新线程不能卸载恢复。Codex 26.1106 起侧边聊天用 attachToSource 分叉、不再标 ephemeral（#3062），
+      // 拦下发送会让侧聊完全不可用：放行原生首轮，不记签名，等有了历史后的下一次发送再应用上下文配置。
+      if (turns.data.length === 0) {
+        sendCodexPlusDiagnostic("thread_model_context_refresh_deferred", { threadId, reason: "no_history" });
+        return null;
+      }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
       if (current.thread.status.type !== "idle") throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
@@ -19972,6 +20040,42 @@
     return null;
   }
 
+  // issue #3044：新版 Codex（rolldown + ESM 分块）把管理器原子从 app-initial-* 搬到
+  // app-shared-*，导出名每次构建都变。旧逻辑只按块名和数字分块找，全部落空后报
+  // 「版本不兼容」。改为按能力识别：遍历候选 ESM 块的全部导出，认「scope.get 出来的
+  // 值带 forHost」的那一个。块名只做排序提示，不影响正确性。
+  const codexPlusAppServerModuleHints = ["app-shared-", "app-initial-", "app-main-", "app-primary-", "index.client-", "chatg"];
+  const codexPlusAppServerModuleScanLimit = 16;
+
+  function codexPlusAppServerModuleRank(url) {
+    const name = (url.split("/").pop() || "").toLowerCase();
+    const hint = codexPlusAppServerModuleHints.findIndex((part) => name.includes(part));
+    return hint < 0 ? codexPlusAppServerModuleHints.length : hint;
+  }
+
+  async function codexPlusFindManagerByCapability(scope, managerFrom) {
+    const urls = codexAppAssetCandidateUrls()
+      .filter((url) => !url.includes("__codexPlusNativeFastCompiled"))
+      .sort((left, right) => codexPlusAppServerModuleRank(left) - codexPlusAppServerModuleRank(right));
+    let scanned = 0;
+    for (const url of urls) {
+      if (scanned >= codexPlusAppServerModuleScanLimit) break;
+      let module;
+      try {
+        module = await import(url);
+      } catch {
+        continue; // 块还没落地或已失效，跳过不标记
+      }
+      scanned += 1;
+      for (const value of Object.values(module || {})) {
+        if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
+        const manager = managerFrom(value);
+        if (manager) return { manager, atom: value, url };
+      }
+    }
+    return { manager: null, scanned };
+  }
+
   async function codexPlusAppServerClient(hostId = "local") {
     const scope = codexPlusFindAppScope();
     if (!scope) throw new Error("Codex 界面还没准备好，稍后再试");
@@ -19985,7 +20089,20 @@
     };
     let manager = codexPlusManagerAtom ? managerFrom(codexPlusManagerAtom) : null;
     if (!manager) {
-      // 数字分块只检查当前页面已执行的模块缓存，不执行候选工厂或新加载懒模块。
+      // 优先按能力识别：遍历 ESM 块导出，认 scope.get 出来带 forHost 的值。
+      const found = await codexPlusFindManagerByCapability(scope, managerFrom);
+      if (found.manager) {
+        manager = found.manager;
+        codexPlusManagerAtom = found.atom;
+      } else {
+        sendCodexPlusDiagnostic("app_server_client_atom_missing", {
+          scannedModules: found.scanned,
+          candidateUrls: codexAppAssetCandidateUrls().length,
+        });
+      }
+    }
+    if (!manager) {
+      // 回退：旧版 webpack 数字分块（兼容 2.6.2 及更早）。
       const entries = Array.from(document.scripts || []).map((script) => script.src)
         .filter((url) => /\/assets\/\d+\.[a-f\d]+\.js$/.test(url));
       for (const url of entries) {
@@ -20009,6 +20126,7 @@
       }
     }
     if (!manager) {
+      // 最后回退：只试 app-initial-（旧版 ESM 布局）。
       const module = await loadOptionalCodexAppModule("app-initial-");
       for (const value of Object.values(module || {})) {
         if (!value || (typeof value !== "object" && typeof value !== "function")) continue;
@@ -25299,12 +25417,27 @@
       scheduleThreadScrollSync(true);
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
-    const stopWhenOff = () => {
-      if (!codexPlusSettings().threadScrollRestore) stopThreadScrollRestore();
+    let enabled = threadScrollRestoreEnabled();
+    let disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
+    const onSettings = () => {
+      const nextEnabled = threadScrollRestoreEnabled();
+      if (enabled && !nextEnabled) {
+        stopThreadScrollRestore();
+        threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
+      }
+      if (!enabled && nextEnabled) {
+        clearThreadScrollRestoreTimers();
+        if (disabled) threadScrollRuntime().activeSessionId = currentThreadScrollSessionId();
+        syncThreadScrollState();
+        if (!disabled) scheduleThreadScrollSyncAttempts(true);
+      }
+      enabled = nextEnabled;
+      disabled = codexPlusBackendSettingsLoaded && codexPlusBackendSettings.codexAppThreadScrollRestore === false;
     };
-    ctx.on("settings/changed", () => runScanStep(stopWhenOff));
+    ctx.on("settings/changed", () => runScanStep(onSettings));
+    ctx.on("settings/loaded", () => runScanStep(onSettings));
     codexPlusAlignWith(ctx, () => {
-      stopWhenOff();
+      if (!threadScrollRestoreEnabled()) stopThreadScrollRestore();
       scheduleDeferredScan();
     });
   }

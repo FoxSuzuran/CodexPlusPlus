@@ -340,6 +340,7 @@ import {
   multiLaunchInstanceCanRestart,
   multiLaunchInstanceCanStop,
   multiLaunchInstanceFailure,
+  multiLaunchInstanceIsMain,
   multiLaunchInstanceLabel as formatMultiLaunchInstanceLabel,
   multiLaunchInstanceRunning,
   multiLaunchInstanceStatus,
@@ -478,6 +479,8 @@ type BackendSettings = WhaleBalanceSettings & {
   /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
+  /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
+  keepProjectsWithoutAccount?: boolean;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -1554,6 +1557,7 @@ const defaultSettings: BackendSettings = {
   providerSyncEnabled: false,
   sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
+  keepProjectsWithoutAccount: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
   updateSkippedVersion: "",
@@ -2108,11 +2112,14 @@ export function App() {
     return result;
   };
 
-  const refreshScriptMarket = async (silent = false) => {
+  const refreshScriptMarket = async (silent = false, preserveRuntime = false) => {
     const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
     if (result) {
       setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
+      setSettings((current) => (current ? {
+        ...current,
+        user_scripts: preserveRuntime ? current.user_scripts : result.user_scripts,
+      } : current));
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("拓展"), result, { silentSuccess: true });
     }
   };
@@ -2133,6 +2140,7 @@ export function App() {
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
+    return result?.status;
   };
 
   const installMarketScript = async (id: string) => {
@@ -2194,9 +2202,13 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      if (isSuccessStatus(result.status) && host === "codex") await reloadUserScripts();
-      else showResultNotice(t("本地拓展"), result);
-      await refreshUserScriptInventory();
+      if (isSuccessStatus(result.status) && host === "codex") {
+        const reloadStatus = await reloadUserScripts();
+        if (reloadStatus !== "warning") await refreshUserScriptInventory();
+      } else {
+        showResultNotice(t("本地拓展"), result);
+        await refreshUserScriptInventory();
+      }
     }
   };
 
@@ -3128,6 +3140,11 @@ export function App() {
   };
 
   const restartMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    // #3025: the main process is not a multi-instance. The backend rejects instanceId "main".
+    if (multiLaunchInstanceIsMain(instance)) {
+      showNotice(t("重启 Codex 实例"), "主 Codex 请使用顶部的「重启 Codex」。", "failed");
+      return;
+    }
     if (multiLaunchActionPending) return;
     setMultiLaunchActionPending(instance.instanceId);
     try {
@@ -3142,6 +3159,10 @@ export function App() {
   };
 
   const stopMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
+    if (multiLaunchInstanceIsMain(instance)) {
+      showNotice(t("结束 Codex 实例"), "主 Codex 请使用侧栏的「停止 Codex」。", "failed");
+      return;
+    }
     if (multiLaunchActionPending) return;
     const name = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
     if (!(await appConfirm(tf("确定结束“{0}”吗？", [name]), { title: t("结束实例"), confirmText: t("结束"), danger: true }))) return;
@@ -4829,7 +4850,7 @@ export function App() {
       syncLiveContextEntries,
       refreshScriptMarket,
       refreshUserScriptInventory,
-      reloadUserScripts,
+      reloadUserScripts: async () => { await reloadUserScripts(); },
       installMarketScript,
       setUserScriptsEnabled,
       setUserScriptsSkipNextStart,
@@ -5893,7 +5914,7 @@ type Actions = {
   importCcsProviders: (bindings?: Record<string, string>) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshScriptMarket: () => Promise<void>;
+  refreshScriptMarket: (silent?: boolean, preserveRuntime?: boolean) => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
   reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
@@ -8439,7 +8460,9 @@ function CodexMultiLaunchScreen({
           {instances.length ? instances.map((instance) => {
             const status = multiLaunchInstanceStatus(instance);
             const running = multiLaunchInstanceRunning(instance);
+            const mainInstance = multiLaunchInstanceIsMain(instance);
             const canStop = multiLaunchInstanceCanStop(instance);
+            const canRestart = multiLaunchInstanceCanRestart(instance);
             const pending = actions.multiLaunchActionPending === instance.instanceId;
             const label = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
             // 启动失败的原因必须让用户看得见：Windows 上多开曾经完全不吭声。
@@ -8452,6 +8475,16 @@ function CodexMultiLaunchScreen({
               failure ? `${instance.launchResult?.status === "cleanup_failed" ? t("失败") : t("启动失败")}：${failure}` : "",
             ].filter(Boolean).join(" · ");
             const tone = statusClass(status);
+            // Disabled buttons do not receive hover, so the hint sits on the wrapper
+            // and the button itself ignores pointer events.
+            const restartTitle = mainInstance
+              ? t("主 Codex 请使用顶部的「重启 Codex」。")
+              : t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效");
+            const stopTitle = mainInstance
+              ? t("主 Codex 请使用侧栏的「停止 Codex」。")
+              : canStop
+                ? t("结束此 Codex 实例")
+                : t("实例当前未运行");
             return (
               <div className="multi-launch-instance" data-instance-id={instance.instanceId} key={instance.instanceId}>
                 <CxRow
@@ -8460,28 +8493,34 @@ function CodexMultiLaunchScreen({
                   icon={<CxStatusIcon tone={running ? "ok" : failure ? "danger" : "off"}>{instance.isMain ? <AgentIcon agent="codex" className="multi-launch-main-icon" /> : <span className="multi-launch-initial">{providerInitial(label)}</span>}</CxStatusIcon>}
                   title={label}
                 >
-                  <button
-                    className="cx-secondary"
-                    disabled={!multiLaunchInstanceCanRestart(instance) || pending}
-                    onClick={() => void actions.restartMultiLaunchInstance(instance)}
-                    title={t("重启此 Codex 实例；修改供应商或 Key 后重启才会生效")}
-                    type="button"
-                  >
-                    <RotateCcw />
-                    {pending ? t("处理中") : t("重启")}
-                  </button>
+                  <span title={mainInstance ? restartTitle : undefined}>
+                    <button
+                      className="cx-secondary"
+                      disabled={!canRestart || pending}
+                      onClick={() => void actions.restartMultiLaunchInstance(instance)}
+                      style={mainInstance ? { pointerEvents: "none" } : undefined}
+                      title={restartTitle}
+                      type="button"
+                    >
+                      <RotateCcw />
+                      {pending ? t("处理中") : t("重启")}
+                    </button>
+                  </span>
                   {/* 停止带文字，和「重启」并排；只有图标时看不出是什么。 */}
-                  <button
-                    aria-label={t("结束此 Codex 实例")}
-                    className="cx-secondary"
-                    disabled={!canStop || pending}
-                    onClick={() => void actions.stopMultiLaunchInstance(instance)}
-                    title={canStop ? t("结束此 Codex 实例") : t("实例当前未运行")}
-                    type="button"
-                  >
-                    <PowerOff />
-                    {t("停止")}
-                  </button>
+                  <span title={mainInstance ? stopTitle : undefined}>
+                    <button
+                      aria-label={stopTitle}
+                      className="cx-secondary"
+                      disabled={!canStop || pending}
+                      onClick={() => void actions.stopMultiLaunchInstance(instance)}
+                      style={mainInstance ? { pointerEvents: "none" } : undefined}
+                      title={stopTitle}
+                      type="button"
+                    >
+                      <PowerOff />
+                      {t("停止")}
+                    </button>
+                  </span>
                 </CxRow>
               </div>
             );
@@ -10765,7 +10804,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           emptyText={market?.status === "failed" ? market.message : t("正在读取拓展市场…")}
           hasScripts={marketScripts.length > 0}
           installedScripts={sortedMarketScripts.filter((script) => script.installed).map(marketRow)}
-          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(); }}
+          onInstalled={async () => { await actions.reloadUserScripts(); await actions.refreshScriptMarket(false, true); }}
           onOpenUrl={(url) => void actions.openExternalUrl(url)}
           packages={marketPackages}
           search={search}
@@ -10887,6 +10926,17 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
                   aria-label={t("切换模型后旧会话跟随新默认")}
                   checked={Boolean(form.threadModelFollowSwitchEnabled)}
                   onChange={(event) => onFormChange({ ...form, threadModelFollowSwitchEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
+            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("非官方登录时保留本地项目")}
+                  checked={Boolean(form.keepProjectsWithoutAccount)}
+                  onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
                   type="checkbox"
                 />
                 <ToggleVisual />
@@ -16336,6 +16386,10 @@ type ClaudeLocalConfig = {
   sessionSync?: boolean;
   listAllModels?: boolean;
   hideUnroutedModels?: boolean;
+  /** Code 页签是否和命令行共用 ~/.claude；不写按默认（共用）。 */
+  codeShareHome?: boolean;
+  /** 启动前把命令行建的会话加进 Desktop 的会话列表；不写按默认（开）。 */
+  importCliSessions?: boolean;
 };
 
 type ClaudeLocalStatus = {
@@ -16947,6 +17001,44 @@ function ClaudeLocalizationScreen(
               ]}
               value={local?.config.plan || "ultra"}
             />
+          </CxRow>
+          <CxRow
+            detail={(local?.config.codeShareHome ?? true)
+              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。")
+              : t("Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
+            title={t("和命令行共用 ~/.claude")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("和命令行共用 ~/.claude")}
+                checked={local?.config.codeShareHome ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, codeShareHome: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{(local?.config.codeShareHome ?? true) ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
+          </CxRow>
+          <CxRow
+            detail={t("启动 Claude 前，把终端、BaoCode 等命令行里建的会话加进左侧列表（已在列表里的、删过的不会重复加）。")}
+            title={t("显示命令行会话")}
+          >
+            <label className="switch-row compact">
+              <input
+                aria-label={t("显示命令行会话")}
+                checked={local?.config.importCliSessions ?? true}
+                disabled={localDisabled || !local?.supported}
+                onChange={(event) => {
+                  if (local) void configureLocal({ ...local.config, importCliSessions: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>{(local?.config.importCliSessions ?? true) ? t("已开启") : t("已关闭")}</span>
+              <ToggleVisual />
+            </label>
           </CxRow>
           <CxRow detail={t("启动 Claude 前同步 3p 模式与完整功能模式的 Code 会话")} title={t("会话同步")}>
             <div className="claude-l10n-actions">
@@ -17875,6 +17967,8 @@ function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "c
       return { label: t("加载中"), hint: t("正在 Codex 里加载") };
     case "failed":
       return { label: t("加载失败"), hint: t("拓展在 Codex 里运行出错") };
+    case "unknown":
+      return { label: t("状态待确认"), hint: t("请检查实际效果") };
     case "notLoaded":
       return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载拓展") };
   }
@@ -18195,7 +18289,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    agentCollaboration: t("连接 Codex、DeepSeek Harness 与 Claude Code，派发任务并查看结果。"),
+    agentCollaboration: t("连接 Codex、DeepSeek Harness、Claude Code 与 Google Antigravity，派发任务并查看结果。"),
     computerUse: t("复用 Codex 的 Computer Use，通过 MCP 接给 Claude Code、Claude Desktop 与 Codex。"),
     hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
     gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),

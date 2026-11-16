@@ -28,7 +28,9 @@ async function main() {
     page.on("pageerror", error => errors.push(error.message));
     await page.route("http://native-css.test/**", route => route.fulfill({
       contentType: route.request().url().endsWith(".css") ? "text/css" : "text/html",
-      body: route.request().url().endsWith(".css") ? common : `
+      body: route.request().url().endsWith(".css")
+        ? route.request().url().endsWith("live.css") ? `${common}.target { color: rgb(1,2,3) }${common}` : common
+        : `
         <link rel="stylesheet" id="base" href="/base.css">
         <style>.target { color: rgb(200,0,0) }</style>
         <link rel="stylesheet" id="lazy" href="/lazy.css">
@@ -108,6 +110,15 @@ async function main() {
     await page.evaluate(() => { document.querySelector("#replacement").media = ""; });
     await page.waitForTimeout(30);
     const removed = await page.evaluate(() => window.__codexPlusNativeStyleCache.metrics.removed);
+    const beforeAppend = await page.evaluate(() => ({ ...window.__codexPlusNativeStyleCache.metrics }));
+    await page.evaluate(() => {
+      window.styleRestoreCalls = 0;
+      window.originalInsertRule = CSSStyleSheet.prototype.insertRule;
+      CSSStyleSheet.prototype.insertRule = function (...args) {
+        window.styleRestoreCalls += 1;
+        return window.originalInsertRule.apply(this, args);
+      };
+    });
     await page.evaluate(() => {
       const link = document.createElement("link");
       const href = "app://-/assets/async/live.1234.css";
@@ -121,6 +132,14 @@ async function main() {
       document.head.append(link);
     });
     await page.waitForFunction(count => window.__codexPlusNativeStyleCache.metrics.removed > count, removed);
+    const afterAppend = await page.evaluate(() => ({ ...window.__codexPlusNativeStyleCache.metrics }));
+    assert.equal(afterAppend.incrementalPasses, beforeAppend.incrementalPasses + 1,
+      "appended native assets reuse the existing rule index");
+    assert.equal(afterAppend.indexed - beforeAppend.indexed, 23,
+      "only the new asset's rules and supported groups are indexed");
+    assert.equal(await page.evaluate(() => window.styleRestoreCalls), 0,
+      "appending native CSS never reinserts old rules");
+    await page.evaluate(() => { CSSStyleSheet.prototype.insertRule = window.originalInsertRule; });
     assert.deepEqual(await styles(), originalStyles, "lazy CSS loading preserves all visible declarations");
     await page.evaluate(() => document.querySelector("#live").remove());
     await page.waitForFunction(count => window.__codexPlusNativeStyleCache.metrics.removed === count, removed);

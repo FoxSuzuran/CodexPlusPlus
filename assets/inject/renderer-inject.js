@@ -3575,10 +3575,11 @@
     if (!codexPlusIsWindowsPlatform || !document.head) return;
     const nativeAsset = /^app:\/\/-\/assets\/(?:async\/)?[\w.-]+\.css$/;
     const removed = [];
+    const canonical = new Map();
     let previous = [];
     let timer = null;
     let disposed = false;
-    const metrics = { passes: 0, removed: 0, milliseconds: 0 };
+    const metrics = { passes: 0, incrementalPasses: 0, indexed: 0, removed: 0, milliseconds: 0 };
 
     const restore = () => {
       // shortcut: native asset rules are immutable; support CSSOM editing if the host adds it.
@@ -3598,22 +3599,29 @@
         media: sheet.media.mediaText,
         title: sheet.ownerNode?.title || "",
       }));
-    const same = (next) => next.length === previous.length && next.every((item, index) => {
+    const sameItem = (item, index) => {
       const old = previous[index];
       return item.sheet === old.sheet && item.disabled === old.disabled
         && item.media === old.media && item.title === old.title;
-    });
+    };
     const refresh = () => {
       timer = null;
       if (disposed) return;
       const next = snapshot();
-      if (same(next)) return;
+      if (next.length === previous.length && next.every(sameItem)) return;
       const started = performance.now();
-      restore();
+      const appended = previous.length > 0 && next.length > previous.length
+        && next.slice(0, previous.length).every(sameItem);
+      if (!appended) {
+        restore();
+        canonical.clear();
+      }
       const seen = new Set();
+      const retired = new Map();
       const visit = (owner, context) => {
         for (let index = owner.cssRules.length - 1; index >= 0; index -= 1) {
           const rule = owner.cssRules[index];
+          metrics.indexed += 1;
           if (rule.type === CSSRule.STYLE_RULE) {
             // Nested declarations have their own cascade; leave that subtree intact.
             if (rule.cssRules?.length) continue;
@@ -3624,6 +3632,12 @@
               owner.deleteRule(index);
             } else {
               seen.add(key);
+              const earlier = canonical.get(key);
+              if (earlier) {
+                if (!retired.has(earlier.owner)) retired.set(earlier.owner, new Set());
+                retired.get(earlier.owner).add(earlier.rule);
+              }
+              canonical.set(key, { owner, rule });
             }
           } else {
             const kind = rule.constructor.name;
@@ -3637,12 +3651,22 @@
         }
       };
       // Later identical rules dominate earlier ones, including !important declarations.
-      for (const { sheet, disabled, media, title } of next.slice().reverse()) {
+      for (const { sheet, disabled, media, title } of next.slice(appended ? previous.length : 0).reverse()) {
         if (disabled || media || title) continue;
         visit(sheet, []);
       }
+      // Appended immutable assets only retire matching earlier rules; keep the rest of the index.
+      for (const [owner, rules] of retired) {
+        for (let index = owner.cssRules.length - 1; index >= 0; index -= 1) {
+          const rule = owner.cssRules[index];
+          if (!rules.has(rule)) continue;
+          removed.push({ owner, index, text: rule.cssText });
+          owner.deleteRule(index);
+        }
+      }
       previous = next;
       metrics.passes += 1;
+      if (appended) metrics.incrementalPasses += 1;
       metrics.removed = removed.length;
       metrics.milliseconds += performance.now() - started;
     };
@@ -3676,6 +3700,7 @@
         clearInterval(poll);
         clearTimeout(timer);
         restore();
+        canonical.clear();
       },
     };
     schedule();

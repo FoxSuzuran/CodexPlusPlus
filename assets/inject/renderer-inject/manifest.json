@@ -18,7 +18,7 @@
     {
       "name": "11-native-style-cache.js",
       "description": "原生静态样式去重与样式表生命周期恢复",
-      "lines": 110
+      "lines": 135
     },
     {
       "name": "20-menu.js",

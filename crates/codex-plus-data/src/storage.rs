@@ -36,9 +36,13 @@ pub fn local_session_titles(
         if !db_path.exists() {
             continue;
         }
-        let Ok(db) = Connection::open(db_path) else {
+        let Ok(db) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
             continue;
         };
+        // 标题只用于展示，忙锁时沿用短 id，避免日志轮询积压。
+        if db.busy_timeout(std::time::Duration::from_millis(50)).is_err() {
+            continue;
+        }
         let Ok(query) = session_paging::session_query(&db) else {
             continue;
         };
@@ -61,6 +65,9 @@ pub fn local_session_titles(
                     titles.entry(id).or_insert_with(|| title.to_string());
                 }
             }
+        }
+        if titles.len() == wanted.len() {
+            break;
         }
     }
     titles
@@ -2040,6 +2047,26 @@ pub(crate) fn json_to_sql_value(value: &Value) -> SqlValue {
 #[cfg(test)]
 mod local_session_title_tests {
     use super::*;
+
+    #[test]
+    fn locked_title_database_does_not_stall_or_prevent_other_database_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let busy = temp.path().join("busy.sqlite");
+        let available = temp.path().join("available.sqlite");
+        let writer = Connection::open(&busy).unwrap();
+        let second = Connection::open(&available).unwrap();
+        for db in [&writer, &second] {
+            db.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, updated_at_ms INTEGER, rollout_path TEXT);
+                INSERT INTO threads VALUES ('t-1', 'available', 1, '');").unwrap();
+        }
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let started = std::time::Instant::now();
+        let titles = local_session_titles(&[busy, available], &["t-1".to_string()]);
+        let elapsed = started.elapsed();
+        writer.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(titles.get("t-1").map(String::as_str), Some("available"));
+        assert!(elapsed < std::time::Duration::from_secs(1), "title lookup stalled for {elapsed:?}");
+    }
 
     #[test]
     fn looks_up_titles_by_thread_id_across_databases() {

@@ -374,7 +374,7 @@ async fn check_turn(store: &Store, id: &str, peek: bool) -> anyhow::Result<Queue
 }
 
 /// 协作数据库是同步 SQLite（忙时最多等 10 秒）：放到 blocking 线程执行，不占 tokio 工作线程。
-async fn on_store<T: Send + 'static>(
+pub(super) async fn on_store<T: Send + 'static>(
     store: &Store,
     call: impl FnOnce(&Store) -> anyhow::Result<T> + Send + 'static,
 ) -> anyhow::Result<T> {

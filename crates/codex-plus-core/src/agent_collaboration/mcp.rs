@@ -346,7 +346,8 @@ async fn wait_task(store: &Store, arguments: Value) -> anyhow::Result<Value> {
     let arguments = wait_arguments(arguments)?;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(arguments.timeout_ms);
     loop {
-        let task = store.task(&arguments.task_id)?;
+        let task_id = arguments.task_id.clone();
+        let task = executor::on_store(store, move |store| store.task(&task_id)).await?;
         if is_terminal(&task.status) {
             return Ok(wait_snapshot(task, false));
         }
@@ -547,6 +548,28 @@ mod tests {
         let error = call_tool(&store, "delegate_task", delegate_arguments(&directory)).unwrap_err();
         assert!(error.to_string().contains("启用"));
         assert_eq!(store.snapshot().unwrap()["tasks"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn waiting_on_a_busy_database_keeps_the_async_runtime_responsive() {
+        let (directory, store) = configured_store();
+        let task = store
+            .submit(delegation_request(&store, "delegate_to_codex", delegate_arguments(&directory)).unwrap())
+            .unwrap();
+        let writer = rusqlite::Connection::open(store.path()).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let wait_store = store.clone();
+        let wait = tokio::spawn(async move {
+            wait_task(&wait_store, json!({"taskId":task.id,"timeoutMs":0})).await
+        });
+        // 单线程 runtime 上让数据库读取先执行，锁被占用时定时器仍应准时获得调度。
+        let started = std::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let elapsed = started.elapsed();
+        writer.execute_batch("ROLLBACK").unwrap();
+        let response = wait.await.unwrap().unwrap();
+        assert!(elapsed < Duration::from_secs(1), "database blocked the runtime for {elapsed:?}");
+        assert_eq!(response["pending"], true);
     }
 
     #[tokio::test]

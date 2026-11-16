@@ -8815,7 +8815,14 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
 /// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
 /// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
 #[tauri::command]
-pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+pub async fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || load_request_flow_blocking(limit)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("读取请求流失败：{error}"), json!({ "entries": [] })),
+    }
+}
+
+fn load_request_flow_blocking(limit: Option<usize>) -> CommandResult<Value> {
     let limit = limit.unwrap_or(30).clamp(1, 200);
     match codex_plus_core::request_log::read_recent_request_logs(limit) {
         Ok(entries) => ok(
@@ -8830,7 +8837,22 @@ pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn load_request_logs(
+pub async fn load_request_logs(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+    agent: Option<String>,
+    relay_id: Option<String>,
+    model: Option<String>,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        load_request_logs_blocking(limit, since_ms, agent, relay_id, model)
+    }).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("读取请求日志失败：{error}"), json!({ "entries": [] })),
+    }
+}
+
+fn load_request_logs_blocking(
     limit: Option<usize>,
     since_ms: Option<u64>,
     agent: Option<String>,
@@ -8898,9 +8920,10 @@ pub fn load_request_logs(
 }
 
 #[tauri::command]
-pub fn clear_request_logs() -> CommandResult<Value> {
-    match codex_plus_core::request_log::clear_request_logs() {
-        Ok(()) => ok("请求日志已清空。", json!({})),
+pub async fn clear_request_logs() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(codex_plus_core::request_log::clear_request_logs).await {
+        Ok(Ok(())) => ok("请求日志已清空。", json!({})),
+        Ok(Err(error)) => failed(&format!("清空请求日志失败：{error}"), json!({})),
         Err(error) => failed(&format!("清空请求日志失败：{error}"), json!({})),
     }
 }

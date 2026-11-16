@@ -7178,7 +7178,11 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const filterRef = useRef(filterArgs);
   filterRef.current = filterArgs;
   const latestLoad = useRef(0);
+  const loadsInFlight = useRef(0);
+  useEffect(() => () => { latestLoad.current += 1; }, []);
   const load = async (silent = false) => {
+    if (silent && loadsInFlight.current > 0) return;
+    loadsInFlight.current += 1;
     const id = ++latestLoad.current;
     if (!silent) setLoading(true);
     try {
@@ -7193,9 +7197,10 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         setError(result.message || t("读取请求日志失败。"));
       }
     } catch (cause) {
-      setError(String(cause));
+      if (id === latestLoad.current) setError(String(cause));
     } finally {
-      setLoading(false);
+      loadsInFlight.current -= 1;
+      if (id === latestLoad.current) setLoading(false);
     }
   };
 
@@ -7206,10 +7211,15 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const timer = window.setInterval(() => {
+    const refresh = () => {
       if (!document.hidden) void load(true);
-    }, 1000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(refresh, 1000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [autoRefresh]);
 
   const clearLogs = async () => {
@@ -7218,7 +7228,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     try {
       const result = await invoke<{ status: Status; message: string }>("clear_request_logs");
       if (result.status !== "ok") setError(result.message);
-      await load(true);
+      await load();
     } catch (cause) {
       setError(String(cause));
     } finally {

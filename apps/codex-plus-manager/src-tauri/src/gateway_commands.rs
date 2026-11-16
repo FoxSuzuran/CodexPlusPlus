@@ -2447,7 +2447,16 @@ mod tests {
 
 /// 用量汇总。`range`：`today` / `7d` / `30d` / `all`。
 #[tauri::command]
-pub fn load_gateway_usage(
+pub async fn load_gateway_usage(
+    range: String,
+) -> CommandResult<Option<codex_plus_core::gateway::usage::UsageSummary>> {
+    match tauri::async_runtime::spawn_blocking(move || load_gateway_usage_blocking(range)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("读取用量失败：{error}"), None),
+    }
+}
+
+fn load_gateway_usage_blocking(
     range: String,
 ) -> CommandResult<Option<codex_plus_core::gateway::usage::UsageSummary>> {
     use codex_plus_core::gateway::usage::{UsageStore, local_day};

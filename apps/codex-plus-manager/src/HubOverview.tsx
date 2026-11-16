@@ -43,17 +43,26 @@ export function useTodayUsage(): UsageSummary | null {
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
-      invoke<{ status: string } & Partial<UsageSummary>>("load_gateway_usage", { range: "today" })
-        .then((result) => {
-          if (!cancelled && result.status === "ok" && result.totals) setSummary(result as UsageSummary);
-        })
-        .catch(() => undefined);
+    let pending = false;
+    const load = async () => {
+      if (cancelled || pending || document.hidden) return;
+      pending = true;
+      try {
+        const result = await invoke<{ status: string } & Partial<UsageSummary>>("load_gateway_usage", { range: "today" });
+        if (!cancelled && result.status === "ok" && result.totals) setSummary(result as UsageSummary);
+      } catch {
+        // 读取失败时保留上次统计。
+      } finally {
+        pending = false;
+      }
+    };
     void load();
     const timer = window.setInterval(load, USAGE_REFRESH_MS);
+    document.addEventListener("visibilitychange", load);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", load);
     };
   }, []);
   return summary;

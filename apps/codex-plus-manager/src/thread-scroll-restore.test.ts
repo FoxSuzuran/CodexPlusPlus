@@ -115,6 +115,60 @@ test("a newly mounted thread restores synchronously, before timer-driven scans",
   flushTimers();
   assert.equal(scroller.scrollTop, reading.top);
 });
+test("one restoration pass resolves the current scroller once, without retaining it for the next pass", () => {
+  const { context, scroller } = fixture(reading);
+  context.codexPlusBackendSettingsLoaded = true;
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+  let lookups = 0;
+  context.currentThreadScroller = () => { lookups++; return scroller; };
+  context.syncThreadScrollState();
+  assert.equal(lookups, 1);
+  assert.equal(scroller.scrollTop, reading.top);
+  lookups = 0;
+  context.currentThreadScroller = () => { lookups++; return null; };
+  context.syncThreadScrollState();
+  assert.equal(lookups, 1);
+  assert.equal(context.threadScrollRuntime().activeScroller, null);
+});
+test("mutation restoration ignores unrelated chrome and still runs synchronously for native mounts", () => {
+  const context = vm.createContext({});
+  const inside = {}, outside = {};
+  const runtime = { activeScroller: { isConnected: true, contains: (node: object) => node === inside } };
+  let calls = 0, enabled = true;
+  Object.assign(context, {
+    threadScrollRuntime: () => runtime,
+    threadScrollRestoreEnabled: () => enabled,
+    syncThreadScrollState: () => { calls++; },
+  });
+  vm.runInContext(extract("syncThreadScrollStateForMutations"), context);
+  const run = (target: object, addedNodes: object[] = []) => context.syncThreadScrollStateForMutations([{ target, addedNodes }]);
+  run(outside);
+  assert.equal(calls, 0);
+  run(inside);
+  assert.equal(calls, 1);
+  run(outside, [{ nodeType: 1, matches: () => false, querySelector: () => ({}) }]);
+  assert.equal(calls, 2);
+  runtime.activeScroller.isConnected = false;
+  run(outside);
+  assert.equal(calls, 3);
+  enabled = false;
+  run(inside);
+  assert.equal(calls, 3);
+});
+test("hidden restoration does not query layout, while disabling it still removes listeners", () => {
+  const { context, scroller } = fixture(reading);
+  context.codexPlusBackendSettingsLoaded = true;
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = true;
+  context.syncThreadScrollState();
+  context.document.visibilityState = "hidden";
+  let lookups = 0;
+  context.currentThreadScroller = () => { lookups++; return scroller; };
+  context.syncThreadScrollState();
+  assert.equal(lookups, 0);
+  context.codexPlusBackendSettings.codexAppThreadScrollRestore = false;
+  context.syncThreadScrollState();
+  assert.equal(context.threadScrollRuntime().activeScroller, null);
+});
 
 test("native middle-position compensation is corrected in the scroll frame, but user intent wins", () => {
   const { context, scroller, scrollListeners, flushTimers } = fixture(reading);

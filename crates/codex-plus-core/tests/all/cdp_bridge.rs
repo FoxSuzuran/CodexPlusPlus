@@ -4936,6 +4936,47 @@ if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) proces
 }
 
 #[test]
+fn bridge_startup_reply_is_healthy_without_extending_failed_or_unknown_requests() {
+    let install = serde_json::to_string(&bridge::build_bridge_script(BRIDGE_BINDING_NAME)).unwrap();
+    let health = serde_json::to_string(bridge::bridge_health_check_script()).unwrap();
+    let harness = format!(
+        r#"
+const assert = require("node:assert/strict"), vm = require("node:vm");
+let now = 100000, request;
+const window = {{ {binding}: text => {{ request = JSON.parse(text); }} }};
+const context = vm.createContext({{ window, Date: {{ now: () => now }} }});
+vm.runInContext({install}, context);
+const healthy = () => vm.runInContext({health}, context);
+window.__codexSessionDeleteBridge("/diagnostics/log", {{}});
+now += 6000;
+assert.equal(healthy(), false, "startup grace expired before the first heartbeat");
+window.__codexSessionDeleteResolve(request.id, {{ status: "ok" }});
+assert.equal(healthy(), true, "a real startup reply keeps the bridge healthy");
+const succeeded = window.__codexPlusBridgeHealth.lastSuccessAt;
+now += 16000;
+window.__codexSessionDeleteResolve(request.id, {{ status: "ok" }});
+assert.equal(window.__codexPlusBridgeHealth.lastSuccessAt, succeeded, "stale callback cannot extend health");
+window.__codexSessionDeleteBridge("/backend/status", {{}});
+window.__codexSessionDeleteResolve(request.id, {{ status: "failed" }});
+assert.equal(healthy(), false, "failed replies do not extend health");
+window.__codexSessionDeleteBridge("/backend/status", {{}});
+assert.equal(healthy(), false, "an unanswered request is not a success");
+"#,
+        binding = BRIDGE_BINDING_NAME,
+    );
+    let output = Command::new("node")
+        .arg("-e")
+        .arg(harness)
+        .output()
+        .expect("node should run the startup bridge health harness");
+    assert!(
+        output.status.success(),
+        "startup bridge health harness failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn bridge_result_expressions_json_escape_inputs() {
     let resolve = bridge::resolve_bridge_expression("request\"1", &json!({"status": "ok"}))
         .expect("resolve expression should build");

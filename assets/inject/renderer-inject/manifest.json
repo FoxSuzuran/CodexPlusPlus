@@ -73,7 +73,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 2065
+      "lines": 2079
     },
     {
       "name": "61-plugin-market-ui.js",

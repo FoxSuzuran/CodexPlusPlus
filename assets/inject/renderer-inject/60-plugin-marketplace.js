@@ -1099,9 +1099,9 @@
     return { session_id: locationThreadId(), title: "" };
   }
 
-  function currentThreadScrollSessionId() {
+  function currentThreadScrollSessionId(scroller = currentThreadScroller()) {
     // 侧栏选中项可能晚于历史挂载更新，只读取当前滚动容器内的会话标记。
-    const marked = currentThreadScroller()?.querySelector("[data-above-composer-conversation-id]");
+    const marked = scroller?.querySelector("[data-above-composer-conversation-id]");
     const mountedId = normalizedCodexThreadUuid(marked?.getAttribute("data-above-composer-conversation-id"));
     if (mountedId) return mountedId;
     return validThreadScrollSessionKey(currentSessionRef().session_id)
@@ -1548,15 +1548,16 @@
     }, codexThreadScrollSaveThrottleMs);
   }
 
-  function restoreThreadScrollPosition(sessionId) {
+  function restoreThreadScrollPosition(sessionId, scroller) {
     const runtime = threadScrollRuntime();
     const key = validThreadScrollSessionKey(sessionId);
     if (!threadScrollRestoreEnabled() || !key || runtime.activeSessionId !== key
-        || currentThreadScrollSessionId() !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+        || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    scroller = scroller === undefined ? currentThreadScroller() : scroller;
+    if (currentThreadScrollSessionId(scroller) !== key) return;
     const lock = activeThreadScrollRestoreLock(key);
     const entry = lock || readThreadScrollEntries()[key];
     if (!validThreadScrollEntry(entry)) return;
-    const scroller = currentThreadScroller();
     if (!scroller) return;
     bindThreadScrollListener(scroller);
     const targetTop = threadScrollTargetTop(scroller, entry);
@@ -1604,7 +1605,9 @@
 
   function syncThreadScrollState(forceRestore = false) {
     const runtime = threadScrollRuntime();
-    const nextSessionId = currentThreadScrollSessionId();
+    if (document.visibilityState === "hidden" && threadScrollRestoreEnabled()) return;
+    const nextScroller = currentThreadScroller();
+    const nextSessionId = currentThreadScrollSessionId(nextScroller);
     if (!nextSessionId) return;
     if (!threadScrollRestoreEnabled()) {
       runtime.resumeSessionId = "";
@@ -1614,9 +1617,7 @@
       runtime.activeSessionId = nextSessionId;
       return;
     }
-    if (document.visibilityState === "hidden") return;
     if (runtime.resumeSessionId && runtime.resumeSessionId !== nextSessionId) runtime.resumeSessionId = "";
-    const nextScroller = currentThreadScroller();
     bindThreadScrollListener(nextScroller);
     // 页面仍在挂载时保留导航待处理状态，容器出现后的补扫再恢复一次。
     if (!nextScroller) return;
@@ -1624,7 +1625,7 @@
       runtime.resumeSessionId = "";
       // 先建立恢复锁，再允许后续 scroll 事件保存重新展开后的布局。
       scheduleThreadScrollRestore(nextSessionId);
-      restoreThreadScrollPosition(nextSessionId);
+      restoreThreadScrollPosition(nextSessionId, nextScroller);
     }
     if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
     if (runtime.activeSessionId !== nextSessionId) {
@@ -1637,12 +1638,25 @@
       runtime.userScrollIntentUntil = 0;
       if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
       scheduleThreadScrollRestore(nextSessionId);
-      restoreThreadScrollPosition(nextSessionId);
+      restoreThreadScrollPosition(nextSessionId, nextScroller);
       return;
     }
     runtime.activeSessionId = nextSessionId;
     if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
-    if (activeThreadScrollRestoreLock(nextSessionId)) restoreThreadScrollPosition(nextSessionId);
+    if (activeThreadScrollRestoreLock(nextSessionId)) restoreThreadScrollPosition(nextSessionId, nextScroller);
+  }
+
+  function syncThreadScrollStateForMutations(mutations) {
+    if (!threadScrollRestoreEnabled()) return;
+    const scroller = threadScrollRuntime().activeScroller;
+    // Chrome/extension changes do not affect the reading position; native mounts still restore before paint.
+    if (!scroller?.isConnected || mutations.some((mutation) =>
+      scroller === mutation.target || scroller.contains(mutation.target)
+      || [...mutation.addedNodes].some((node) => node.nodeType === 1
+        && (node.matches(".thread-scroll-container, [data-above-composer-conversation-id]")
+          || node.querySelector(".thread-scroll-container, [data-above-composer-conversation-id]"))))) {
+      syncThreadScrollState();
+    }
   }
 
   function scheduleThreadScrollSyncAttempts(forceRestore = true) {

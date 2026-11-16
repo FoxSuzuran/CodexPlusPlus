@@ -128,6 +128,8 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
     window.__codexSessionDeleteCallbacks.delete(id);
+    // Any successful real reply proves the bridge is alive, including startup diagnostics before the first heartbeat.
+    if (result?.status === "ok") window.__codexPlusBridgeHealth.lastSuccessAt = Date.now();
     callback.resolve(result);
   }};
   window.__codexSessionDeleteReject = (id, message) => {{

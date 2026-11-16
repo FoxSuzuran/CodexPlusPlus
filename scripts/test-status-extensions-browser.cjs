@@ -28,7 +28,7 @@ async function main() {
       const threadId = "12345678-1234-1234-1234-123456789abc";
       const check = (condition, message) => { if (!condition) throw new Error(message); };
       const mount = (kind, late = false) => {
-        const timers = new Map(), cleanups = [];
+        const timers = new Map(), cleanups = [], subscriptions = new Set();
         let next = 0, resolve;
         const pending = new Promise(done => { resolve = done; });
         const response = kind === "usage"
@@ -46,6 +46,8 @@ async function main() {
             cleanups.push(render({ container: document.getElementById(slot === "composer.above" ? "above" : "below") }));
           },
           effect(fn) { cleanups.push(fn()); },
+          onScan(fn) { subscriptions.add(fn); return () => subscriptions.delete(fn); },
+          on(_event, fn) { subscriptions.add(fn); return () => subscriptions.delete(fn); },
           provide() {},
         };
         const api = new Function("codexPlus", "window", "setTimeout", "clearTimeout", sources[kind] + (kind === "usage"
@@ -53,7 +55,7 @@ async function main() {
           : "\nreturn { tick: codexPlusProxyStatusRefresh, render: codexPlusProxyStatusRender, state: codexPlusProxyStatusState };"))({
           extension: fn => fn(ctx), currentSession: () => ({ id: threadId }), currentSessionId: () => threadId,
         }, clock, clock.setTimeout, clock.clearTimeout);
-        return { api, timers, resolve: () => resolve(response), stop: () => [...cleanups].reverse().forEach(fn => fn?.()) };
+        return { api, timers, subscriptions, resolve: () => resolve(response), stop: () => [...cleanups].reverse().forEach(fn => fn?.()) };
       };
       let toggles = 0, rebuilds = 0, lateResponses = 0;
       for (const kind of ["usage", "proxy"]) {
@@ -119,7 +121,8 @@ async function main() {
           await runtime.api.tick();
           check(!document.getElementById(id), `${kind} removes status node on disable`);
           check(!document.querySelector(`style[data-codex-plus-ext="${owner}"]`), `${kind} removes style on disable`);
-          check(runtime.timers.size === 0 && !runtime.api.state.observer, `${kind} releases timers and observer`);
+          check(runtime.timers.size === 0 && !runtime.api.state.observer && runtime.subscriptions.size === 0,
+            `${kind} releases timers, observer and subscriptions`);
           toggles++;
         }
         const runtime = mount(kind, true);

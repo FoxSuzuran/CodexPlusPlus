@@ -1331,9 +1331,9 @@ pub fn responses_to_chat_completions_with_options(
     remove_unsupported_native_search(&mut body)?;
     validate_chat_attachments(&body)?;
     expand_local_compaction_history(&mut body);
-    if input_has_native_compaction(&body) {
-        return Err(NativeCompactionUnsupported::history().into());
-    }
+    // #3106：剩下的是原生上游签发的加密压缩项，Chat 协议无法表达，换成占位说明，其余历史照常转换。
+    // 代理入口已按候选决定过是切换还是降级（见 open_responses_proxy_request_once），这里兜底。
+    degrade_native_compaction_history(&mut body);
     // agent_message 的 encrypted_content 片段在 multi_agent v2 里实际承载明文任务；
     // 转换时按文本透传，opaque 内容则明确失败，避免静默发空任务。
     let mut result = json!({});
@@ -1877,6 +1877,8 @@ pub struct UpstreamProxyResponse {
     /// 上游请求是否使用了 Responses exec 兼容包装。
     pub exec_adapted: bool,
     pub(crate) exec_outcome: Option<crate::responses_exec_transport::ExecOutcome>,
+    /// 原生 WS 的准备结果；HTTP 调用始终为 None。
+    pub(crate) websocket: Option<Box<crate::responses_websocket::PreparedWebsocket>>,
     pub response: Option<reqwest::Response>,
 }
 
@@ -1986,7 +1988,7 @@ impl UpstreamProxyResponse {
     }
 
     pub fn is_success(&self) -> bool {
-        (200..300).contains(&self.status_code)
+        (200..300).contains(&self.status_code) || self.websocket.is_some()
     }
 
     pub async fn read_body(&mut self) -> anyhow::Result<Vec<u8>> {
@@ -2021,7 +2023,19 @@ pub fn upstream_header_timeout() -> Duration {
 }
 
 pub fn upstream_stream_header_timeout() -> Duration {
-    UPSTREAM_STREAM_HEADER_TIMEOUT
+    stream_header_timeout()
+}
+
+/// 流式请求等上游响应头的上限：默认 120s（[`UPSTREAM_STREAM_HEADER_TIMEOUT`]），
+/// 可在 settings.json 写 `upstreamStreamHeaderTimeoutSecs` 调大（#3130：长推理模型
+/// 首字超过 120s 会被判超时）。下限 120（兜底真正卡死的连接）、上限 3600。
+pub fn stream_header_timeout() -> Duration {
+    let configured = SettingsStore::default()
+        .load()
+        .ok()
+        .and_then(|settings| settings.upstream_stream_header_timeout_secs);
+    let secs = configured.unwrap_or(UPSTREAM_STREAM_HEADER_TIMEOUT.as_secs());
+    Duration::from_secs(secs.clamp(UPSTREAM_STREAM_HEADER_TIMEOUT.as_secs(), 3600))
 }
 
 pub fn upstream_http_client() -> anyhow::Result<reqwest::Client> {
@@ -3077,6 +3091,7 @@ fn native_compaction_unsupported_result(
             request_trace: None,
             exec_adapted: false,
             exec_outcome: None,
+            websocket: None,
             response: None,
         })
     } else {
@@ -3114,6 +3129,41 @@ fn expand_compaction_item(item: &Value) -> Option<Value> {
         "role": "user",
         "content": [{ "type": "input_text", "text": text }]
     }))
+}
+
+/// 原生压缩项（#3106）降级成的占位说明：写给模型看，措辞与 [`COMPACTION_REPLAY_PREFIX`] 一样用英文。
+const NATIVE_COMPACTION_PLACEHOLDER: &str = "[Context note] The earlier part of this conversation was compacted by a different provider. That compaction summary is stored in an encrypted format that cannot be read under the current protocol, so the earlier context has been omitted. Continue from the remaining conversation, and ask the user if essential earlier details are missing.";
+
+/// 把展开本地摘要后仍留在 input 里的原生 compaction 项（Responses 原生上游签发的 Fernet 密文，
+/// 网关无法解密）换成一条 user 占位说明，返回替换了几项。
+/// 位置不变：compaction 项本来就代替压缩前的整段历史，占位说明留在原处，前后顺序与配对不受影响。
+fn degrade_native_compaction_history(body: &mut Value) -> usize {
+    let placeholder = || {
+        json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": NATIVE_COMPACTION_PLACEHOLDER }]
+        })
+    };
+    let is_native =
+        |item: &Value| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE);
+    let mut degraded = 0;
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items.iter_mut() {
+                if is_native(item) {
+                    *item = placeholder();
+                    degraded += 1;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) if is_native(input) => {
+            *input = json!([placeholder()]);
+            degraded = 1;
+        }
+        _ => {}
+    }
+    degraded
 }
 
 fn expand_local_compaction_history(body: &mut Value) {
@@ -3597,6 +3647,7 @@ fn extension_rejected_response(reason: &str) -> anyhow::Result<UpstreamProxyResp
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: None,
     })
 }
@@ -3666,6 +3717,7 @@ async fn open_responses_proxy_request_once(
                 request_trace: None,
                 exec_adapted: false,
                 exec_outcome: None,
+                websocket: None,
                 response: None,
             });
         }
@@ -3707,6 +3759,10 @@ async fn open_responses_proxy_request_once(
         (binding.relay.clone(), vec![binding.relay.clone()])
     } else if let Some(route) = &model_route {
         (route.relay.clone(), vec![route.relay.clone()])
+    } else if let Some(id) = crate::responses_websocket::pinned_relay() {
+        let relay = settings.relay_profiles.iter().find(|relay| relay.id == id)
+            .cloned().ok_or(crate::responses_websocket::Unsupported("WS 续接的原供应商已移除，请使用完整上下文开始新响应"))?;
+        (relay.clone(), vec![relay])
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
         let mut relays = vec![relay.clone()];
@@ -3785,6 +3841,9 @@ async fn open_responses_proxy_request_once(
         }
         let has_more_candidates = attempt + 1 < relay_count;
         validate_upstream(&relay)?;
+        if crate::responses_websocket::active() && relay.protocol != crate::settings::RelayProtocol::Responses {
+            return Err(crate::responses_websocket::HttpFallback("此上游需要 HTTP/SSE 兼容传输").into());
+        }
         // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
         let official_member =
             crate::official_login::member_uses_official_login_transport(&relay);
@@ -3878,6 +3937,20 @@ async fn open_responses_proxy_request_once(
             .is_some_and(|candidate| candidate.exec_adapted);
         if let Some(candidate) = local_candidate {
             logical_body = candidate.body;
+        }
+        // #3106：Responses 原生上游签发的加密压缩项（Fernet 密文），Chat / Anthropic 桥接读不了。
+        // 还能切到下一个候选时保持原来的做法（交给后面也许能读它的 Responses 上游）；
+        // 已经没得切（最后一个候选、聚合 / 强制上游不切换）时换成占位说明继续发，
+        // 否则这段历史每轮都要重放，每条后续消息都 400，会话永久锁死。
+        let native_compaction_degraded = if relay.requires_protocol_proxy_conversion()
+            && !(has_more_candidates && !strict_aggregate_model)
+        {
+            degrade_native_compaction_history(&mut logical_body)
+        } else {
+            0
+        };
+        if native_compaction_degraded > 0 {
+            log_foreign_compaction_dropped(&relay, native_compaction_degraded, "bridge_placeholder");
         }
         let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
             match upstream_request_parts(
@@ -3975,7 +4048,8 @@ async fn open_responses_proxy_request_once(
             }
         }
         // 按这次实际发出的请求算：换到别的候选、压缩项没被去掉时不再标出。
-        foreign_compaction_dropped = compaction_dropped_now;
+        // 桥接换成占位说明的原生压缩项（#3106）同样丢了压缩前的上下文，一并标出。
+        foreign_compaction_dropped = compaction_dropped_now || native_compaction_degraded > 0;
         // #2917：这家（供应商 + Key / 账号）的这个模型拒收过推理项的明文 content，提前清空。
         // 拒收重发时请求从头重建，也是靠这里清空。
         if foreign_reasoning_handled {
@@ -4057,6 +4131,67 @@ async fn open_responses_proxy_request_once(
         request_trace.bind_upstream_model(&upstream_body);
         if let Some(id) = live_request_id {
             crate::request_log::update_running_route(id, &request_trace, is_stream);
+        }
+        if crate::responses_websocket::active() {
+            if compaction || experimental_local_compaction || forced_adapted || local_exec_adapted {
+                return Err(crate::responses_websocket::HttpFallback("此请求需要 HTTP 压缩或 exec 协议转换").into());
+            }
+            let builder = build_responses_upstream_request(
+                &relay, &endpoint, &upstream_body, wire_api, false,
+                original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+            )?;
+            let mut prepared = crate::responses_websocket::prepare(
+                &relay.id, builder, upstream_body.clone(), header_timeout,
+                official_credential.as_ref().and_then(|credential| credential.account_scope.as_deref()),
+            ).await;
+            // 尚未提交 response.create，401 刷新与握手失败换候选仍是安全的。
+            if official_member && matches!(&prepared, Ok(crate::responses_websocket::PreparedUpstream::Rejected(response)) if response.status() == reqwest::StatusCode::UNAUTHORIZED) {
+                if let Ok(credential) = crate::official_login::resolve_official_credential(&relay, true).await {
+                    official_credential = Some(credential);
+                    let builder = build_responses_upstream_request(
+                        &relay, &endpoint, &upstream_body, wire_api, false,
+                        original_user_agent, beta_features, session_headers, official_credential.as_ref(),
+                    )?;
+                    request_attempt += 1;
+                    prepared = crate::responses_websocket::prepare(
+                        &relay.id, builder, upstream_body, header_timeout,
+                        official_credential.as_ref().and_then(|credential| credential.account_scope.as_deref()),
+                    ).await;
+                }
+            }
+            let (websocket, response, status_code) = match prepared {
+                Ok(crate::responses_websocket::PreparedUpstream::Websocket(mut ready)) => {
+                    if !strict_aggregate_model { ready.rotation = Some(settings.clone()); }
+                    (Some(ready), None, 101)
+                }
+                Ok(crate::responses_websocket::PreparedUpstream::Rejected(response)) => {
+                    let status = response.status().as_u16();
+                    if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
+                    if has_more_candidates && matches!(status, 401 | 403 | 429 | 500..=599) {
+                        retry_reasons.push(format!("WS handshake {status}"));
+                        continue;
+                    }
+                    // HTTP 200 不是升级成功，不能在网关中当成成功候选。
+                    (None, Some(response), if (200..300).contains(&status) { 502 } else { status })
+                }
+                Err(error) if error.is::<crate::responses_websocket::Unsupported>() || error.is::<crate::responses_websocket::HttpFallback>() => return Err(error),
+                Err(error) => {
+                    if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
+                    if has_more_candidates {
+                        retry_reasons.push("WS handshake transport failure".into());
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
+            request_trace.attempts = request_attempt as u32;
+            fill_retry_trace(&mut request_trace, &retry_reasons, foreign_compaction_dropped);
+            return Ok(UpstreamProxyResponse {
+                status_code, content_type: "application/json".into(), is_stream: true, wire_api,
+                upstream_reasoning_included: false, compaction: false, native_compaction_passthrough: false,
+                buffered_body: None, stream_prefix: Vec::new(), request_trace: Some(request_trace),
+                exec_adapted: false, exec_outcome: None, websocket, response,
+            });
         }
         let mut key = None;
         let mut exec_adapted = forced_adapted;
@@ -4372,7 +4507,7 @@ async fn open_responses_proxy_request_once(
                 status_code: code, content_type: response_type, is_stream: valid && stream_response,
                 wire_api, compaction: false, native_compaction_passthrough: valid && success,
                 upstream_reasoning_included,
-                buffered_body: Some(body), exec_adapted: false, exec_outcome: None, response: None,
+                buffered_body: Some(body), exec_adapted: false, exec_outcome: None, websocket: None, response: None,
                 stream_prefix: Vec::new(),
                 request_trace: None,
             });
@@ -4417,6 +4552,7 @@ async fn open_responses_proxy_request_once(
                     request_trace: None,
                     exec_adapted: false,
                     exec_outcome: None,
+                    websocket: None,
                     response: None,
                 });
             }
@@ -4442,6 +4578,7 @@ async fn open_responses_proxy_request_once(
                             request_trace: None,
                             exec_adapted: false,
                             exec_outcome: None,
+                            websocket: None,
                             response: None,
                         });
                     }
@@ -4462,6 +4599,7 @@ async fn open_responses_proxy_request_once(
                             request_trace: None,
                             exec_adapted: false,
                             exec_outcome: None,
+                            websocket: None,
                             response: None,
                         });
                     }
@@ -4490,6 +4628,7 @@ async fn open_responses_proxy_request_once(
                         request_trace: None,
                         exec_adapted: false,
                         exec_outcome: None,
+                        websocket: None,
                         response: None,
                     });
                 }
@@ -4507,6 +4646,7 @@ async fn open_responses_proxy_request_once(
                         request_trace: None,
                         exec_adapted: false,
                         exec_outcome: None,
+                        websocket: None,
                         response: None,
                     });
                 }
@@ -4531,6 +4671,7 @@ async fn open_responses_proxy_request_once(
                     request_trace: None,
                     exec_adapted: false,
                     exec_outcome: None,
+                    websocket: None,
                     response: None,
                 });
             }
@@ -4849,6 +4990,7 @@ async fn open_responses_proxy_request_once(
                         request_trace: Some(request_trace),
                         exec_adapted: false,
                         exec_outcome: None,
+                        websocket: None,
                         response: None,
                     });
                 }
@@ -5032,6 +5174,7 @@ async fn open_responses_proxy_request_once(
             exec_outcome: (exec_adapted && (200..300).contains(&status_code)).then(|| {
                 crate::responses_exec_transport::ExecOutcome::new(key, adapted_tools, &settings)
             }),
+            websocket: None,
             response: Some(upstream),
         });
     }
@@ -5433,6 +5576,7 @@ pub async fn open_models_proxy_request(
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: Some(upstream),
     })
 }
@@ -5493,6 +5637,7 @@ pub async fn open_audio_transcriptions_proxy_request(
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: Some(upstream),
     })
 }
@@ -5672,6 +5817,7 @@ async fn open_image_request_with_relay(
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: Some(upstream),
     })
 }
@@ -5756,13 +5902,14 @@ async fn open_official_image_proxy_request(
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: Some(upstream),
     })
 }
 
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
-        UPSTREAM_STREAM_HEADER_TIMEOUT
+        stream_header_timeout()
     } else {
         UPSTREAM_HEADER_TIMEOUT
     }
@@ -5843,6 +5990,7 @@ pub async fn open_chat_completions_proxy_request(
         request_trace: None,
         exec_adapted: false,
         exec_outcome: None,
+        websocket: None,
         response: Some(upstream),
     })
 }
@@ -6044,6 +6192,8 @@ async fn upstream_request_parts(
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
     // Chat 与 Anthropic 上游都没有原生压缩项，只能走合成摘要路径。
+    // 走到这里还带着原生压缩项，说明调用方还有别的候选可切（没得切时已换成占位说明，#3106），
+    // 交回这个错误让它换下一个候选。
     if relay.requires_protocol_proxy_conversion() && input_has_native_compaction(&request_json) {
         return Err(NativeCompactionUnsupported::history().into());
     }
@@ -7298,8 +7448,12 @@ impl ChatSseState {
 
         {
             let state = self.tools.entry(chat_index).or_default();
-            if let Some(id) = id_delta {
-                state.call_id = id;
+            if state.call_id.is_empty()
+                && let Some(id) = id_delta.as_deref().filter(|id| !id.trim().is_empty())
+            {
+                // Some providers repeat a streamed tool call with an empty id.
+                // The first non-empty id is the stable identity for this call.
+                state.call_id = id.to_string();
             }
             // 流式场景下 thought_signature/extra_content 通常随首个分片到达，
             // 此时 call_id 已就位；按 call_id 记住，供下一轮回传（issue #332/#1012）。
@@ -7927,6 +8081,8 @@ fn normalize_responses_item_ids(body: &mut Value) {
 /// 把这类条目原位降级成普通 user 消息——只命中上游必然拒绝的形态，不加开关。
 /// 返回每条降级条目的原 `name`（缺失记 `""`），`.len()` 即降级条数。
 fn downgrade_callless_function_outputs(body: &mut Value) -> Vec<String> {
+    // WS 原生续接支持这种委派 bootstrap，不能照搬 HTTP 的降级修复。
+    if crate::responses_websocket::active() { return Vec::new(); }
     let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
         return Vec::new();
     };

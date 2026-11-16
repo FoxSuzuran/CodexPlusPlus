@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "claude-local"
 version = "0.1.0"
-source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=cbb54ef81bcadb4e9762868c8ba58236fbcaf216#cbb54ef81bcadb4e9762868c8ba58236fbcaf216"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=fa43296c23cc31734a770f9cdacd03c28b5ab8ec#fa43296c23cc31734a770f9cdacd03c28b5ab8ec"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-core"
-version = "2.6.6"
+version = "2.6.10"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "2.6.6"
+version = "2.6.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "2.6.6"
+version = "2.6.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "2.6.6"
+version = "2.6.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

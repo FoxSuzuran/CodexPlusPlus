@@ -1,604 +1,214 @@
-//! Responses WS 接入复用现有 HTTP 管线，保留聚合路由、鉴权、协议转换和请求记账。
-
-use std::collections::HashMap;
-use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, Instant};
-
-use anyhow::Context;
-use futures_util::{Sink, SinkExt, StreamExt};
-use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::{
-        self, Message,
-        handshake::{client::generate_key, derive_accept_key, server::create_response},
-        protocol::{Role, WebSocketConfig},
-    },
+//! 标准 Responses WS 传输；请求准备仍走 protocol_proxy / gateway。
+#[path = "responses_websocket_http.rs"]
+mod http_bridge;
+pub(crate) use http_bridge::{
+    http_request, mark_request, preferred, send_upstream, warmup_response, with_transport,
 };
 
-const TRANSPORT_HEADER: &str = "x-codex-plus-responses-websocket";
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-tokio::task_local! {
-    static SESSION: Option<Arc<Session>>;
+use anyhow::{Context, bail};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{Message, protocol::Role},
+};
+
+use crate::gateway::{
+    key_pool::KeyRef,
+    route::{GatewayCandidate, RoutePlan},
+};
+
+type UpstreamSocket = WebSocketStream<reqwest::Upgraded>;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct Unsupported(pub(crate) &'static str);
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct HttpFallback(pub(crate) &'static str);
+
+#[derive(Clone)]
+struct Affinity {
+    connection: String,
+    relay: String,
+    model: String,
+    key: Option<KeyRef>,
 }
 
 #[derive(Default)]
-struct Session {
-    id: String,
-    previous: Mutex<PreviousResponse>,
-    upstream: Arc<tokio::sync::Mutex<Option<UpstreamConnection>>>,
-    closed: Arc<tokio::sync::Notify>,
+struct Registry {
+    // 指纹只用于复用；响应亲和绑定具体连接实例，重连不能恢复 connection-local cache。
+    connections: HashMap<String, String>,
+    locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    responses: HashMap<String, Affinity>,
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, Weak<Session>>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<String, Weak<Session>>>> = OnceLock::new();
-    SESSIONS.get_or_init(Default::default)
+pub(crate) struct RequestContext {
+    registry: Arc<Mutex<Registry>>,
+    previous: Option<Affinity>,
 }
 
-struct SessionRegistration {
-    id: String,
-    session: Arc<Session>,
+tokio::task_local! {
+    pub(crate) static REQUEST: RequestContext;
 }
 
-impl SessionRegistration {
-    fn new() -> Self {
-        let id = uuid::Uuid::new_v4().to_string();
-        let registration = Self {
-            session: Arc::new(Session {
-                id: id.clone(),
-                ..Default::default()
-            }),
-            id,
-        };
-        sessions()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(
-                registration.id.clone(),
-                Arc::downgrade(&registration.session),
-            );
-        registration
-    }
+pub(crate) fn active() -> bool {
+    REQUEST.try_with(|_| ()).is_ok()
 }
 
-impl Drop for SessionRegistration {
-    fn drop(&mut self) {
-        sessions()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&self.id);
-    }
+pub(crate) fn pinned_key() -> Option<KeyRef> {
+    REQUEST
+        .try_with(|ctx| ctx.previous.as_ref().and_then(|p| p.key.clone()))
+        .ok()
+        .flatten()
 }
 
-fn current_session() -> Option<Arc<Session>> {
-    SESSION.try_with(Clone::clone).ok().flatten()
+pub(crate) fn pinned_relay() -> Option<String> {
+    REQUEST
+        .try_with(|ctx| ctx.previous.as_ref().map(|p| p.relay.clone()))
+        .ok()
+        .flatten()
 }
 
-pub(crate) fn preferred() -> bool {
-    current_session().is_some()
-}
-
-pub(crate) async fn with_transport<T>(headers: &str, future: impl Future<Output = T>) -> T {
-    let session =
-        crate::launcher::header_value_from_headers(headers, TRANSPORT_HEADER).and_then(|id| {
-            sessions()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(id.trim())
-                .and_then(Weak::upgrade)
-        });
-    SESSION.scope(session, future).await
-}
-
-pub(crate) fn mark_request(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    if let Some(session) = current_session() {
-        builder.header(TRANSPORT_HEADER, &session.id)
-    } else {
-        builder
-    }
-}
-
-fn socket_config() -> WebSocketConfig {
-    let limit = crate::launcher::configured_http_body_bytes();
-    WebSocketConfig::default()
-        .max_message_size(Some(limit))
-        .max_frame_size(Some(limit))
-}
-
-#[derive(Default, Clone)]
-struct PreviousResponse {
-    id: String,
-    input: Vec<Value>,
-}
-
-fn input_items(value: Option<&Value>) -> anyhow::Result<Vec<Value>> {
-    match value {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => Ok(items.clone()),
-        Some(Value::String(text)) => Ok(vec![json!({"role":"user", "content":text})]),
-        _ => anyhow::bail!("response.create input must be a string or an array"),
-    }
-}
-
-fn prepare_create(mut event: Value) -> anyhow::Result<Value> {
-    anyhow::ensure!(
-        event.get("type").and_then(Value::as_str) == Some("response.create"),
-        "only response.create is supported"
-    );
-    let request = event
-        .as_object_mut()
-        .context("response.create must be an object")?;
-    request.remove("type");
-    input_items(request.get("input"))?;
-    request.insert("stream".to_string(), json!(true));
-    Ok(event)
-}
-
-fn expand_previous(mut body: Value, previous: &PreviousResponse) -> anyhow::Result<Value> {
-    let request = body
-        .as_object_mut()
-        .context("Responses request must be an object")?;
-    if !previous.id.is_empty()
-        && request.get("previous_response_id").and_then(Value::as_str) == Some(&previous.id)
-    {
-        let mut input = previous.input.clone();
-        input.extend(input_items(request.get("input"))?);
-        request.insert("input".to_string(), json!(input));
-        request.remove("previous_response_id");
-    }
-    Ok(body)
-}
-
-pub(crate) fn http_request(mut body: Value) -> anyhow::Result<Value> {
-    body.as_object_mut()
-        .context("Responses request must be an object")?
-        .remove("stream_id");
-    match current_session() {
-        Some(session) => expand_previous(
-            body,
-            &session
-                .previous
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        ),
-        None => Ok(body),
-    }
-}
-
-pub(crate) fn warmup_response(body: &Value) -> anyhow::Result<reqwest::Response> {
-    let response = json!({
-        "id":format!("resp_{}", uuid::Uuid::new_v4().simple()),
-        "object":"response", "status":"completed", "model":body.get("model"), "output":[]
-    });
-    let mut created = response.clone();
-    created["status"] = json!("in_progress");
-    Ok(http::Response::builder()
-        .header("content-type", "text/event-stream")
-        .body(format!(
-            "event: response.created\ndata: {}\n\nevent: response.completed\ndata: {}\n\n",
-            json!({"type":"response.created","response":created}),
-            json!({"type":"response.completed","response":response}),
-        ))?
-        .into())
-}
-
-async fn send_error<S>(socket: &mut S, status: u16, error: Value) -> anyhow::Result<()>
-where
-    S: Sink<Message, Error = tungstenite::Error> + Unpin,
-{
-    socket
-        .send(Message::text(
-            json!({
-                "type":"error", "status":status, "error":error
-            })
-            .to_string(),
-        ))
-        .await?;
-    Ok(())
-}
-
-async fn during_response<S>(
-    message: Option<Result<Message, tungstenite::Error>>,
-    socket: &mut S,
-) -> anyhow::Result<bool>
-where
-    S: Sink<Message, Error = tungstenite::Error> + Unpin,
-{
-    match message.transpose()? {
-        None => Ok(false),
-        Some(Message::Close(_)) => {
-            socket.close().await?;
-            Ok(false)
-        }
-        Some(Message::Ping(data)) => {
-            socket.send(Message::Pong(data)).await?;
-            Ok(true)
-        }
-        Some(Message::Pong(_)) => Ok(true),
-        Some(_) => {
-            // shortcut: 每条 WS 只允许一个活动响应；客户端采用并行 stream_id 时再扩展。
-            send_error(
-                socket,
-                400,
-                json!({
-                    "type":"invalid_request_error",
-                    "code":"response_in_progress",
-                    "message":"only one response may be in progress on a WebSocket connection"
-                }),
-            )
-            .await?;
-            Ok(true)
-        }
-    }
-}
-
-pub(crate) async fn serve(
-    stream: &mut tokio::net::TcpStream,
-    headers: &str,
-    path: &str,
-) -> anyhow::Result<()> {
-    let mut handshake = http::Request::builder().method("GET").uri(path);
-    for line in headers.lines().skip(1) {
-        if let Some((name, value)) = line.split_once(':') {
-            handshake = handshake.header(name.trim(), value.trim());
-        }
-    }
-    let response = handshake
-        .body(())
-        .map_err(anyhow::Error::from)
-        .and_then(|request| create_response(&request).map_err(anyhow::Error::from));
-    let response = match response {
-        Ok(response) => response,
-        Err(_) => {
-            return crate::launcher::write_http_response(
-                stream,
-                "400 Bad Request",
-                "application/json",
-                br#"{"error":{"message":"invalid WebSocket upgrade request"}}"#,
-            )
-            .await;
-        }
-    };
-    let endpoint = format!("http://{}{path}", stream.local_addr()?);
-    let mut forwarded = reqwest::header::HeaderMap::new();
-    for line in headers.lines().skip(1) {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim().to_ascii_lowercase();
-        if matches!(
-            name.as_str(),
-            "host"
-                | "connection"
-                | "upgrade"
-                | "content-length"
-                | "content-type"
-                | "content-encoding"
-                | "transfer-encoding"
-                | "accept-encoding"
-        ) || name.starts_with("sec-websocket-")
-        {
-            continue;
-        }
-        forwarded.append(
-            reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
-            value.trim().parse()?,
-        );
-    }
-    let registration = SessionRegistration::new();
-    forwarded.insert(TRANSPORT_HEADER, registration.id.parse()?);
-    // 回环请求不能经过系统代理或跟随重定向，鉴权头只交还给当前 helper。
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let mut response_headers = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
-    for (name, value) in response.headers() {
-        response_headers.push_str(&format!("{name}: {}\r\n", value.to_str()?));
-    }
-    response_headers.push_str("\r\n");
-    stream.write_all(response_headers.as_bytes()).await?;
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "helper.responses_websocket_connected",
-        json!({"path":path}),
-    );
-    let socket =
-        WebSocketStream::from_raw_socket(stream, Role::Server, Some(socket_config())).await;
-    let (mut outgoing, mut incoming) = socket.split();
-    loop {
-        let message = tokio::select! {
-            message = incoming.next() => message,
-            _ = registration.session.closed.notified() => {
-                outgoing.close().await?;
-                return Ok(());
-            }
-        };
-        let Some(message) = message else { break };
-        let text = match message? {
-            Message::Text(text) => text,
-            Message::Ping(data) => {
-                outgoing.send(Message::Pong(data)).await?;
-                continue;
-            }
-            Message::Pong(_) => continue,
-            Message::Close(_) => {
-                outgoing.close().await?;
-                break;
-            }
-            _ => {
-                send_error(
-                    &mut outgoing,
-                    400,
-                    json!({
-                        "type":"invalid_request_error", "message":"expected a JSON text frame"
-                    }),
-                )
-                .await?;
-                continue;
-            }
-        };
-        let request = serde_json::from_str(&text)
-            .map_err(anyhow::Error::from)
-            .and_then(prepare_create);
-        let request = match request {
-            Ok(request) => request,
-            Err(error) => {
-                send_error(
-                    &mut outgoing,
-                    400,
-                    json!({
-                        "type":"invalid_request_error", "message":error.to_string()
-                    }),
-                )
-                .await?;
-                continue;
-            }
-        };
-        let history = expand_previous(
-            request.clone(),
-            &registration
-                .session
-                .previous
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        )?;
-        let input = input_items(history.get("input"))?;
-        if request.to_string().len() > crate::launcher::configured_http_body_bytes() {
-            send_error(&mut outgoing, 413, json!({
-                "type":"invalid_request_error", "message":"response.create exceeds the request body limit"
-            })).await?;
-            continue;
-        }
-        let opening = client
-            .post(&endpoint)
-            .headers(forwarded.clone())
-            .json(&request)
-            .send();
-        tokio::pin!(opening);
-        let response = loop {
-            tokio::select! {
-                result = &mut opening => break result,
-                message = incoming.next() => {
-                    if !during_response(message, &mut outgoing).await? { return Ok(()) }
-                }
-            }
-        };
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                send_error(
-                    &mut outgoing,
-                    502,
-                    json!({
-                        "type":"server_error", "message":error.to_string()
-                    }),
-                )
-                .await?;
-                continue;
-            }
-        };
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.bytes().await?;
-            let error = serde_json::from_slice::<Value>(&body)
-                .unwrap_or_else(|_| json!({"message":String::from_utf8_lossy(&body)}));
-            if error.get("type").and_then(Value::as_str) == Some("error") {
-                outgoing.send(Message::text(error.to_string())).await?;
-                continue;
-            }
-            send_error(
-                &mut outgoing,
-                status,
-                error.get("error").unwrap_or(&error).clone(),
-            )
-            .await?;
-            continue;
-        }
-        let mut bytes = response.bytes_stream();
-        let mut buffer = String::new();
-        let mut remainder = Vec::new();
-        let mut finished = false;
-        loop {
-            let chunk = tokio::select! {
-                chunk = bytes.next() => chunk,
-                message = incoming.next() => {
-                    if !during_response(message, &mut outgoing).await? { return Ok(()) }
-                    continue;
-                }
-            };
-            let chunk = match chunk {
-                None => break,
-                Some(Ok(chunk)) => chunk,
-                Some(Err(error)) => {
-                    send_error(
-                        &mut outgoing,
-                        502,
-                        json!({
-                            "type":"server_error", "message":error.to_string()
-                        }),
-                    )
-                    .await?;
-                    finished = true;
-                    break;
-                }
-            };
-            crate::protocol_proxy::append_utf8_safe(&mut buffer, &mut remainder, &chunk);
-            if buffer.len() > crate::launcher::configured_http_body_bytes() {
-                anyhow::bail!("upstream WebSocket event exceeds the request body limit");
-            }
-            while let Some(block) = crate::protocol_proxy::take_sse_block(&mut buffer) {
-                let Some(data) = crate::protocol_proxy::extract_sse_data(&block) else {
-                    continue;
-                };
-                if data.trim() == "[DONE]" {
-                    continue;
-                }
-                let event: Value = serde_json::from_str(&data)?;
-                let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
-                if kind == "response.completed"
-                    && let Some(response) = event.get("response")
-                    && let Some(id) = response.get("id").and_then(Value::as_str)
-                {
-                    let mut history = input.clone();
-                    history.extend(input_items(response.get("output"))?);
-                    *registration
-                        .session
-                        .previous
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = PreviousResponse {
-                        id: id.to_string(),
-                        input: history,
-                    };
-                }
-                finished |= matches!(
-                    kind,
-                    "response.completed" | "response.failed" | "response.incomplete" | "error"
-                );
-                outgoing.send(Message::text(data)).await?;
-            }
-        }
-        if !finished {
-            send_error(
-                &mut outgoing,
-                502,
-                json!({
-                    "type":"server_error", "code":"stream_incomplete",
-                    "message":"upstream closed before the response finished"
-                }),
-            )
-            .await?;
-        }
+/// 原 Key 必须在路由收集阶段筛选，保留它的冷却候选，再由既有队列等名额。
+pub(crate) fn restrict_plan(plan: &mut RoutePlan) -> anyhow::Result<()> {
+    if pinned_key().is_some() && plan.candidates.is_empty() && plan.waiting.is_empty() {
+        return Err(Unsupported(
+            "WS 续接的原供应商或 Key 已不在当前模型路由中；请使用完整上下文开始新响应",
+        )
+        .into());
     }
     Ok(())
 }
 
-struct UpstreamConnection {
-    key: [u8; 32],
-    headers: reqwest::header::HeaderMap,
-    outgoing: Arc<
-        tokio::sync::Mutex<
-            futures_util::stream::SplitSink<WebSocketStream<reqwest::Upgraded>, Message>,
-        >,
-    >,
-    incoming: tokio::sync::mpsc::Receiver<anyhow::Result<String>>,
-    reader: tokio::task::JoinHandle<()>,
+pub(crate) struct PreparedWebsocket {
+    connection: String,
+    fingerprint: String,
+    relay: String,
+    body: Value,
+    socket: Option<UpstreamSocket>,
+    // 同指纹首次握手串行，其他指纹及 Key 排队互不阻塞；注册连接之后释放。
+    registration: Option<tokio::sync::OwnedMutexGuard<()>>,
+    pub(crate) headers: reqwest::header::HeaderMap,
+    pub(crate) gateway: Option<GatewayResponse>,
+    pub(crate) rotation: Option<crate::settings::BackendSettings>,
+    pub(crate) recorder: Option<crate::gateway::activity::RouteRecorder>,
+    pub(crate) busy: Option<crate::gateway::activity::InFlight>,
 }
 
-impl UpstreamConnection {
-    fn new(
-        socket: WebSocketStream<reqwest::Upgraded>,
-        key: [u8; 32],
-        headers: reqwest::header::HeaderMap,
-        closed: Arc<tokio::sync::Notify>,
-    ) -> Self {
-        let (outgoing, mut incoming) = socket.split();
-        let outgoing = Arc::new(tokio::sync::Mutex::new(outgoing));
-        let writer = outgoing.clone();
-        let (events, receiver) = tokio::sync::mpsc::channel(16);
-        // 空闲期间也读取控制帧，避免上游等待 Pong 而断开原生会话。
-        let reader = tokio::spawn(async move {
-            while let Some(message) = incoming.next().await {
-                let event = match message {
-                    Ok(Message::Text(text)) => Ok(text.to_string()),
-                    Ok(Message::Ping(data)) => {
-                        if writer.lock().await.send(Message::Pong(data)).await.is_err() {
-                            break;
-                        }
-                        continue;
-                    }
-                    Ok(Message::Pong(_)) => continue,
-                    Ok(Message::Close(_)) => {
-                        let _ = writer.lock().await.flush().await;
-                        break;
-                    }
-                    Ok(_) => Err(anyhow::anyhow!("expected an upstream JSON text frame")),
-                    Err(error) => Err(error.into()),
-                };
-                let failed = event.is_err();
-                if events.send(event).await.is_err() || failed {
-                    break;
-                }
-            }
-            closed.notify_one();
-        });
-        Self {
-            key,
-            headers,
-            outgoing,
-            incoming: receiver,
-            reader,
-        }
-    }
-
-    async fn next_text(&mut self) -> anyhow::Result<String> {
-        self.incoming
-            .recv()
-            .await
-            .context("upstream WebSocket closed before the response finished")?
-    }
+pub(crate) struct GatewayResponse {
+    pub(crate) plan: RoutePlan,
+    pub(crate) candidate: GatewayCandidate,
+    pub(crate) key_conversation: Option<String>,
+    pub(crate) remember_route: bool,
 }
 
-impl Drop for UpstreamConnection {
-    fn drop(&mut self) {
-        self.reader.abort();
-    }
+pub(crate) enum PreparedUpstream {
+    Websocket(Box<PreparedWebsocket>),
+    Rejected(reqwest::Response),
 }
 
-pub(crate) async fn send_upstream(
-    builder: reqwest::RequestBuilder,
-    body: &Value,
+fn connection_id(
+    relay_id: &str,
+    request: &reqwest::Request,
+    official_account_scope: Option<&str>,
+) -> String {
+    let official_account_scope = official_account_scope.map(str::trim).filter(|id| !id.is_empty());
+    let mut hash = Sha256::new();
+    hash.update(relay_id.as_bytes());
+    hash.update(request.url().as_str().as_bytes());
+    if let Some(scope) = official_account_scope {
+        // 使用签发方、用户与工作区的完整身份；同账号刷新不改变存活连接的身份。
+        hash.update(b"\0official-account\0");
+        hash.update(scope.as_bytes());
+        hash.update([0]);
+    }
+    let mut headers: Vec<_> = request
+        .headers()
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "content-type"
+                    | "content-length"
+                    | "accept"
+                    | "cache-control"
+                    | "connection"
+                    | "upgrade"
+                    | "sec-websocket-key"
+                    | "sec-websocket-version"
+                    | "sec-websocket-protocol"
+                    | "sec-websocket-extensions"
+            ) && !(official_account_scope.is_some() && name.as_str() == "authorization")
+                && !crate::protocol_proxy::is_volatile_client_identity_header(name.as_str())
+        })
+        .collect();
+    headers.sort_by_key(|(name, _)| name.as_str());
+    for (name, value) in headers {
+        hash.update(name.as_str().as_bytes());
+        hash.update([0]);
+        hash.update(value.as_bytes());
+        hash.update([0]);
+    }
+    format!("{:x}", hash.finalize())
+}
+
+/// reqwest 的升级沿用现有供应商代理、系统 CA 与自定义认证，不另建一套 TLS 栈。
+pub(crate) async fn prepare(
+    relay_id: &str,
+    mut builder: reqwest::RequestBuilder,
+    body: Value,
     timeout: Duration,
-    route_id: &str,
-    user_agent: &str,
-) -> anyhow::Result<reqwest::Response> {
-    let started = Instant::now();
-    let fallback = builder
-        .try_clone()
-        .context("upstream request cannot be cloned")?;
+    official_account_scope: Option<&str>,
+) -> anyhow::Result<PreparedUpstream> {
+    for (name, value) in crate::extension_gateway::extension_headers() {
+        builder = builder.header(name, value);
+    }
     let (client, request) = builder.build_split();
     let mut request = request?;
-    for (name, value) in crate::extension_gateway::extension_headers() {
-        request
-            .headers_mut()
-            .insert(name.parse::<reqwest::header::HeaderName>()?, value.parse()?);
-    }
-    crate::extension_gateway::refresh_response_passthrough(&mut request);
-    let connection_key = crate::responses_exec_transport::cache_key(
-        route_id,
-        &request,
-        &json!({"model":body.get("model")}),
-        user_agent,
-    );
-    let session = current_session().unwrap_or_default();
-    let mut saved = session.upstream.clone().lock_owned().await;
-    let mut connection = if let Some(connection) = saved
-        .take()
-        .filter(|connection| connection.key == connection_key)
-    {
-        connection
+    let fingerprint = connection_id(relay_id, &request, official_account_scope);
+    let registry = REQUEST.with(|ctx| ctx.registry.clone());
+    let lock = {
+        let mut registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+        if registry.locks.len() >= 8 && !registry.locks.contains_key(&fingerprint) {
+            return Err(Unsupported("一个本地 WS 会话最多连接 8 个上游，请新建连接").into());
+        }
+        registry
+            .locks
+            .entry(fingerprint.clone())
+            .or_default()
+            .clone()
+    };
+    let registration = lock.lock_owned().await;
+    let reuse = {
+        let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+        let current = registry.connections.get(&fingerprint).cloned();
+        REQUEST.with(|ctx| -> anyhow::Result<()> {
+            if let Some(previous) = &ctx.previous {
+                if current.as_deref() != Some(&previous.connection)
+                    || body.get("model").and_then(Value::as_str) != Some(&previous.model)
+                {
+                    return Err(Unsupported(
+                        "WS 续接的原连接已关闭或模型已变更；请使用完整上下文开始新响应",
+                    )
+                    .into());
+                }
+            }
+            Ok(())
+        })?;
+        current
+    };
+    let mut response_headers = reqwest::header::HeaderMap::new();
+    let socket = if reuse.is_some() {
+        None
     } else {
+        let key = tokio_tungstenite::tungstenite::handshake::client::generate_key();
         *request.method_mut() = reqwest::Method::GET;
         *request.version_mut() = reqwest::Version::HTTP_11;
         *request.body_mut() = None;
@@ -607,11 +217,12 @@ pub(crate) async fn send_upstream(
             "content-length",
             "transfer-encoding",
             "accept",
-            "accept-encoding",
+            "cache-control",
+            "sec-websocket-extensions",
+            "sec-websocket-protocol",
         ] {
             request.headers_mut().remove(name);
         }
-        let key = generate_key();
         for (name, value) in [
             ("connection", "Upgrade"),
             ("upgrade", "websocket"),
@@ -619,669 +230,732 @@ pub(crate) async fn send_upstream(
             ("sec-websocket-key", key.as_str()),
         ] {
             request.headers_mut().insert(
-                reqwest::header::HeaderName::from_static(name),
+                reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
                 value.parse()?,
             );
         }
-        if !request.headers().contains_key("openai-beta") {
-            request
-                .headers_mut()
-                .insert("openai-beta", "responses_websockets=2026-02-06".parse()?);
-        }
         let response = tokio::time::timeout(timeout, client.execute(request))
             .await
-            .context("upstream WebSocket handshake timed out")??;
+            .context("WS 上游握手超时")??;
         if matches!(response.status().as_u16(), 400 | 404 | 405 | 426 | 501) {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "protocol_proxy.websocket_http_fallback",
-                json!({"status":response.status().as_u16()}),
-            );
-            drop(response);
-            let mut body = http_request(body.clone())?;
-            if body.as_object_mut().unwrap().remove("generate") == Some(json!(false)) {
-                return warmup_response(&body);
-            }
-            return crate::protocol_proxy::send_upstream_request_with_header_timeout(
-                fallback.json(&body),
-                timeout.saturating_sub(started.elapsed()),
-            )
-            .await;
+            return Err(HttpFallback("上游不支持原生 Responses WebSocket").into());
         }
         if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
-            return Ok(response);
+            return Ok(PreparedUpstream::Rejected(response));
         }
-        anyhow::ensure!(
+        let header = |name| {
             response
                 .headers()
-                .get("sec-websocket-accept")
-                .and_then(|value| value.to_str().ok())
-                == Some(derive_accept_key(key.as_bytes()).as_str()),
-            "invalid upstream Sec-WebSocket-Accept"
-        );
-        anyhow::ensure!(
-            response
-                .headers()
-                .get("upgrade")
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
-                && response
-                    .headers()
-                    .get("connection")
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value
-                        .split(',')
-                        .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))),
-            "invalid upstream WebSocket upgrade headers"
-        );
-        let mut headers = response.headers().clone();
-        for name in [
-            "connection",
-            "upgrade",
-            "sec-websocket-accept",
-            "content-length",
-            "content-encoding",
-            "transfer-encoding",
-        ] {
-            headers.remove(name);
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+        };
+        let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+        if !header("upgrade").eq_ignore_ascii_case("websocket")
+            || !header("connection")
+                .split(',')
+                .any(|v| v.trim().eq_ignore_ascii_case("upgrade"))
+            || header("sec-websocket-accept") != accept
+            || response.headers().contains_key("sec-websocket-extensions")
+            || response.headers().contains_key("sec-websocket-protocol")
+        {
+            bail!("WS 上游返回无效的升级握手");
         }
-        headers.insert("content-type", "text/event-stream".parse()?);
-        let upgraded = response.upgrade().await?;
-        let socket =
-            WebSocketStream::from_raw_socket(upgraded, Role::Client, Some(socket_config())).await;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "protocol_proxy.websocket_upstream_connected",
-            json!({}),
-        );
-        UpstreamConnection::new(socket, connection_key, headers, session.closed.clone())
+        response_headers = response.headers().clone();
+        Some(
+            WebSocketStream::from_raw_socket(
+                response.upgrade().await?,
+                Role::Client,
+                Some(ws_config()),
+            )
+            .await,
+        )
     };
-    let mut create = body.clone();
-    create
-        .as_object_mut()
-        .context("upstream request must be an object")?
-        .remove("stream");
-    create.as_object_mut().unwrap().remove("background");
-    create["type"] = json!("response.create");
-    connection
-        .outgoing
-        .lock()
-        .await
-        .send(Message::text(create.to_string()))
-        .await?;
-    let first = tokio::time::timeout(
-        timeout.saturating_sub(started.elapsed()),
-        connection.next_text(),
-    )
-    .await
-    .context("upstream WebSocket response timed out")??;
-    let first_event: Value = serde_json::from_str(&first)?;
-    let mut headers = connection.headers.clone();
-    if first_event.get("type").and_then(Value::as_str) == Some("error") {
-        let status = first_event
-            .get("status")
-            .and_then(Value::as_u64)
-            .filter(|status| (400..600).contains(status))
-            .unwrap_or(502) as u16;
-        headers.insert("content-type", "application/json".parse()?);
-        let mut response = http::Response::builder().status(status).body(first)?;
-        *response.headers_mut() = headers;
-        *saved = Some(connection);
-        return Ok(response.into());
+    static NEXT_CONNECTION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let connection = reuse.unwrap_or_else(|| {
+        format!(
+            "{}:{}",
+            fingerprint,
+            NEXT_CONNECTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    Ok(PreparedUpstream::Websocket(Box::new(PreparedWebsocket {
+        connection,
+        fingerprint,
+        relay: relay_id.into(),
+        body,
+        socket,
+        registration: Some(registration),
+        headers: response_headers,
+        gateway: None,
+        rotation: None,
+        recorder: None,
+        busy: None,
+    })))
+}
+
+fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(16 * 1024 * 1024))
+        .max_frame_size(Some(16 * 1024 * 1024))
+}
+
+#[derive(Clone)]
+struct ClientHeaders {
+    user_agent: Option<String>,
+    beta: Option<String>,
+    session: Option<String>,
+    thread: Option<String>,
+    opencode: Option<String>,
+    identity: Vec<(String, String)>,
+}
+
+impl ClientHeaders {
+    fn read(headers: &str) -> Self {
+        let get = |name| crate::launcher::header_value_from_headers(headers, name);
+        Self {
+            user_agent: get("user-agent"),
+            beta: get("x-codex-beta-features"),
+            session: get("session-id"),
+            thread: get("thread-id"),
+            opencode: get("x-opencode-session"),
+            identity: crate::protocol_proxy::codex_client_identity_headers(headers),
+        }
     }
-    let events =
-        futures_util::stream::unfold(Some((connection, saved, Some(first))), |state| async move {
-            let (mut connection, mut saved, mut pending) = state?;
-            let text = match pending.take() {
-                Some(text) => Ok(text),
-                None => connection.next_text().await,
-            };
-            match text.and_then(|text| {
-                let event: Value = serde_json::from_str(&text)?;
-                let kind = event
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .context("upstream event has no type")?;
-                let done = matches!(
-                    kind,
-                    "response.completed" | "response.failed" | "response.incomplete" | "error"
-                );
-                Ok((
-                    format!("event: {kind}\ndata: {text}\n\n").into_bytes(),
-                    done,
-                ))
-            }) {
-                Ok((bytes, done)) => {
-                    let next = if done {
-                        *saved = Some(connection);
-                        None
-                    } else {
-                        Some((connection, saved, None))
-                    };
-                    Some((Ok::<_, std::io::Error>(bytes), next))
+
+    fn for_request(&self, body: &Value) -> Self {
+        let mut headers = self.clone();
+        // Codex 在长连接的 client_metadata 中携带逐回合身份，不能一直沿用握手那一回合。
+        if let Some(metadata) = body.get("client_metadata").and_then(Value::as_object) {
+            for (name, value) in metadata {
+                if crate::protocol_proxy::CODEX_CLIENT_IDENTITY_HEADERS
+                    .iter()
+                    .any(|n| name.eq_ignore_ascii_case(n))
+                    && let Some(value) = value
+                        .as_str()
+                        .filter(|v| v.len() <= 4096 && !v.contains(['\r', '\n']))
+                {
+                    headers
+                        .identity
+                        .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+                    headers.identity.push((name.clone(), value.to_string()));
                 }
-                Err(error) => Some((Err(std::io::Error::other(error.to_string())), None)),
             }
+        }
+        if let Some(metadata) = body.get("client_metadata") {
+            let turn = metadata
+                .get("x-codex-turn-metadata")
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str::<Value>(text).ok());
+            if let Some(thread) = metadata
+                .get("thread_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    turn.as_ref()
+                        .and_then(|turn| turn.get("thread_id"))
+                        .and_then(Value::as_str)
+                })
+                .filter(|id| id.len() <= 4096 && !id.contains(['\r', '\n']))
+            {
+                headers.thread = Some(thread.into());
+                headers.session = Some(thread.into());
+            }
+            if let Some(session) = metadata
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|id| id.len() <= 4096 && !id.contains(['\r', '\n']))
+            {
+                headers.session = Some(session.into());
+            }
+        }
+        headers
+    }
+}
+
+struct Opened {
+    lane: String,
+    response: ActiveResponse,
+}
+
+struct Reservation {
+    slot: Option<crate::gateway::key_pool::KeySlot>,
+    submitted: bool,
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.submitted
+            && let Some(slot) = self.slot.take()
+        {
+            slot.cancel();
+        }
+    }
+}
+
+struct ActiveResponse {
+    ready: Box<PreparedWebsocket>,
+    log: crate::launcher::ProxyRequestLog,
+    reservation: Reservation,
+    transformer: crate::protocol_proxy::ResponsesSseTransformer,
+    filter: Option<crate::extension_gateway::ResponseFilter>,
+    started: std::time::Instant,
+    response_id: Option<String>,
+}
+
+impl Drop for ActiveResponse {
+    fn drop(&mut self) {
+        if self.log.entry.stream_outcome.is_none() {
+            self.log.record_stream(
+                Some(if self.reservation.submitted {
+                    "disconnected"
+                } else {
+                    "cancelled"
+                }),
+                None,
+                None,
+            );
+        }
+        if let Some(mut recorder) = self.ready.recorder.take() {
+            let success =
+                self.log.entry.success && self.log.entry.stream_outcome.as_deref() == Some("ok");
+            if let Some(gateway) = &self.ready.gateway {
+                recorder.step(
+                    &gateway.candidate,
+                    if success { "answered" } else { "failed" },
+                    None,
+                    Some(self.log.entry.status_code),
+                );
+            }
+            recorder.finish(success);
+        }
+    }
+}
+
+fn error_status(event: &Value) -> u16 {
+    if let Some(status) = event
+        .get("status")
+        .and_then(Value::as_u64)
+        .filter(|status| (400..600).contains(status))
+    {
+        return status as u16;
+    }
+    let error = event.pointer("/response/error").unwrap_or(&event["error"]);
+    let code = error["code"].as_str().unwrap_or("");
+    let kind = error["type"].as_str().unwrap_or("");
+    if code.contains("rate_limit") || code.contains("quota") {
+        429
+    } else if code == "invalid_api_key" || kind == "authentication_error" {
+        401
+    } else if kind == "permission_error" {
+        403
+    } else if kind == "invalid_request_error"
+        || code.starts_with("invalid_")
+        || code == "previous_response_not_found"
+    {
+        400
+    } else {
+        502
+    }
+}
+
+fn record_failure(response: &ActiveResponse, status: u16, body: &[u8]) {
+    if let Some(gateway) = &response.ready.gateway {
+        let candidate = &gateway.candidate;
+        let class = crate::gateway::key_pool::classify_failure(
+            status,
+            &reqwest::header::HeaderMap::new(),
+            body,
+        );
+        crate::gateway::pipeline::record_key_failure(&candidate.key, &class);
+        crate::gateway::speed::record_failure(&candidate.relay.id, &candidate.upstream_model);
+    }
+    if let Some(settings) = &response.ready.rotation {
+        crate::relay_rotation::record_relay_request_failure(settings);
+    }
+}
+
+enum UpstreamEvent {
+    Frame(String, Message),
+    Closed(String),
+}
+
+struct Connection {
+    sender: tokio::sync::mpsc::Sender<Message>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn start_connection(
+    id: String,
+    mut socket: UpstreamSocket,
+    events: tokio::sync::mpsc::Sender<UpstreamEvent>,
+) -> Connection {
+    let (sender, mut commands) = tokio::sync::mpsc::channel::<Message>(16);
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                command = commands.recv() => match command {
+                    Some(message) => {
+                        if !matches!(tokio::time::timeout(Duration::from_secs(30), socket.send(message)).await, Ok(Ok(()))) { break; }
+                    }
+                    None => break,
+                },
+                event = socket.next() => match event {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {},
+                    Some(Ok(message)) => if events.send(UpstreamEvent::Frame(id.clone(), message)).await.is_err() { break; },
+                }
+            }
+        }
+        let _ = events.send(UpstreamEvent::Closed(id)).await;
+    });
+    Connection { sender, task }
+}
+
+fn error_event(lane: &str, status: u16, message: &str) -> Message {
+    let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":"local_responses_websocket_error","message":message}});
+    if !lane.is_empty() {
+        value["stream_id"] = json!(lane);
+    }
+    Message::Text(value.to_string().into())
+}
+
+fn parse_create(text: &str) -> anyhow::Result<(String, Value)> {
+    let mut body: Value = serde_json::from_str(text)?;
+    if body["type"] != "response.create" {
+        bail!("此入口接受 response.create 事件");
+    }
+    let lane = match body.get("stream_id") {
+        None => String::new(),
+        Some(Value::String(id))
+            if !id.is_empty()
+                && id.len() <= 256
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) =>
+        {
+            id.clone()
+        }
+        _ => bail!("stream_id 格式无效"),
+    };
+    let object = body
+        .as_object_mut()
+        .context("response.create 必须是 JSON 对象")?;
+    object.remove("type");
+    object.remove("stream_id");
+    object.remove("background");
+    // 现有准备链按流式请求配置路由；发给 WS 上游前再去掉 HTTP 字段。
+    object.insert("stream".into(), json!(true));
+    Ok((lane, body))
+}
+
+async fn open_request(
+    lane: String,
+    body: Value,
+    headers: ClientHeaders,
+    path: String,
+    opener: crate::launcher::ProxyOpener,
+    registry: Arc<Mutex<Registry>>,
+) -> Result<Opened, (String, u16, String)> {
+    if registry
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .responses
+        .len()
+        >= 4096
+    {
+        return Err((
+            lane,
+            429,
+            "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
+        ));
+    }
+    let previous = body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .and_then(|id| {
+            registry
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .responses
+                .get(id)
+                .cloned()
         });
-    let mut response = http::Response::new(reqwest::Body::wrap_stream(events));
-    *response.headers_mut() = headers;
-    Ok(response.into())
+    let context = RequestContext { registry, previous };
+    REQUEST.scope(context, crate::extension_gateway::with_codex_response_plan(async {
+        let mut log = crate::launcher::ProxyRequestLog::begin("GET", &path, Some(&body), headers.thread.clone().or(headers.session.clone()));
+        log.entry.stream = true;
+        let session = crate::protocol_proxy::ProxySessionHeaders { session_id: headers.session.as_deref(), thread_id: headers.thread.as_deref(),
+            opencode_session: headers.opencode.as_deref(), client_identity: &headers.identity };
+        let body_text = body.to_string();
+        let result = match &opener {
+            crate::launcher::ProxyOpener::Legacy => crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers_and_live_id(
+                &body_text, headers.user_agent.as_deref(), &path, headers.beta.as_deref(), session, Some(&log.entry.id)).await.map(|r| (r, None)),
+            crate::launcher::ProxyOpener::Gateway(agent) => {
+                log.set_agent(agent);
+                crate::gateway::server::open_responses_for_agent(agent, &path, &body_text, headers.user_agent.as_deref(), session, Some(&log.entry.id), None).await
+            }
+        };
+        let (mut upstream, slot) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let (status, message) = match error.downcast_ref::<Unsupported>() {
+                    Some(error) => (400, error.to_string()),
+                    None if error.is::<HttpFallback>() => (426, error.to_string()),
+                    None => (502, "WS 上游连接或请求准备失败".to_string()),
+                };
+                log.record_error(&status.to_string(), message.clone());
+                return Err((lane, status, message));
+            }
+        };
+        let reservation = Reservation { slot, submitted: false };
+        log.record_upstream(&upstream);
+        log.entry.success = false;
+        let Some(ready) = upstream.websocket.take() else {
+            let status = if upstream.status_code == 200 { 502 } else { upstream.status_code };
+            let message = "选中的上游未接受标准 Responses WebSocket，请为此配置使用 HTTP".to_string();
+            log.record_error(&status.to_string(), message.clone());
+            return Err((lane, status, message));
+        };
+        let phase = crate::settings::SettingsStore::default().load().unwrap_or_default().codex_app_third_party_reasoning_collapse;
+        let transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(Some(&body))
+            .filling_message_phase(phase && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse"));
+        let mut response = ActiveResponse { ready, log, reservation, transformer, filter: None,
+            started: std::time::Instant::now(), response_id: None };
+        response.filter = crate::extension_gateway::ResponseFilter::start(&path, Some(&body)).await;
+        Ok(Opened { lane, response })
+    })).await
+}
+
+async fn send_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    message: Message,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(30), ws.send(message))
+        .await
+        .context("WS 下游写入超时")??;
+    Ok(())
+}
+
+async fn send_sse<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    for block in String::from_utf8_lossy(bytes).split("\n\n") {
+        let data = block
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !data.is_empty() && data != "[DONE]" {
+            let mut value: Value =
+                serde_json::from_str(&data).context("WS 响应中间件返回非 JSON 事件")?;
+            if !lane.is_empty() {
+                value["stream_id"] = json!(lane);
+            }
+            send_message(ws, Message::Text(value.to_string().into())).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn forward_response_event<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    response: &mut ActiveResponse,
+    text: &str,
+) -> anyhow::Result<()> {
+    let bytes = response.transformer.push_bytes(format!("data: {text}\n\n").as_bytes());
+    let bytes = if let Some(filter) = response.filter.as_mut() {
+        filter.push(&bytes).await
+    } else {
+        bytes
+    };
+    send_sse(ws, lane, &bytes).await
+}
+
+async fn finish_response<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    response: &mut ActiveResponse,
+) -> anyhow::Result<()> {
+    // 断线也要放行阶段填补暂存的完成事件，并结束本响应的中间件。
+    let bytes = response.transformer.flush_pending();
+    let bytes = if let Some(filter) = response.filter.as_mut() {
+        filter.push(&bytes).await
+    } else {
+        bytes
+    };
+    send_sse(ws, lane, &bytes).await?;
+    if let Some(filter) = response.filter.as_mut() {
+        send_sse(ws, lane, &filter.finish().await).await?;
+    }
+    Ok(())
+}
+
+/// 下游握手完成后仍通过既有准备链为每个 response.create 选模型、认证和 Key。
+pub(crate) async fn handle(
+    stream: &mut tokio::net::TcpStream,
+    headers: &str,
+    read_ahead: Vec<u8>,
+    path: &str,
+    mut opener: crate::launcher::ProxyOpener,
+) -> anyhow::Result<()> {
+    let raw_headers = headers;
+    let request_line = headers.lines().next().unwrap_or_default();
+    let endpoint = format!("http://{}{}", stream.local_addr()?, request_line.split_whitespace().nth(1).unwrap_or(path));
+    let mut request = http::Request::builder()
+        .method("GET")
+        .uri(request_line.split_whitespace().nth(1).unwrap_or("/"));
+    for line in headers.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            request = request.header(name.trim(), value.trim());
+        }
+    }
+    let response = request.body(()).ok().and_then(|r| {
+        use base64::Engine;
+        let valid_key = r
+            .headers()
+            .get("sec-websocket-key")
+            .and_then(|key| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(key.as_bytes())
+                    .ok()
+            })
+            .is_some_and(|key| key.len() == 16);
+        valid_key
+            .then(|| tokio_tungstenite::tungstenite::handshake::server::create_response(&r).ok())
+            .flatten()
+    });
+    let Some(response) = response else {
+        crate::launcher::write_http_response(
+            stream,
+            "400 Bad Request",
+            "application/json",
+            br#"{"error":"invalid WebSocket upgrade"}"#,
+        )
+        .await?;
+        return Ok(());
+    };
+    use tokio::io::AsyncWriteExt;
+    let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
+    for (name, value) in response.headers() {
+        wire.push_str(&format!("{}: {}\r\n", name, value.to_str()?));
+    }
+    wire.push_str("\r\n");
+    stream.write_all(wire.as_bytes()).await?;
+    let mut ws =
+        WebSocketStream::from_partially_read(stream, read_ahead, Role::Server, Some(ws_config()))
+            .await;
+    // 官方身份的本地代理原本再跳一次网关；WS 直接调用同一网关准备入口，避免双重 hooks 与日志。
+    if matches!(opener, crate::launcher::ProxyOpener::Legacy)
+        && crate::gateway::apply::codex_hops_through_gateway()
+    {
+        opener = crate::launcher::ProxyOpener::Gateway(crate::tools::ToolId::Codex);
+    }
+    let headers = ClientHeaders::read(headers);
+    let registry = Arc::new(Mutex::new(Registry::default()));
+    let (events_tx, mut events) = tokio::sync::mpsc::channel(64);
+    let (opened_tx, mut opened_rx) = tokio::sync::mpsc::channel(16);
+    let mut connections: HashMap<String, Connection> = HashMap::new();
+    let mut active: HashMap<String, ActiveResponse> = HashMap::new();
+    let mut queue: std::collections::VecDeque<(String, Value, usize)> =
+        std::collections::VecDeque::new();
+    let mut queued_bytes = 0usize;
+    let mut lanes = HashSet::new();
+    struct PreparationTasks(HashMap<String, tokio::task::JoinHandle<()>>);
+    impl Drop for PreparationTasks {
+        fn drop(&mut self) {
+            for task in self.0.values() {
+                task.abort();
+            }
+        }
+    }
+    let mut preparing = PreparationTasks(HashMap::new());
+    let mut first_request = None;
+    let mut request_count = 0usize;
+    loop {
+        while active.len() + preparing.0.len() < 16 {
+            let Some(index) = queue.iter().position(|(lane, _, _)| {
+                !active.contains_key(lane) && !preparing.0.contains_key(lane)
+            }) else {
+                break;
+            };
+            let (lane, body, size) = queue.remove(index).unwrap();
+            queued_bytes -= size;
+            let headers = headers.for_request(&body);
+            let (opener, registry, path, sender) = (
+                opener.clone(),
+                registry.clone(),
+                path.to_string(),
+                opened_tx.clone(),
+            );
+            let task_lane = lane.clone();
+            preparing.0.insert(
+                lane,
+                tokio::spawn(async move {
+                    let result =
+                        open_request(task_lane, body, headers, path, opener, registry).await;
+                    let _ = sender.send(result).await;
+                }),
+            );
+        }
+        tokio::select! {
+            message = ws.next() => match message {
+                Some(Ok(Message::Text(text))) => match parse_create(&text) {
+                    Ok((lane, body)) => {
+                        request_count += 1;
+                        first_request = if request_count == 1 && lane.is_empty() {
+                            Some(Message::Text(text.clone()))
+                        } else { None };
+                        if (!lane.is_empty() && !lanes.contains(&lane) && lanes.len() >= 32)
+                            || queue.len() >= 64 || queued_bytes.saturating_add(text.len()) > 32 * 1024 * 1024
+                        {
+                            send_message(&mut ws, error_event(&lane, 429, "本地 WS 流或待处理请求数量已达上限")).await?;
+                        } else {
+                            if !lane.is_empty() { lanes.insert(lane.clone()); }
+                            queued_bytes += text.len();
+                            queue.push_back((lane, body, text.len()));
+                        }
+                    }
+                    Err(_) => send_message(&mut ws, error_event("", 400, "此入口支持 response.create；事件或 stream_id 无效")).await?,
+                },
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {},
+                Some(Ok(Message::Close(_))) | None => return Ok(()),
+                Some(Err(error)) => return Err(anyhow::Error::from(error)),
+                _ => send_message(&mut ws, error_event("", 400, "Responses WS 请求必须是 JSON 文本事件")).await?,
+            },
+            result = opened_rx.recv(), if !preparing.0.is_empty() => {
+                match result.context("WS 请求准备任务退出")? {
+                    Err((lane, status, message)) => {
+                        preparing.0.remove(&lane);
+                        // shortcut: HTTP 回退仅在首个默认流提交前启用，需要命名并发流的 HTTP 桥接时扩展。
+                        if status == 426 && preparing.0.is_empty() && connections.is_empty() && queue.is_empty()
+                            && let Some(first) = first_request.take()
+                        {
+                            return Box::pin(http_bridge::serve_upgraded(ws, raw_headers, &endpoint, Some(first))).await;
+                        }
+                        first_request = None;
+                        send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                    }
+                    Ok(opened) => {
+                        first_request = None;
+                        let Opened { lane, mut response } = opened;
+                        preparing.0.remove(&lane);
+                        let id = response.ready.connection.clone();
+                        if let Some(socket) = response.ready.socket.take() {
+                            connections.insert(id.clone(), start_connection(id.clone(), socket, events_tx.clone()));
+                            registry.lock().unwrap_or_else(|p| p.into_inner()).connections.insert(response.ready.fingerprint.clone(), id.clone());
+                        }
+                        response.ready.registration.take();
+                        let mut body = response.ready.body.clone();
+                        let object = body.as_object_mut().context("WS 上游请求不是 JSON 对象")?;
+                        object.remove("stream"); object.remove("background");
+                        object.insert("type".into(), json!("response.create"));
+                        if !lane.is_empty() { object.insert("stream_id".into(), json!(lane)); }
+                        let Some(connection) = connections.get(&id) else {
+                            response.log.record_error("502", "WS 上游连接已关闭".into());
+                            send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭")).await?;
+                            continue;
+                        };
+                        if connection.sender.send(Message::Text(body.to_string().into())).await.is_err() {
+                            response.log.record_error("502", "WS 上游连接已关闭".into());
+                            send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭")).await?;
+                            continue;
+                        }
+                        // 入上游写队列后可能已生成；取消不再退 RPM，更不能自动重发。
+                        response.reservation.submitted = true;
+                        active.insert(lane, response);
+                    }
+                }
+            },
+            event = events.recv() => match event.context("WS 上游事件通道退出")? {
+                UpstreamEvent::Closed(id) => {
+                    connections.remove(&id);
+                    registry.lock().unwrap_or_else(|p| p.into_inner()).connections.retain(|_, current| current != &id);
+                    let failed: Vec<_> = active.iter().filter(|(_, r)| r.ready.connection == id).map(|(lane, _)| lane.clone()).collect();
+                    for lane in failed {
+                        if let Some(mut response) = active.remove(&lane) {
+                            response.log.entry.status_code = 502;
+                            finish_response(&mut ws, &lane, &mut response).await?;
+                            record_failure(&response, 502, b"");
+                        }
+                        send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭；生成结果可能不完整，未自动重发")).await?;
+                    }
+                }
+                UpstreamEvent::Frame(id, Message::Text(text)) => {
+                    let event: Value = serde_json::from_str(&text).context("WS 上游返回无效 JSON")?;
+                    let lane = event.get("stream_id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let kind = event["type"].as_str().unwrap_or("");
+                    // 不带 lane 的连接级错误影响该连接上的全部活动响应。
+                    if kind == "error" && event.get("stream_id").is_none()
+                        && !active.get("").is_some_and(|response| response.ready.connection == id)
+                    {
+                        let failed: Vec<_> = active.iter().filter(|(_, r)| r.ready.connection == id).map(|(lane, _)| lane.clone()).collect();
+                        for lane in failed {
+                            if let Some(mut response) = active.remove(&lane) {
+                                let status = error_status(&event);
+                                response.log.entry.status_code = status;
+                                response.log.record_stream(Some("failed"), None, None);
+                                forward_response_event(&mut ws, &lane, &mut response, &text).await?;
+                                finish_response(&mut ws, &lane, &mut response).await?;
+                                record_failure(&response, status, text.as_bytes());
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(response) = active.get_mut(&lane).filter(|r| r.ready.connection == id) else {
+                        // 服务端控制事件可发生在响应终态之后，保留其原始协议形状。
+                        send_message(&mut ws, Message::Text(text)).await?;
+                        continue;
+                    };
+                    if response.response_id.is_none() && let Some(response_id) = event.pointer("/response/id").and_then(Value::as_str) {
+                        response.response_id = Some(response_id.into());
+                        registry.lock().unwrap_or_else(|p| p.into_inner()).responses.insert(response_id.into(), Affinity {
+                            connection: id.clone(), relay: response.ready.relay.clone(),
+                            model: response.ready.body["model"].as_str().unwrap_or("").into(),
+                            key: response.ready.gateway.as_ref().map(|gateway| gateway.candidate.key.clone()),
+                        });
+                    }
+                    if kind.ends_with(".delta") { response.log.mark_first_token_at(crate::launcher::current_time_ms()); }
+                    forward_response_event(&mut ws, &lane, response, &text).await?;
+                    if matches!(kind, "response.completed" | "response.failed" | "response.incomplete" | "error") {
+                        finish_response(&mut ws, &lane, response).await?;
+                        let success = kind == "response.completed" && event.pointer("/response/status").and_then(Value::as_str).is_none_or(|s| s == "completed");
+                        let error = event.pointer("/response/error").unwrap_or(&event["error"]);
+                        let status = error_status(&event);
+                        response.log.entry.status_code = if success || kind == "response.incomplete" { 200 } else { status };
+                        response.log.record_usage_json(text.as_bytes());
+                        response.log.record_stream(if success { None } else if kind == "response.incomplete" { Some("incomplete") } else { Some("failed") }, None, None);
+                        if success { response.log.record_final_response(response.transformer.final_response_usage()); }
+                        if success {
+                            if let Some(gateway) = &response.ready.gateway {
+                                let candidate = &gateway.candidate;
+                                crate::gateway::key_pool::record_success(&candidate.key, gateway.key_conversation.as_deref());
+                                if gateway.remember_route {
+                                    crate::gateway::route::remember_answer(&gateway.plan, candidate);
+                                }
+                                crate::gateway::speed::record(&candidate.relay.id, &candidate.upstream_model, response.started.elapsed());
+                            }
+                            if let Some(settings) = &response.ready.rotation {
+                                crate::relay_rotation::record_relay_request_event(settings, crate::relay_rotation::RotationEvent::Success);
+                            }
+                        } else if kind != "response.incomplete" {
+                            record_failure(response, status, json!({"error":error}).to_string().as_bytes());
+                        }
+                        active.remove(&lane);
+                    }
+                }
+                UpstreamEvent::Frame(_, _) => bail!("WS 上游返回非 JSON 文本事件"),
+            },
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use wiremock::{
-        Mock, MockServer, ResponseTemplate,
-        matchers::{method, path},
-    };
-
-    #[test]
-    fn incremental_input_keeps_tool_calls_and_encrypted_reasoning() {
-        let previous = PreviousResponse {
-            id: "resp_previous".into(),
-            input: vec![
-                json!({"role":"user","content":"question"}),
-                json!({"type":"reasoning","encrypted_content":"opaque"}),
-                json!({"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}),
-            ],
-        };
-        let event = json!({
-            "type":"response.create","model":"model","previous_response_id":"resp_previous",
-            "input":[{"type":"function_call_output","call_id":"call_1","output":"result"}]
-        });
-        let native = prepare_create(event).unwrap();
-        assert_eq!(native["previous_response_id"], "resp_previous");
-        assert_eq!(native["input"].as_array().unwrap().len(), 1);
-        let request = expand_previous(native, &previous).unwrap();
-        assert_eq!(request["input"].as_array().unwrap().len(), 4);
-        assert_eq!(request["input"][1]["encrypted_content"], "opaque");
-        assert_eq!(request["input"][3]["call_id"], "call_1");
-        assert!(request.get("previous_response_id").is_none());
-        let unknown = expand_previous(
-            json!({
-                "previous_response_id":"persisted_elsewhere","input":"next"
-            }),
-            &previous,
-        )
-        .unwrap();
-        assert_eq!(unknown["previous_response_id"], "persisted_elsewhere");
-    }
-
-    fn http_client() -> reqwest::Client {
-        reqwest::Client::builder().no_proxy().build().unwrap()
-    }
-
-    #[tokio::test]
-    async fn native_upstream_uses_ws_auth_and_preserves_response_events() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_hdr_async(
-                stream,
-                |request: &tungstenite::handshake::server::Request,
-                 response: tungstenite::handshake::server::Response| {
-                    assert_eq!(request.headers()["authorization"], "Bearer test-key");
-                    assert_eq!(
-                        request.headers()["openai-beta"],
-                        "responses_websockets=2026-02-06"
-                    );
-                    assert_eq!(request.headers()["thread-id"], "thread-1");
-                    Ok(response)
-                },
-            )
-            .await
-            .unwrap();
-            let frame = socket.next().await.unwrap().unwrap();
-            let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-            assert_eq!(create["type"], "response.create");
-            assert_eq!(create["model"], "upstream-model");
-            assert!(create.get("stream").is_none());
-            for event in [
-                json!({"type":"response.created","response":{"id":"resp_1","output":[]}}),
-                json!({"type":"response.output_text.delta","delta":"你好"}),
-                json!({"type":"response.completed","response":{"id":"resp_1","output":[]}}),
-            ] {
-                socket.send(Message::text(event.to_string())).await.unwrap();
-            }
-        });
-        let body = json!({"model":"upstream-model","input":"hello","stream":true});
-        let builder = http_client()
-            .post(endpoint)
-            .bearer_auth("test-key")
-            .header("thread-id", "thread-1")
-            .json(&body);
-        let response = send_upstream(builder, &body, Duration::from_secs(5), "relay", "")
-            .await
-            .unwrap();
-        assert_eq!(response.headers()["content-type"], "text/event-stream");
-        let events = response.text().await.unwrap();
-        assert!(events.contains("event: response.created"));
-        assert!(events.contains("你好"));
-        assert!(events.contains("event: response.completed"));
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn native_session_reuses_warmup_context_and_answers_idle_pings() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
-        let (ping_done, wait_ping) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            let mut ping_done = Some(ping_done);
-            for turn in 0..4 {
-                let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap();
-                let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                assert_eq!(create["stream_id"], "main");
-                if turn == 0 {
-                    assert_eq!(create["generate"], false);
-                } else if turn < 3 {
-                    assert_eq!(create["previous_response_id"], format!("resp_{}", turn - 1));
-                    assert_eq!(create["input"].as_array().unwrap().len(), 1);
-                } else {
-                    assert!(create.get("previous_response_id").is_none());
-                }
-                if turn == 2 {
-                    socket.send(Message::text(json!({
-                        "type":"error","status":400,"stream_id":"main",
-                        "error":{"type":"invalid_request_error","code":"previous_response_not_found"}
-                    }).to_string())).await.unwrap();
-                    continue;
-                }
-                socket.send(Message::text(json!({
-                    "type":"response.completed",
-                    "response":{"id":format!("resp_{turn}"),"output":[],"status":"completed"}
-                }).to_string())).await.unwrap();
-                if turn == 0 {
-                    socket
-                        .send(Message::Ping(b"idle".to_vec().into()))
-                        .await
-                        .unwrap();
-                    let pong = tokio::time::timeout(Duration::from_secs(5), socket.next())
-                        .await
-                        .expect("idle upstream pings must be answered")
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(pong, Message::Pong(b"idle".to_vec().into()));
-                    ping_done.take().unwrap().send(()).unwrap();
-                }
-            }
-        });
-        SESSION
-            .scope(Some(Arc::default()), async {
-                let mut wait_ping = Some(wait_ping);
-                for turn in 0..4 {
-                    let mut body = json!({"model":"model","stream":true,"store":false,"input":[],"stream_id":"main"});
-                    if turn == 0 {
-                        body["generate"] = json!(false);
-                    } else if turn < 3 {
-                        body["previous_response_id"] = json!(format!("resp_{}", turn - 1));
-                        body["input"] =
-                            json!([{"type":"function_call_output","call_id":"call","output":"ok"}]);
-                    } else {
-                        body["input"] = json!([{"role":"user","content":"full context retry"}]);
-                    }
-                    let response = send_upstream(
-                        http_client().post(&endpoint).bearer_auth("key").json(&body),
-                        &body,
-                        Duration::from_secs(5),
-                        "relay",
-                        "",
-                    )
-                    .await
-                    .unwrap();
-                    if turn == 2 {
-                        assert_eq!(response.status(), 400);
-                        let error: Value = response.json().await.unwrap();
-                        assert_eq!(error["error"]["code"], "previous_response_not_found");
-                        assert_eq!(error["stream_id"], "main");
-                    } else {
-                        assert!(
-                            response
-                                .text()
-                                .await
-                                .unwrap()
-                                .contains("response.completed")
-                        );
-                    }
-                    if turn == 0 {
-                        // 让 reader 在下一次 create 之前处理 Ping，验证空闲连接仍可存活。
-                        tokio::time::timeout(Duration::from_secs(5), wait_ping.take().unwrap())
-                            .await
-                            .unwrap()
-                            .unwrap();
-                    }
-                }
-            })
-            .await;
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn native_connections_are_scoped_to_client_route_credentials_and_model() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/v1/responses", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            for connection in 0..5 {
-                let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-                    .await
-                    .unwrap()
-                    .unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                for _ in 0..if connection == 0 { 2 } else { 1 } {
-                    let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .unwrap();
-                    let create: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                    assert_eq!(create["input"], "delta");
-                    socket.send(Message::text(json!({
-                        "type":"response.completed","response":{"id":format!("resp_{connection}"),"output":[]}
-                    }).to_string())).await.unwrap();
-                }
-            }
-        });
-        let session = Arc::default();
-        for (index, (credential, route, model)) in [
-            ("first-key", "first-route", "first-model"),
-            ("first-key", "first-route", "first-model"),
-            ("second-key", "first-route", "first-model"),
-            ("second-key", "second-route", "first-model"),
-            ("second-key", "second-route", "second-model"),
-            ("second-key", "second-route", "second-model"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let session = if index == 5 {
-                Arc::default()
-            } else {
-                Arc::clone(&session)
-            };
-            SESSION
-                .scope(Some(session), async {
-                    let body = json!({"model":model,"input":"delta","stream":true});
-                    let response = send_upstream(
-                        http_client()
-                            .post(&endpoint)
-                            .bearer_auth(credential)
-                            .json(&body),
-                        &body,
-                        Duration::from_secs(5),
-                        route,
-                        "",
-                    )
-                    .await
-                    .unwrap();
-                    assert!(
-                        response
-                            .text()
-                            .await
-                            .unwrap()
-                            .contains(&format!("resp_{}", index.saturating_sub(1)))
-                    );
-                })
-                .await;
-        }
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn unsupported_ws_falls_back_before_sending_a_generation() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/responses"))
-            .respond_with(ResponseTemplate::new(426))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/responses"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("http-stream"))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let body = json!({"model":"model","stream":true,"input":"hello"});
-        let builder = http_client()
-            .post(format!("{}/v1/responses", server.uri()))
-            .bearer_auth("test-key")
-            .json(&body);
-        let response = send_upstream(builder, &body, Duration::from_secs(5), "relay", "")
-            .await
-            .unwrap();
-        assert_eq!(response.text().await.unwrap(), "http-stream");
-        let requests = server.received_requests().await.unwrap();
-        assert_eq!(requests[0].body.len(), 0);
-        assert_eq!(requests[1].body_json::<Value>().unwrap(), body);
-        assert_eq!(requests[1].headers["authorization"], "Bearer test-key");
-    }
-
-    #[tokio::test]
-    async fn http_fallback_skips_warmup_generation_and_expands_cached_context() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(426))
-            .expect(2)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("http-stream"))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let session = Arc::new(Session::default());
-        SESSION.scope(Some(session.clone()), async {
-                let warmup = json!({"model":"model","input":"warmup context","stream":true,"generate":false,"stream_id":"main"});
-            let response = send_upstream(
-                http_client().post(server.uri()).json(&warmup),
-                &warmup, Duration::from_secs(5), "relay", "",
-            ).await.unwrap();
-            let events = response.text().await.unwrap();
-            let event = events.lines().filter_map(|line| line.strip_prefix("data: "))
-                .map(|data| serde_json::from_str::<Value>(data).unwrap()).last().unwrap();
-            let id = event["response"]["id"].as_str().unwrap();
-            *session.previous.lock().unwrap() = PreviousResponse {
-                id: id.into(), input: input_items(warmup.get("input")).unwrap(),
-            };
-            assert_eq!(server.received_requests().await.unwrap().len(), 1);
-                let body = json!({"model":"model","input":"question","previous_response_id":id,"stream":true,"stream_id":"main"});
-            let response = send_upstream(
-                http_client().post(server.uri()).json(&body),
-                &body, Duration::from_secs(5), "relay", "",
-            ).await.unwrap();
-            assert_eq!(response.text().await.unwrap(), "http-stream");
-            let requests = server.received_requests().await.unwrap();
-            let posted = requests.last().unwrap().body_json::<Value>().unwrap();
-            assert_eq!(posted["input"].as_array().unwrap().len(), 2);
-            assert_eq!(posted["input"][0]["content"], "warmup context");
-            assert_eq!(posted["input"][1]["content"], "question");
-            assert!(posted.get("previous_response_id").is_none());
-            assert!(posted.get("generate").is_none());
-                assert!(posted.get("stream_id").is_none());
-        }).await;
-    }
-
-    #[tokio::test]
-    async fn authentication_errors_do_not_fall_back_to_a_post() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(401).set_body_json(json!({"error":{"message":"expired"}})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let body = json!({"model":"model","stream":true});
-        let response = send_upstream(
-            http_client().post(server.uri()).json(&body),
-            &body,
-            Duration::from_secs(5),
-            "relay",
-            "",
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn invalid_upstream_handshake_is_rejected_without_posting() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(
-                ResponseTemplate::new(101)
-                    .insert_header("upgrade", "websocket")
-                    .insert_header("connection", "Upgrade")
-                    .insert_header("sec-websocket-accept", "invalid"),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let body = json!({"model":"model","stream":true});
-        let error = send_upstream(
-            http_client().post(server.uri()).json(&body),
-            &body,
-            Duration::from_secs(5),
-            "relay",
-            "",
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("Sec-WebSocket-Accept"));
-        assert_eq!(server.received_requests().await.unwrap().len(), 1);
-    }
-
-    async fn read_headers(stream: &mut tokio::net::TcpStream) -> String {
-        let mut headers = Vec::new();
-        while !headers.ends_with(b"\r\n\r\n") {
-            headers.push(stream.read_u8().await.unwrap());
-            assert!(headers.len() < 64 * 1024);
-        }
-        String::from_utf8(headers).unwrap()
-    }
-
-    #[tokio::test]
-    async fn frontend_preserves_native_warmup_and_incremental_tool_results() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let headers = read_headers(&mut stream).await;
-            let frontend = tokio::spawn(async move {
-                serve(&mut stream, &headers, "/v1/responses").await.unwrap();
-            });
-            let mut requests = Vec::new();
-            for turn in 0..3 {
-                let (mut http, _) = listener.accept().await.unwrap();
-                let headers = read_headers(&mut http).await;
-                let id =
-                    crate::launcher::header_value_from_headers(&headers, TRANSPORT_HEADER).unwrap();
-                assert!(sessions().lock().unwrap().contains_key(&id));
-                assert_eq!(
-                    crate::launcher::header_value_from_headers(&headers, "authorization")
-                        .as_deref(),
-                    Some("Bearer frontend-key"),
-                );
-                let length: usize =
-                    crate::launcher::header_value_from_headers(&headers, "content-length")
-                        .unwrap()
-                        .parse()
-                        .unwrap();
-                let mut body = vec![0; length];
-                http.read_exact(&mut body).await.unwrap();
-                requests.push(serde_json::from_slice::<Value>(&body).unwrap());
-                let output = if turn == 0 {
-                    json!([])
-                } else if turn == 1 {
-                    json!([{"type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}])
-                } else {
-                    json!([{"type":"message","role":"assistant","content":[{"type":"output_text","text":"你好"}]}])
-                };
-                let event = json!({
-                    "type":"response.completed",
-                    "response":{"id":format!("resp_{turn}"),"status":"completed","output":output}
-                });
-                let mut body = format!(
-                    ": keepalive\r\n\r\nevent: response.completed\r\ndata: {event}\r\n\r\n"
-                );
-                if turn == 0 {
-                    body = format!(
-                        "data: {}\n\n{body}",
-                        json!({"type":"response.created","response":{"id":"resp_0","output":[]}})
-                    );
-                }
-                http.write_all(format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len(),
-                ).as_bytes()).await.unwrap();
-            }
-            tokio::time::timeout(Duration::from_secs(5), frontend)
-                .await
-                .unwrap()
-                .unwrap();
-            requests
-        });
-        use tungstenite::client::IntoClientRequest;
-        let mut generated = format!("ws://{address}/v1/responses")
-            .into_client_request()
-            .unwrap();
-        generated
-            .headers_mut()
-            .insert("authorization", "Bearer frontend-key".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(generated).await.unwrap();
-        socket
-            .send(Message::text(
-                json!({
-                    "type":"response.create","model":"model","input":"warmup","generate":false
-                })
-                .to_string(),
-            ))
-            .await
-            .unwrap();
-        let created: Value =
-            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(created["type"], "response.created");
-        let warmup: Value =
-            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        socket.send(Message::text(json!({
-            "type":"response.create","model":"model",
-            "previous_response_id":warmup["response"]["id"],"input":[{"role":"user","content":"question"}]
-        }).to_string())).await.unwrap();
-        let first: Value =
-            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(first["response"]["id"], "resp_1");
-        socket
-            .send(Message::text(
-                json!({
-                    "type":"response.create","model":"model","previous_response_id":"resp_1",
-                    "input":[{"type":"function_call_output","call_id":"call_1","output":"done"}]
-                })
-                .to_string(),
-            ))
-            .await
-            .unwrap();
-        let second = socket.next().await.unwrap().unwrap();
-        assert!(second.to_text().unwrap().contains("你好"));
-        socket.close(None).await.unwrap();
-        let requests = tokio::time::timeout(Duration::from_secs(5), server)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(requests[0]["generate"], false);
-        assert_eq!(requests[0]["input"], "warmup");
-        assert_eq!(requests[1]["previous_response_id"], "resp_0");
-        assert_eq!(requests[1]["input"].as_array().unwrap().len(), 1);
-        assert_eq!(requests[2]["input"].as_array().unwrap().len(), 1);
-        assert_eq!(requests[2]["input"][0]["call_id"], "call_1");
-        assert_eq!(requests[2]["previous_response_id"], "resp_1");
-    }
-}
+mod tests;

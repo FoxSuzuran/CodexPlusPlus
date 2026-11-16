@@ -17,6 +17,7 @@ pub mod install;
 mod lightweight;
 mod provider_lookup_commands;
 mod runtime_health;
+mod skill_backup_usage;
 mod tray_panel;
 mod shutdown_watchdog;
 
@@ -241,6 +242,26 @@ pub fn run() {
     // 失败只记诊断日志，不影响启动。
     #[cfg(target_os = "macos")]
     std::thread::spawn(codex_plus_core::update::macos::cleanup_stale_update_transactions);
+    // 已经装上的版本不再需要安装包：删掉 updates/ 里不高于当前版本的安装包（#3094）。
+    std::thread::spawn(|| {
+        let removed = codex_plus_core::update::prune_installed_installers(
+            &codex_plus_core::paths::default_app_state_dir().join("updates"),
+            codex_plus_core::version::VERSION,
+        );
+        if !removed.is_empty() {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "update.installers_pruned",
+                serde_json::json!({
+                    "count": removed.len(),
+                    "files": removed
+                        .iter()
+                        .filter_map(|path| path.file_name())
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                }),
+            );
+        }
+    });
     // Codex++ 重启后在原端口恢复 Claude 仍挂接着的本地代理（后台做，不阻塞启动）。
     std::thread::spawn(|| {
         match codex_plus_core::claude_local_backend::resume_attached_proxy() {
@@ -557,6 +578,15 @@ pub fn run() {
             commands::delete_user_script,
             commands::refresh_skill_catalog,
             commands::list_installed_skills,
+            commands::list_skill_file_times,
+            commands::find_skill_repository_matches,
+            commands::apply_skill_repository_matches,
+            commands::discover_skill_source_evidence,
+            commands::preview_skill_duplicates,
+            commands::archive_skill_duplicate,
+            commands::preview_skill_in_place_update,
+            commands::discard_skill_in_place_update_preview,
+            commands::execute_skill_in_place_update,
             commands::import_ccs_skills,
             commands::import_local_skills,
             commands::install_skill,
@@ -566,6 +596,7 @@ pub fn run() {
             commands::uninstall_skill,
             commands::restore_skill_backup,
             commands::delete_skill_backup,
+            skill_backup_usage::skill_backup_usage,
             commands::upsert_skill_repo,
             commands::inspect_skill_repo,
             commands::delete_skill_repo,

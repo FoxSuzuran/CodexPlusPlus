@@ -408,7 +408,7 @@ it("同一菜单扫描保留当前供应商，重新打开时回到供应商入�
 
   observe(secondList);
   assert.equal(state.activeGroupId, "");
-  assert.equal(state.collapsed.size, 0, "重新打开菜单时重置上一次的折叠状态");
+  assert.deepEqual([...state.collapsed], ["b"], "重新打开菜单时保留供应商折叠状态");
   assert.equal(state.observedLists.has(secondList), true);
   assert.equal(state.observedLists.has(firstList), false);
   assert.deepEqual(cleared, [firstList]);
@@ -423,7 +423,7 @@ it("同一菜单扫描保留当前供应商，重新打开时回到供应商入�
   liveLists = [];
   state.collapsed.add("a");
   observe({});
-  assert.equal(state.collapsed.size, 0, "旧菜单已被 React 移除时也重置折叠状态");
+  assert.deepEqual([...state.collapsed], ["b", "a"], "旧菜单已被 React 移除时仍保留折叠状态");
   assert.equal(state.activeGroupId, "");
 });
 
@@ -434,6 +434,7 @@ it("视图切换和批量展开折叠保持状态与原生焦点", async () => {
   const focused: string[] = [];
   let cleared = 0;
   let patched = 0;
+  let persisted = 0;
   const list = { isConnected: true, querySelector: (selector: string) => ({
     focus: () => { focused.push(selector); },
   }) };
@@ -441,10 +442,11 @@ it("视图切换和批量展开折叠保持状态与原生焦点", async () => {
     "codexPlusModelPickerGroupsState", "window", "codexPlusModelPickerViewStoreKey",
     "codexPlusModelPickerClear", "codexPlusModelPickerUniqueGroupIds", "codexPlusModelPickerGroups",
     "codexPlusModelPickerRows", "codexPlusModelPickerDefaultProviderName", "codexPlusModelPickerPatch",
+    "codexPlusModelPickerPersistCollapsed",
     `${functionSource(source, "codexPlusModelPickerViewAction")}\nreturn codexPlusModelPickerViewAction;`,
   )(state, { localStorage: { setItem: (_key: string, value: string) => stored.push(value) } },
     "view", () => { cleared++; }, (groups: unknown) => groups, () => [{ id: "a" }, { id: "b" }],
-    () => [], () => "", () => { patched++; });
+    () => [], () => "", () => { patched++; }, () => { persisted++; });
   action(list, "list");
   assert.equal(state.viewMode, "list");
   assert.deepEqual(stored, ["list"]);
@@ -459,6 +461,8 @@ it("视图切换和批量展开折叠保持状态与原生焦点", async () => {
   assert.match(focused.at(-1)!, /list/);
   assert.equal(cleared, 2);
   assert.equal(patched, 4);
+  // 批量折叠 / 展开要落盘，切换视图不碰折叠记录（#3073）。
+  assert.equal(persisted, 2);
   action({ ...list, isConnected: false }, "list");
   assert.equal(patched, 4);
 });

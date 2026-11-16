@@ -3086,7 +3086,10 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
     assert!(script.contains("return deleteUncreatedSession(row, button);"));
     assert!(script.contains("function uncreatedSessionActionFromRow(row)"));
-    assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
+    // 会话切换后历史容器上的 conversation id 也会变，观察器要跟着重扫（#3126 的阅读位置对齐）。
+    assert!(script.contains(
+        "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\", \"data-above-composer-conversation-id\"]"
+    ));
 
     let cases = run_session_ref_contract_harness();
     assert_eq!(
@@ -3415,7 +3418,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"38\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"48\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3568,7 +3571,7 @@ fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() 
 
     assert!(script
         .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()"));
-    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
+    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()\n        && !(codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled)) return;"));
 }
 
 #[test]

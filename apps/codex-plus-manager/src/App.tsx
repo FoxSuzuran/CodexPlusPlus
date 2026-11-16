@@ -481,6 +481,7 @@ type BackendSettings = WhaleBalanceSettings & {
   threadModelFollowSwitchEnabled?: boolean;
   /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
   keepProjectsWithoutAccount?: boolean;
+  nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
   /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
@@ -2045,6 +2046,7 @@ export function App() {
           "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout", "claudeDesktopLocal",
           // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
           "managerAgentFocus",
+          "nativeAuthSelection",
         ]) merged[key] = fresh[key];
         return merged as BackendSettings;
       });
@@ -5005,7 +5007,7 @@ export function App() {
         void navigate(issue.includes("供应商池是空的") ? "gatewayProviders" : "gateway");
         return;
       }
-      const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true } });
+      const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true }, reconnect: true });
       publishGatewayPayload(result);
       await refreshSettings(true);
       await showNotice(t("切换到网关"), result.message, isSuccessStatus(result.status as Status) ? "ok" : "failed");
@@ -8253,7 +8255,7 @@ function RelayScreen({
         )}
       />
       {connection}
-      <NativeAuthControl />
+      <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (
@@ -8335,6 +8337,37 @@ function RelayScreen({
             poolLink={poolLink}
             actions={actions}
           />
+        </CxSection>
+      ) : null}
+      {/* 「切换时保留」对直连和网关都生效（网关重写 Codex 配置也走同一条切换流程），
+          所以放在两种模式都看得到的地方；以前藏在直连供应商编辑的「通用配置文件」里，网关用户找不到（#3115）。 */}
+      {normalized.relayProfilesEnabled ? (
+        <CxSection>
+          <CxCard>
+            <CxRow
+              className="cx-preserve-row"
+              detail={<>
+                {t("打开后，切换供应商、接入或重写网关、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和网关都适用。")}
+                <br />
+                {t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；网关模式下 developer_instructions 等根级个人设置也会跟着走。")}
+              </>}
+              title={t("切换时保留实时配置里的改动")}
+            >
+              <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+                <input
+                  aria-label={t("切换时保留实时配置里的改动")}
+                  checked={normalized.relayPreserveNonproviderSettings === true}
+                  onChange={(event) => {
+                    const next = { ...normalized, relayPreserveNonproviderSettings: event.currentTarget.checked };
+                    void saveRelaySettings(next);
+                  }}
+                  type="checkbox"
+                />
+                <span>{t("保留")}</span>
+                <ToggleVisual />
+              </label>
+            </CxRow>
+          </CxCard>
         </CxSection>
       ) : null}
       {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。
@@ -15590,11 +15623,6 @@ function RelayFileEditors({
               <Download className="h-4 w-4" />
               {t("提取当前供应商配置")}
             </Button>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.relayPreserveNonproviderSettings === true}
-              onChange={(event) => onFormChange({ ...form, relayPreserveNonproviderSettings: event.currentTarget.checked })} />
-            {t("切换时保留缺失的项目信任设置、通知命令，以及实时配置里改过的 MCP 条目")}
-          </label>
           <SyncedTextarea
             className="relay-file-textarea"
             value={form.relayCommonConfigContents}
@@ -16380,6 +16408,8 @@ type ClaudeLocalConfig = {
   voiceInput: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
+  /** 无视 Claude 对后台模式的 macOS 版本上限（默认关）。 */
+  forceBackgroundMode?: boolean;
   displayName?: string;
   email?: string;
   plan?: string;
@@ -17082,13 +17112,25 @@ function ClaudeLocalizationScreen(
                 ["voiceInput", "原生听写", "本地原生听写"],
                 ["computerUse", "电脑控制", "本地电脑控制"],
                 ["backgroundMode", "后台模式", "本地后台模式"],
+                ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本"],
               ] as const).map(([key, label, ariaLabel]) => (
-                <label className="switch-row compact" key={key}>
+                <label
+                  className="switch-row compact"
+                  key={key}
+                  title={key === "forceBackgroundMode"
+                    ? t("Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定")
+                    : undefined}
+                >
                   <input
                     aria-label={t(ariaLabel)}
-                    checked={local.config[key]}
+                    checked={local.config[key] ?? false}
                     disabled={localDisabled}
-                    onChange={(event) => void configureLocal({ ...local.config, [key]: event.currentTarget.checked })}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      // 关后台模式时一并关掉「新系统也开」，否则保存时会被它重新打开。
+                      const extra = key === "backgroundMode" && !checked ? { forceBackgroundMode: false } : {};
+                      void configureLocal({ ...local.config, [key]: checked, ...extra });
+                    }}
                     type="checkbox"
                   />
                   <span><strong>{t(label)}</strong></span>

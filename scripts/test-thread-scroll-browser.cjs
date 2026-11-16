@@ -4,7 +4,8 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 const source = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-inject/60-plugin-marketplace.js"), "utf8");
-const helpers = source.slice(source.indexOf("  function finiteNonNegativeNumber("), source.indexOf("  async function postJson("));
+const helpers = source.match(/^  function normalizedCodexThreadUuid\([^]*?^  \}/m)[0] + "\n"
+  + source.slice(source.indexOf("  function threadScrollRestoreEnabled("), source.indexOf("  async function postJson("));
 const prelude = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-inject/00-prelude.js"), "utf8");
 const constants = [...prelude.matchAll(/^  const codexThreadScroll\w+ = .+;$/gm)].map(match => match[0]).join("\n");
 const actions = fs.readFileSync(path.join(__dirname, "../assets/inject/renderer-inject/90-action-groups.js"), "utf8");
@@ -28,6 +29,8 @@ async function main() {
         const sessionRows=()=>[];
         const locationThreadId=()=>sessionId;
         const codexPlusSettings=()=>({threadScrollRestore:true});
+        const codexPlusBackendSettingsLoaded=true;
+        const codexPlusBackendSettings={codexAppThreadScrollRestore:true};
         const storage=new Map();
         const localStorage={getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
         ${constants}

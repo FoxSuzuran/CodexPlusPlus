@@ -1,3 +1,7 @@
+param(
+    [string]$DevArtifactsLog = (Join-Path $PSScriptRoot '..\target\temp\windows-build\dev.jsonl')
+)
+
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This build entry is for Windows.' }
 $root = Split-Path -Parent $PSScriptRoot
@@ -7,6 +11,10 @@ $sweep = Join-Path $target 'tools\cargo-sweep\bin\cargo-sweep.exe'
 if (-not (Test-Path -LiteralPath $sweep)) {
     throw 'Install cargo-sweep 0.8.0 with: cargo install cargo-sweep --version 0.8.0 --locked --root target/tools/cargo-sweep --target-dir target --jobs 4'
 }
+if (-not (Test-Path -LiteralPath $DevArtifactsLog -PathType Leaf)) {
+    throw 'Pass -DevArtifactsLog from the relevant cargo test --message-format=json run; a full workspace test build is not required.'
+}
+$DevArtifactsLog = (Resolve-Path -LiteralPath $DevArtifactsLog).Path
 $overrides = @(Get-ChildItem Env: | Where-Object {
     $_.Name -match '^(RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_INCREMENTAL|CARGO_PROFILE_.*|CARGO_TARGET_DIR|CARGO_BUILD_TARGET_DIR|CARGO_BUILD_BUILD_DIR|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_JOBS)$'
 })
@@ -27,10 +35,6 @@ try {
     & $sweep sweep --stamp $root
     if ($LASTEXITCODE -ne 0) { throw 'Could not stamp the build cache.' }
 
-    Write-Host 'Compiling the current dev/test graph for cache retention...'
-    & cargo test --workspace --all-targets --no-run --locked --offline --message-format=json 2> (Join-Path $evidence 'dev.stderr.log') |
-        Set-Content -LiteralPath (Join-Path $evidence 'dev.jsonl') -Encoding utf8
-    if ($LASTEXITCODE -ne 0) { throw "Dev/test compilation failed; see $evidence" }
 
     Write-Host 'Building the complete production frontend...'
     & npm.cmd --prefix apps/codex-plus-manager run vite:build *> (Join-Path $evidence 'frontend.log')
@@ -45,7 +49,7 @@ try {
         try { $file.Lock(0, 1) } catch { $file.Dispose(); throw }
         $locks += $file
     }
-    $pinsJson = & node scripts/cargo-build-pins.mjs (Join-Path $evidence 'dev.jsonl') (Join-Path $evidence 'release.jsonl')
+    $pinsJson = & node scripts/cargo-build-pins.mjs $DevArtifactsLog (Join-Path $evidence 'release.jsonl')
     if ($LASTEXITCODE -ne 0) { throw 'Could not verify the live build artifacts; cache was retained.' }
     $pinsJson | Set-Content -LiteralPath (Join-Path $evidence 'pins.json') -Encoding utf8
     $pins = $pinsJson | ConvertFrom-Json
@@ -59,6 +63,20 @@ try {
     foreach ($file in $pins.artifactFiles) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Current artifact was removed: $file" }
     }
+    foreach ($directory in $pins.staleIncrementalDirectories) {
+        $resolved = (Resolve-Path -LiteralPath $directory).Path
+        $parent = Split-Path -Parent $resolved
+        if ($parent -notin @((Join-Path $target 'debug\incremental'), (Join-Path $target 'release\incremental'))) {
+            throw "Incremental cache outside the workspace: $resolved"
+        }
+        if ((Get-Item -LiteralPath $resolved).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Linked incremental cache: $resolved"
+        }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+    $cachedDevLog = Join-Path $evidence 'dev.jsonl'
+    if ($DevArtifactsLog -ne $cachedDevLog) { Copy-Item -LiteralPath $DevArtifactsLog -Destination $cachedDevLog }
+    Write-Host "Removed $($pins.staleIncrementalDirectories.Count) incremental caches unchanged for at least three days."
     Write-Host "Built: $(Join-Path $target 'release\codex-plus-plus.exe')"
     Write-Host "Build and cache records: $evidence"
 } finally {

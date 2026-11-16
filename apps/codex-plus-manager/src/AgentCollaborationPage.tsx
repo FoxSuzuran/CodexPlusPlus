@@ -136,7 +136,7 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!mounted.current || readInFlight.current || busyRef.current) return;
+    if (document.visibilityState === "hidden" || !mounted.current || readInFlight.current || busyRef.current) return;
     const epoch = lifecycle.current;
     const sequence = ++requestSequence.current;
     readInFlight.current = true;
@@ -176,9 +176,11 @@ export function AgentCollaborationPage({ defaultCwd = "" }: { defaultCwd?: strin
     const timer = window.setInterval(() => { void refresh(); }, hasUnfinishedTasks ? 2000 : 10000);
     const refreshOnFocus = () => { void refresh(); };
     window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
     };
   }, [hasUnfinishedTasks, refresh]);
 

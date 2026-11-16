@@ -60,9 +60,7 @@
   }
   const statusParams = () => ({ serverName: service, detail: "toolsAndAuthOnly", limit: 100 });
   if (!localClient()) return result();
-  // 旧 runtime 的全局清单可能缺少刚接入的 server，甚至发现请求失败。
-  // 管理器已确认配置归属；不能要求旧清单先含有新工具，才允许本次重读。
-  try { await request("mcpServerStatus/list", statusParams()); } catch {}
+  // 旧清单不能验证刚接入的工具；直接重读，再核验当前会话和列表缓存。
   try {
     await request("config/mcpServer/reload", null, 3500);
     report.reloadSucceeded = true;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildPins } from "./cargo-build-pins.mjs";
+import { buildPins, staleIncrementalDirectories } from "./cargo-build-pins.mjs";
 
 function fixture(t) {
   const temporary = fs.realpathSync(process.env.TEMP || os.tmpdir());
@@ -57,4 +57,34 @@ test("rejects artifacts outside target and missing artifacts", t => {
   records[0].filenames = [path.join(root, "debug/deps/missing.rlib")];
   fs.writeFileSync(logs[0], records.map(JSON.stringify).join("\n"));
   assert.throws(() => buildPins(logs, root), /ENOENT/);
+});
+
+test("accepts relevant cargo test logs without requiring another test compilation", t => {
+  const { root, logs } = fixture(t);
+  fs.appendFileSync(logs[0], "\nrunning 1 test\ntest relevant ... ok\ntest result: ok. 1 passed\n");
+  assert.equal(buildPins(logs, root).artifactFiles.length, 2);
+  fs.appendFileSync(logs[0], '{"reason":"compiler-artifact"');
+  assert.throws(() => buildPins(logs, root), SyntaxError);
+});
+
+test("incremental cleanup plans only caches older than three days and retains active or recently written sessions", t => {
+  const { root } = fixture(t);
+  const base = path.join(root, "debug/incremental");
+  const old = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
+  const make = (name, session) => {
+    const directory = path.join(base, name);
+    const child = path.join(directory, session);
+    fs.mkdirSync(child, { recursive: true });
+    const data = path.join(child, "query-cache.bin");
+    fs.writeFileSync(data, "cache");
+    for (const file of [data, child, directory]) fs.utimesSync(file, old, old);
+    return { directory, data };
+  };
+  const stale = make("fixture-old1", "s-finalized");
+  const fresh = make("fixture-fresh1", "s-finalized");
+  fs.utimesSync(fresh.data, new Date(), new Date());
+  make("fixture-active1", "s-session-working");
+  make("unknown-directory-name", "s-finalized");
+  assert.deepEqual(staleIncrementalDirectories(root), [stale.directory]);
+  assert.ok(fs.existsSync(stale.directory), "planning must not delete files");
 });

@@ -49,8 +49,7 @@ const client = {
     assert.equal(params.serverName,'codex_plus_collaboration');
     assert.equal(params.detail,'toolsAndAuthOnly');
     assert.equal(params.limit,100);
-    if (mode==='missing-tools' && calls.length===1) return {data:[{name:'codex_plus_collaboration',tools:{get_task:{name:'get_task'}}}]};
-    if (mode==='preflight-error' && calls.length===1) throw new Error('FAKE_SECRET_PREFLIGHT must never escape');
+    if (mode==='status-error') throw new Error('FAKE_SECRET_STATUS must never escape');
     if (params.threadId) assert.equal(params.threadId,uuid);
     return {data:[item(params.threadId ? mode==='thread-not-ready' ? 'starting' : 'connected' : null)]};
   },
@@ -86,13 +85,12 @@ const context = {window,document,Map,Set,Promise,JSON,Object,Array,Error,setTime
  if (['no-bridge','remote-host','mismatched-entry','disposed','getter-bound'].includes(mode)) {
    assert.equal(report.status,'unavailable'); assert.equal(report.reloadSucceeded,false); assert.equal(calls.length,0);
  } else if (mode==='reload-error') {
-   assert.equal(report.status,'error'); assert.equal(report.reloadSucceeded,false); assert.equal(calls.length,2); assert.ok(!JSON.stringify(report).includes('FAKE_SECRET_FIXTURE'));
+    assert.equal(report.status,'error'); assert.equal(report.reloadSucceeded,false); assert.equal(calls.length,1); assert.ok(!JSON.stringify(report).includes('FAKE_SECRET_FIXTURE'));
  } else {
    assert.equal(report.reloadSucceeded,true);
-   assert.deepEqual(calls.map(call=>call[0]),['mcpServerStatus/list','config/mcpServer/reload','mcpServerStatus/list']);
-   assert.equal(calls[0][1].threadId,undefined);
-   assert.equal(calls[2][1].threadId,['no-thread','temporary-thread'].includes(mode)?undefined:uuid);
-   assert.equal(report.toolCount,11);
+    assert.deepEqual(calls.map(call=>call[0]),['config/mcpServer/reload','mcpServerStatus/list']);
+    assert.equal(calls[1][1].threadId,['no-thread','temporary-thread'].includes(mode)?undefined:uuid);
+    assert.equal(report.toolCount,mode==='status-error'?0:11);
    if (mode==='missing-query-client') {
      assert.equal(report.status,'partial'); assert.equal(report.cacheRefreshed,false); assert.equal(report.toolsReady,true); assert.equal(cacheCalls.length,0);
      assert.equal(report.message,'本机 MCP 配置已整体重读，工具已就绪；未找到 QueryClient，无法刷新 MCP 列表缓存。');
@@ -118,7 +116,7 @@ const context = {window,document,Map,Set,Promise,JSON,Object,Array,Error,setTime
      assert.deepEqual(cacheCalls.map(call=>call[0]),['invalidate','refetch']);
      assert.equal(report.cacheRefreshed,true);
      assert.deepEqual(otherQuery.state.data,{keep:true});
-     if (mode==='thread-not-ready') {
+      if (mode==='thread-not-ready' || mode==='status-error') {
        assert.equal(report.status,'partial'); assert.equal(report.threadVerified,false); assert.equal(report.toolsReady,false);
      } else {
        assert.equal(report.status,'ready'); assert.equal(report.toolsReady,true); assert.equal(report.threadVerified,!['no-thread','temporary-thread'].includes(mode));
@@ -126,7 +124,7 @@ const context = {window,document,Map,Set,Promise,JSON,Object,Array,Error,setTime
    }
  }
  assert.deepEqual(Object.keys(report).sort(),['status','message','reloadSucceeded','toolsReady','toolCount','threadVerified','cacheRefreshed'].sort());
- assert.ok(!JSON.stringify(report).includes('FAKE_SECRET_PREFLIGHT'));
+  assert.ok(!JSON.stringify(report).includes('FAKE_SECRET_STATUS'));
  assert.ok(!JSON.stringify(report).includes('FAKE_SECRET_CACHE'));
  assert.ok(!JSON.stringify(report).includes('CODEX_PLUS_REFRESH_TIMEOUT'));
  console.log('fixture passed: '+mode);
@@ -171,16 +169,11 @@ fn native_refresh_uses_only_fixed_rpc_sequence_and_refreshes_exact_global_full_c
 }
 
 #[test]
-fn native_refresh_does_not_require_the_old_global_catalog_to_already_see_new_tools() {
-    fixture("missing-tools");
-    fixture("preflight-error");
-}
-
-#[test]
 fn native_refresh_reports_partial_without_cache_or_connected_current_thread() {
     fixture("missing-query-client");
     fixture("missing-full-query");
     fixture("thread-not-ready");
+    fixture("status-error");
     fixture("refetch-error");
     fixture("stale-cache");
 }

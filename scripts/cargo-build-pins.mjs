@@ -3,6 +3,32 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+export function staleIncrementalDirectories(targetDir) {
+  const target = fs.realpathSync(targetDir);
+  const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  const newestMtime = file => {
+    const stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink() || (stat.isDirectory() && file.endsWith("-working"))) return Infinity;
+    let newest = stat.mtimeMs;
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(file)) newest = Math.max(newest, newestMtime(path.join(file, name)));
+    }
+    return newest;
+  };
+  const stale = [];
+  for (const profile of ["debug", "release"]) {
+    const folder = path.join(target, profile, "incremental");
+    if (!fs.existsSync(folder)) continue;
+    assert.equal(fs.lstatSync(folder).isSymbolicLink(), false, "linked incremental directory");
+    for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[A-Za-z_][A-Za-z_\d]*-[a-z\d]+$/.test(entry.name)) continue;
+      const directory = path.join(folder, entry.name);
+      if (newestMtime(directory) < cutoff) stale.push(directory);
+    }
+  }
+  return stale.sort();
+}
+
 export function buildPins(logs, targetDir) {
   const target = fs.realpathSync(targetDir);
   assert.equal(target.toLowerCase(), path.resolve(targetDir).toLowerCase(), "target must stay in the workspace");
@@ -20,7 +46,9 @@ export function buildPins(logs, targetDir) {
     for (const match of file.matchAll(/-([a-f\d]{16})(?=[./\\]|$)/g)) hashes.add(match[1]);
   };
   for (const log of logs) {
-    const records = fs.readFileSync(log, "utf8").replace(/^\uFEFF/, "").trim().split(/\r?\n/).map(JSON.parse);
+    // cargo test emits test-harness output after its JSON build messages.
+    const records = fs.readFileSync(log, "utf8").replace(/^\uFEFF/, "").trim().split(/\r?\n/)
+      .filter(line => line.trimStart().startsWith("{")).map(JSON.parse).filter(record => record.reason);
     assert.equal(records.at(-1)?.reason, "build-finished", "incomplete Cargo build log");
     assert.equal(records.at(-1)?.success, true, "Cargo build did not succeed");
     let artifacts = 0;
@@ -57,7 +85,10 @@ export function buildPins(logs, targetDir) {
     }
   }
   assert.ok(fingerprintFiles.length > 0, "no live fingerprints found");
-  return { fingerprintFiles: fingerprintFiles.sort(), artifactFiles: [...artifactFiles].sort() };
+  return {
+    fingerprintFiles: fingerprintFiles.sort(), artifactFiles: [...artifactFiles].sort(),
+    staleIncrementalDirectories: staleIncrementalDirectories(target),
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

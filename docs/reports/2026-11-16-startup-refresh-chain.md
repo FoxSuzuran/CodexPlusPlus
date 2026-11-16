@@ -1,5 +1,7 @@
 # 启动与刷新耗时链排查
 
+本文保留前一轮追踪和交付记录；资源发现精简与最新产物记录见末尾章节。
+
 本轮依据已安装 2.6.10 的实际启动日志和一次完整页面刷新追踪，修复阅读位置恢复中的重复布局查询，以及启动成功回包没有计入桥接健康状态的问题。保留原有主题、阅读位置、原生自动滚动保护、桥接失效恢复和接口。
 
 ## 实际启动链
@@ -104,3 +106,83 @@ flowchart LR
 安装目录在本轮保持原交付包；新 EXE 的完整启动、实际刷新和主题视觉对照尚未验收。退出 Codex++ 和 Codex 后，需要手动替换：`C:\Users\29035\AppData\Local\Programs\Codex++\codex-plus-plus.exe`。版本号仍为 2.6.10，应按提交和 SHA-256 区分本轮产物。
 
 剩余明确耗时包括原生应用约十秒的启动阶段、供应商同步、首次大脚本注入、原生全局样式重算及历史水合。需要在新包下再次抓同一链条验证端到端收益，没有根据本轮受控调用次数对照宣布卡顿已全部解决。
+
+## 后续精简：原生资源发现与测试源码读取
+
+本次接着上述启动、刷新追踪，收敛到同一批原生 JS 被不同兼容模块重复读取的路径。修复前查阅上游 Issue #2299 与 PR #1969；现有代码已具备按模块名的失败冷却和重注入持久化，仍缺少不同查找之间的资源读取复用。本次没有绕过这些保护，也没有改变原生模块选择顺序。
+
+源码提交：`5020b33e`（完整提交和源码树见本次交付 manifest）。
+
+### 运行链路
+
+`20-menu.js` 中的模块名查找与依赖遍历统一读取入口：
+
+```text
+模块查找 / 请求客户端发现
+  → 同 URL 共享在途读取与已读取文本
+  → 原有模块匹配 / 同源依赖遍历
+```
+
+- 同时查找不同模块名时，同一资源只发起一次读取；顺序查找也复用文本。
+- 缓存跨同一文档的重注入保留，30 秒后再次访问时重新读取。没有新增后台定时器或 DOM 缓存。
+- 保留文本的预算为 16,777,216 个字符，按 UTF-16 约 32 MiB；最多 512 个条目，超出后淘汰最近最少使用项。预算不包含在途响应和对象开销，过期但未再次访问的文本仍在该预算以内。
+- HTTP、fetch 或响应体读取失败后移出资源缓存，允许调用方按原有策略重试。原有按模块名的失败冷却与上限仍生效。
+- 淘汰后晚到的响应不会重新写入缓存或污染统计；空的成功脚本仍参与原有遍历，同源过滤和循环依赖去重保持原行为。
+
+### 减少测试重复工作
+
+`renderer-inject.test.ts` 中 67 处整份 renderer 的读取共用一次 Promise；`renderer-capabilities.test.ts` 也共用一次源码读取。测试使用独立的运行时状态，源码字符串只读共享；没有删除原有行为用例。
+
+资源发现的行为用例放在 `renderer-assets.test.ts`。以后只改这条 JS 链时，可以定向运行下面的 24 项检查；修改渲染器公共行为或其他模块时仍按实际影响扩大范围。Rust 源码、依赖和 Cargo 配置均未改变时，可以复用既有成功的 Cargo JSON 记录传给 `scripts/build-windows.ps1 -DevArtifactsLog` 保留缓存，不为生成依赖图记录再编译一遍 Rust 测试。最终发布包仍需核验嵌入资源与当前源码逐字节一致。
+
+```powershell
+$env:TEMP = Join-Path $PWD "target/temp"
+$env:TMP = $env:TEMP
+node --test apps/codex-plus-manager/src/renderer-assets.test.ts apps/codex-plus-manager/src/renderer-capabilities.test.ts apps/codex-plus-manager/src/renderer-assembly.test.ts
+```
+
+Rust 或资源打包规则有变化、或者没有可复用的成功 Cargo 记录时，再按需运行资源回归并保存记录：
+
+```powershell
+cargo test -p codex-plus-core assets::tests --lib --message-format=json > target/temp/windows-build/dev.jsonl
+```
+
+本轮还对被改写读取方式的整个 renderer 测试文件跑了 188 个既有用例，全部通过。Rust 资源定向测试 10 项通过，TypeScript、渲染器语法、组装一致性和 Git 差异检查通过。没有重复跑整个 Rust 工作区、173 项无关的桥接测试或无关浏览器回归。 最后一次 Cargo 日志中，10 项测试本身用时 0.22 秒，前置编译用时约 62 秒；复用依赖图记录的流程用于避免纯 JS 调整再次支付这部分开发配置编译成本，不能消除固定 release 配置下必要的最终编译。
+
+### 对照与边界
+
+独立固定夹具包含 240 个原生资源候选和 3 个不同模块名查找，旧、新代码都提取自实际 `20-menu.js`：
+
+| 操作 | 原读取次数 | 共享后 |
+| --- | ---: | ---: |
+| 三个模块依次查找 | 720 | 240 |
+| 三个模块并发查找 | 720 | 240 |
+| 同一文档重注入后查找另一新模块名 | 240 | 0 |
+
+重注入对照保留了原有模块名结果缓存，使用的是此前未查找的第四个模块名。该夹具只证明读取合并与调用链行为，没有测量真实应用完整启动或刷新耗时。缓存超过预算、持续超过 30 秒的长查找仍可能再次读取，因此不能直接把表中比例用于真实场景。
+
+本次证据保存在 `target/temp/asset-discovery-20261116/`，包含 `discovery-comparison.json`、定向测试、原有 renderer 回归、Cargo 资源测试和发布构建记录。
+
+### 本次发布构建
+
+完整 `vite:build` → 固定 `cargo xrelease` 成功，用时 791.09 秒；Rust release 阶段 12 分 54 秒。版本仍为 2.6.10。单应用 EXE 为 Windows x64 GUI、117,620,736 字节，SHA-256：`525b4e1a6f91e2dfaddf73ec0ab94af6d42024fa9a75947f5cf18cd03c7966b6`。
+
+当前 renderer SHA-256 为 `65ac0487951e880f23bfe163d720871d90ead84c530a75e9d7ee24f4f1e94f0e`。renderer、Dream renderer 和 Dream CSS 均从 Zstandard 还原后与源码逐字节相同，且压缩资源位于 EXE 中；管理器前端 Brotli 内容和嵌入也一致，之前的协同刷新与启动桥接修复仍在产物中。
+
+自动回收历史 Cargo 产物约 463.95 MiB，保留 1816 个当前产物文件，本轮未清理增量缓存目录。最终交付仍使用 `dist/windows/latest/codex-plus-plus.exe` 与对应三份说明、校验文件；安装目录 EXE 由用户退出程序后手动替换。本次没有测量新包完整启动和刷新耗时。
+
+### 合入 main 时保留构建输入
+
+本轮从修复分支直接快进本地 `main` 引用，再切换到相同提交的 `main`，避免先检出旧 main、再恢复新源码而重写构建输入时间戳。先确认 main 为当前提交的祖先，随后执行不带强制参数的本地 fetch；存在分歧或其他工作区正在检出 main 时不强行更新。
+
+```powershell
+git merge-base --is-ancestor main HEAD
+if ($LASTEXITCODE -ne 0) { throw "main cannot be fast-forwarded" }
+git fetch --no-tags --no-write-fetch-head . refs/heads/codex/asset-discovery-20261116:refs/heads/main
+if ($LASTEXITCODE -ne 0) { throw "main update failed" }
+git switch main
+```
+
+切换前后实际对比 1841 个 Git 跟踪文件，mtime 和文件大小全部保持。随后复用刚刚成功的 Cargo 记录，再运行完整 `vite:build` → `cargo xrelease` → 历史产物回收，用时 15.79 秒；577/577 个 Rust 构建项全部为 fresh，零重编，EXE SHA-256 不变，没有额外清理到历史产物。这次复跑专门核验合入后的缓存有效性，没有重复执行测试。
+
+证据为 `main-switch-mtimes.json`、`cache-probe-summary.json` 和 `cache-probe-evidence/`。该数字是源码未变时的完整构建复用，不是把新增代码的发布编译从十三分钟加速到十六秒；固定优化级别下的必要代码编译仍保留。

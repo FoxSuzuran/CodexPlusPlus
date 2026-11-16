@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
 
-const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+const rendererSource = readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
 function between(source: string, start: string, end: string) {
   const from = source.indexOf(start);
@@ -12,7 +12,7 @@ function between(source: string, start: string, end: string) {
 }
 
 async function modelRuntime(modelMetadata: Record<string, unknown>) {
-  const source = await readFile(rendererPath, "utf8");
+  const source = await rendererSource;
   const catalog = { model: "future-model", default_model: "future-model", modelMetadata };
   const metadata = between(source, "  function codexPlusModelMetadata(", "  function modelArrayLooksPatchable(");
   const fast = between(source, "  function normalizeCodexServiceTierModelName(", "  // 服务等级由 Codex 原生控件决定");
@@ -94,10 +94,10 @@ describe("model capabilities follow metadata rather than model names", () => {
 });
 
 async function captureRuntime(assets: Record<string, string>, roots: string[]) {
-  const source = await readFile(rendererPath, "utf8");
+  const source = await rendererSource;
   const capture = between(source, "    function locateCodexAppServerClientBreakpoint(", "    function installCodexAppServerClientPrototypePatch(");
-  const from = source.indexOf("  async function* codexAppAssetSources(");
-  const assetSource = from < 0 ? "" : between(source, "  async function* codexAppAssetSources(", "  function codexAppAssetUrl(");
+  const from = source.indexOf("  function trimCodexAppAssetSourceCache(");
+  const assetSource = from < 0 ? "" : between(source, "  function trimCodexAppAssetSourceCache(", "  function codexAppAssetUrl(");
   const timers: Array<() => void> = [];
   const window: Record<string, any> = { setTimeout: (callback: () => void) => timers.push(callback) };
   const reads: string[] = [];
@@ -105,6 +105,7 @@ async function captureRuntime(assets: Record<string, string>, roots: string[]) {
   const install = new Function(
     "window", "fetch", "codexAppAssetCandidateUrls", "location", "sendCodexPlusDiagnostic",
     `
+      const codexAppModuleRetryCooldownMs = 30000;
       const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
       const codexAppServerClientCaptureAnchor = "async sendRequest(";
       const codexAppServerModelRequestPatchVersion = "14";
@@ -186,7 +187,7 @@ describe("request-client discovery follows native assets", () => {
 
 describe("native state API discovery", () => {
   it("recognizes renamed exports by capability and preserves the generic route caller", async () => {
-    const source = await readFile(rendererPath, "utf8");
+    const source = await rendererSource;
     const stateApi = between(source, "  function codexStateApiFromModule(", "  async function codexStateApi(");
     const discover = new Function(`${stateApi}\nreturn codexStateApiFromModule;`)();
     const generic = (method: string) => "vscode://codex/" + method;
@@ -202,7 +203,7 @@ describe("native state API discovery", () => {
 
 describe("captured request clients continue forwarding requests", () => {
   it("preserves native tiers, parameters, options, errors and repeated turns for both patch paths", async () => {
-    const source = await readFile(rendererPath, "utf8");
+    const source = await rendererSource;
     const instance = between(source, "  function patchAppServerModelRequestClient(", "\n  // issue #2177");
     const prototype = between(source, "    function installCodexAppServerClientPrototypePatch(", "  const appServerModelRequestPatchMaxMisses");
     const api = new Function(`

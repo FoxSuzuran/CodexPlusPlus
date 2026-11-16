@@ -3811,6 +3811,51 @@
     ]);
   }
 
+  function trimCodexAppAssetSourceCache(cache) {
+    // Limit retained source text to roughly 32 MiB, including UTF-16 strings.
+    while (cache.characters > 16 * 1024 * 1024 || cache.entries.size > 512) {
+      const oldest = cache.entries.keys().next().value;
+      cache.characters -= cache.entries.get(oldest).characters;
+      cache.entries.delete(oldest);
+    }
+  }
+
+  async function codexAppAssetSourceText(url) {
+    // Different compatibility lookups and reinjections read the same native assets.
+    const cache = window.__codexPlusAppAssetSourceCache || (window.__codexPlusAppAssetSourceCache = { entries: new Map(), characters: 0 });
+    const cached = cache.entries.get(url);
+    if (cached && Date.now() - cached.at < codexAppModuleRetryCooldownMs) {
+      cache.entries.delete(url);
+      cache.entries.set(url, cached);
+      return await cached.promise;
+    }
+    if (cached) {
+      cache.characters -= cached.characters;
+      cache.entries.delete(url);
+    }
+    const entry = { at: Date.now(), characters: 0, promise: null };
+    entry.promise = Promise.resolve().then(async () => {
+      const response = await fetch(url);
+      const text = response.ok ? await response.text() : null;
+      if (cache.entries.get(url) === entry) {
+        if (!response.ok) cache.entries.delete(url);
+        else {
+          entry.characters = text.length;
+          cache.characters += text.length;
+          trimCodexAppAssetSourceCache(cache);
+        }
+      }
+      return text;
+    }).catch((error) => {
+      // A failed read must remain eligible for the discovery caller's own retry.
+      if (cache.entries.get(url) === entry) cache.entries.delete(url);
+      throw error;
+    });
+    cache.entries.set(url, entry);
+    trimCodexAppAssetSourceCache(cache);
+    return await entry.promise;
+  }
+
   // Follow native JS dependencies: chunk names change between releases.
   async function* codexAppAssetSources(excludedUrls = []) {
     const page = new URL(location.href);
@@ -3827,9 +3872,8 @@
       seen.add(url.href);
       let text;
       try {
-        const response = await fetch(url.href);
-        if (!response.ok) continue;
-        text = await response.text();
+        text = await codexAppAssetSourceText(url.href);
+        if (text === null) continue;
       } catch { continue; }
       // Vite also records lazy imports in quoted dependency arrays.
       for (const match of text.matchAll(/["']((?:\.{0,2}\/|assets\/)[^"'\n]+\.js(?:\?[^"'\n]*)?)["']/g)) {
@@ -3874,7 +3918,7 @@
     ];
     for (const src of scripts) {
       try {
-        const text = await fetch(src).then((response) => response.ok ? response.text() : "");
+        const text = await codexAppAssetSourceText(src);
         if (!text) continue;
         for (const pattern of patterns) {
           const match = text.match(pattern);

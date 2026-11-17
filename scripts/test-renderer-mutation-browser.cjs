@@ -25,8 +25,9 @@ function functions(script) {
       const selectors = { sidebarThread: "[data-app-action-sidebar-thread-id]",
         appHeader: "header", archiveNav: "[data-archive]", pluginNavButton: "[data-plugin]" };
       const [codexPlusPageClass, codexPlusSidebarNavId, codexPlusRailNavId, codexPlusRailExtensionsId,
+        codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailTasksId,
         codexServiceTierBadgeClass, sessionShareButtonClass, sessionCopyMenuItemClass,
-        capacityAutoRetryChipId] = Array.from({ length: 8 }, (_, i) => `fixture-${i}`);
+        capacityAutoRetryChipId] = Array.from({ length: 11 }, (_, i) => `fixture-${i}`);
       const isCodexPlusExtensionNode = () => false;
       const codexPluginMarketplacePatchEnabled = () => false;
       const shouldScan = eval(`(() => { ${script}; return shouldScheduleScan; })()`);
@@ -78,10 +79,11 @@ function functions(script) {
         setInterval: callback => (intervals.push(callback), intervals.length),
         clearInterval() {}, setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window),
       };
-      const runtime = new Function("window", "registerCodexPlusExtensionSelector", "postJson",
-        "recordCodexPlusBridgeFailure", script + "\nreturn window.__codexPlusProxyRequestStatusRuntime;")(
-        scope, () => {}, async () => ({ status: "ok", requests }), () => {},
-      );
+      const runtime = new Function("window", "fetchRequests", script + `
+        codexPlusProxyStatusHost.call = fetchRequests;
+        startCodexPlusProxyStatus();
+        return { refresh: codexPlusProxyStatusRefresh, dispose: stopCodexPlusProxyStatus };
+      `)(scope, async () => ({ status: "ok", requests }));
       const observer = new MutationObserver(() => {});
       observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
       const tick = intervals[1];
@@ -129,7 +131,7 @@ function functions(script) {
         runtime.dispose();
         Element.prototype.getBoundingClientRect = originalRect;
       }
-    }, fs.readFileSync(path.join(root, "assets/inject/renderer-inject/84-proxy-request-status.js"), "utf8"));
+    }, fs.readFileSync(path.join(root, "assets/extensions/proxy-request-status/status.js"), "utf8"));
     console.log(JSON.stringify({ proxyStatus }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

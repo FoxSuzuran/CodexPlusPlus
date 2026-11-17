@@ -73,14 +73,23 @@ struct Fixture {
 }
 impl Fixture {
     fn new(profile: Value) -> Self {
+        Self::with_profiles(vec![profile])
+    }
+    fn with_profiles(profiles: Vec<Value>) -> Self {
         let guard = crate::paths::settings_path_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         let previous = crate::paths::set_settings_path_for_tests(Some(path.clone()));
         let gateway = GatewayPathTestScope::new(temp.path());
+        let active = profiles
+            .first()
+            .and_then(|profile| profile.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("ws-test")
+            .to_string();
         std::fs::write(
             path,
-            json!({"relayProfiles":[profile],"activeRelayId":"ws-test"}).to_string(),
+            json!({"relayProfiles":profiles,"activeRelayId":active}).to_string(),
         )
         .unwrap();
         Self {
@@ -91,10 +100,15 @@ impl Fixture {
         }
     }
     fn gateway(&self, relay: Value) {
+        self.gateway_profiles(vec![relay]);
+    }
+    fn gateway_profiles(&self, relays: Vec<Value>) {
         let settings: GatewaySettings = serde_json::from_value(json!({
             "version":3,"bindings":{"codex":{"enabled":true,"model":"ws-model","token":"local-test",
                 "autoReviewModel":"review-model","extraModels":["review-model"]}},
-            "providers":[{"relay":relay,"keyConcurrency":1}],"autoModels":false
+            "providers":relays.into_iter().map(|relay| json!({
+                "relay":relay,"keyConcurrency":1
+            })).collect::<Vec<_>>(),"autoModels":false
         }))
         .unwrap();
         GatewayStore::default().save(&settings).unwrap();
@@ -364,6 +378,8 @@ async fn helper_ws_http_200_is_rejected_and_never_posts_a_generation() {
     finish(upstream).await;
 }
 
+/// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。
+
 #[tokio::test]
 async fn helper_ws_chat_compatibility_route_preserves_http_fallback() {
     if isolated("helper_ws_chat_compatibility_route_preserves_http_fallback").await {
@@ -380,6 +396,55 @@ async fn helper_ws_chat_compatibility_route_preserves_http_fallback() {
         .expect(1).mount(&server).await;
     let (url, task) = helper(2).await;
     let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
+    send(&mut ws, create("")).await;
+    loop {
+        let event = next(&mut ws).await;
+        assert_ne!(event["type"], "error", "{event}");
+        if event["type"] == "response.completed" { break; }
+    }
+    ws.close(None).await.unwrap();
+    drop(ws);
+    finish(task).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn mixed_protocol_pool_preserves_http_fallback() {
+    if isolated("mixed_protocol_pool_preserves_http_fallback").await {
+        return;
+    }
+    mixed_protocol_http_fallback(false).await;
+}
+
+#[tokio::test]
+async fn mixed_gateway_protocol_pool_preserves_http_fallback() {
+    if isolated("mixed_gateway_protocol_pool_preserves_http_fallback").await {
+        return;
+    }
+    mixed_protocol_http_fallback(true).await;
+}
+
+async fn mixed_protocol_http_fallback(gateway: bool) {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
+    let server = MockServer::start().await;
+    let mut chat = profile(server.address().to_owned());
+    chat["protocol"] = json!("chatCompletions");
+    let mut native = profile(server.address().to_owned());
+    native["id"] = json!("ws-native");
+    native["model"] = json!("native-only");
+    native["modelList"] = json!("native-only");
+    let fixture = Fixture::with_profiles(vec![chat.clone(), native.clone()]);
+    if gateway {
+        fixture.gateway_profiles(vec![chat, native]);
+    }
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
+            .set_body_string("data: {\"id\":\"chat-mixed\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+        .expect(1).mount(&server).await;
+    let (url, task) = helper(2).await;
+    let path = if gateway { "/gw/codex/v1/responses" } else { "/v1/responses" };
+    let headers = if gateway { vec![("authorization", "Bearer local-test".to_string())] } else { vec![] };
+    let mut ws = client(&format!("{url}{path}"), &headers).await;
     send(&mut ws, create("")).await;
     loop {
         let event = next(&mut ws).await;

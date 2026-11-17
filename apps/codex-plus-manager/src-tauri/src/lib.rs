@@ -16,6 +16,7 @@ mod global_dictation;
 pub mod install;
 mod lightweight;
 mod provider_lookup_commands;
+mod remote_control_commands;
 mod runtime_health;
 mod skill_backup_usage;
 mod tray_panel;
@@ -208,6 +209,18 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Codex 拓展页的「社区 / 我发布的 / dsh 插件」分栏：实现在管理器里，经 helper 桥接分发给页面。
+/// helper 跑在本进程里，登记一次即可。
+fn register_codex_bridge_routes() {
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let community: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(extension_community_commands::bridge_request(payload)));
+    let published: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(extension_publish_commands::bridge_request(payload)));
+    let dsh: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(dsh_plugin_commands::bridge_request(payload)));
+    register_host_route("/extension-market/community", community);
+    register_host_route("/extension-market/published", published);
+    register_host_route("/extension-market/dsh", dsh);
+}
+
 pub fn run() {
     install_panic_logger();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -219,6 +232,7 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
+    register_codex_bridge_routes();
     #[cfg(target_os = "macos")]
     if let Some(root) = codex_plus_core::install::default_install_root() {
         match codex_plus_core::install::macos::migrate_legacy_manager_bundle(&root) {
@@ -323,6 +337,10 @@ pub fn run() {
             codex_plus_core::settings::set_external_settings_change_listener(
                 gateway_commands::notify_settings_changed,
             );
+            // Codex 页面里的「供应商」页经 bridge 调这里的保存 / 切换（core `provider_page`）。
+            codex_plus_core::provider_page::set_provider_page_host(commands::provider_page_host());
+            // Codex 设置页里的「全局听写热键」经 bridge 调这里保存并重新注册（热键回调在管理器进程里）。
+            codex_plus_core::global_dictation::set_apply_host(global_dictation::save_and_apply_config);
             if start_minimized {
                 set_manager_activation_policy(app.handle(), false);
             }
@@ -339,6 +357,8 @@ pub fn run() {
             // Computer Use 操作后台应用时的悬浮预览（同 Codex 的画中画）。
             cu_pip::start(app.handle().clone());
             commands::start_weixin_connect_from_saved_settings();
+            // 远程控制（默认关闭）：打开过就随管理器启动。
+            remote_control_commands::start_from_saved_state_in_background();
             commands::resume_existing_codex_background(
                 app.handle().clone(),
                 start_codex_at_login || start_codex_on_open,
@@ -378,6 +398,7 @@ pub fn run() {
             commands::stop_codex_plus,
             commands::load_settings,
             config_doctor_commands::config_doctor_request,
+            remote_control_commands::remote_control_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,
@@ -717,6 +738,8 @@ pub fn run() {
                         gateway_commands::restore_for_exit();
                         codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
+                        // 远程控制服务停掉侧车 app-server，别留孤儿进程。
+                        codex_plus_core::remote_control::stop();
                         record_shutdown_entry(
                             "app.shutdown_complete",
                             serde_json::json!({ "elapsed_ms": started.elapsed().as_millis() }),

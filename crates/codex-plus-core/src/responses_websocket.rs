@@ -742,6 +742,11 @@ pub(crate) async fn handle(
         .await?;
         return Ok(());
     };
+    // 握手阶段选好传输；混合协议池交给现有 HTTP/SSE 桥接，避免升级后再拒绝请求。
+    let settings = crate::settings::SettingsStore::default()
+        .load()
+        .unwrap_or_default();
+    let http_fallback = !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings);
     use tokio::io::AsyncWriteExt;
     let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
     for (name, value) in response.headers() {
@@ -752,6 +757,9 @@ pub(crate) async fn handle(
     let mut ws =
         WebSocketStream::from_partially_read(stream, read_ahead, Role::Server, Some(ws_config()))
             .await;
+    if http_fallback {
+        return Box::pin(http_bridge::serve_upgraded(ws, raw_headers, &endpoint, None)).await;
+    }
     // 官方身份的本地代理原本再跳一次网关；WS 直接调用同一网关准备入口，避免双重 hooks 与日志。
     if matches!(opener, crate::launcher::ProxyOpener::Legacy)
         && crate::gateway::apply::codex_hops_through_gateway()

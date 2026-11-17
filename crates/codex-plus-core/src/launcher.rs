@@ -1475,7 +1475,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
-        let launch_extra_args = normalize_codex_extra_args(extra_args);
+        // 远程控制开着时补上桌面镜像要的开关：Codex 窗口在后台、被挡住时照常出画面，不降帧。
+        let launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
@@ -3105,10 +3106,11 @@ pub(crate) async fn handle_protocol_proxy_connection(
 ) -> anyhow::Result<()> {
     let hops_through_gateway =
         matches!(opener, ProxyOpener::Legacy) && crate::gateway::apply::codex_hops_through_gateway();
-    let future = handle_protocol_proxy_connection_inner(
+    // 这条管线还会经过网关和 task-local 包装；避免各层在栈上携带完整 future。
+    let future = Box::pin(handle_protocol_proxy_connection_inner(
         stream, request_body, request_user_agent, request_beta_features, session_headers,
         method, path, remote_addr_text, opener, hops_through_gateway,
-    );
+    ));
     if hops_through_gateway {
         crate::extension_gateway::with_codex_response_plan(future).await
     } else {
@@ -3177,7 +3179,7 @@ async fn handle_protocol_proxy_connection_inner(
         }
         ProxyOpener::Gateway(agent) => {
             request_log.set_agent(agent);
-            crate::gateway::server::open_responses_for_agent(
+            Box::pin(crate::gateway::server::open_responses_for_agent(
                 agent,
                 path,
                 request_body,
@@ -3185,7 +3187,7 @@ async fn handle_protocol_proxy_connection_inner(
                 session_headers,
                 Some(live_request_id.as_str()),
                 Some(&*stream),
-            )
+            ))
             .await
         }
     }});

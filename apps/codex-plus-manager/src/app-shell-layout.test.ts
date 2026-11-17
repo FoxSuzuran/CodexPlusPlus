@@ -321,7 +321,8 @@ test("页内目录收成单列：增强页的页签横排成胶囊、分组锚�
   assert.match(layer, /:root \.shell \.sectioned-page \{\n  display: flex;\n  flex-direction: column;/);
   assert.match(layer, /:root \.shell \.page-section-nav-list \{\n  display: none;/);
   assert.match(layer, /:root \.shell \.screen\[data-settings-mode="true"\] > \* \{\n  width: min\(100%, var\(--cx-content-narrow\)\);/);
-  assert.match(text, /className="enhance-tabs tp-tabs cx-pills" role="tablist"/);
+  // 增强页只剩总开关和独立模式，内置拓展的页签随设置一起搬进 Codex。
+  assert.doesNotMatch(text, /className="enhance-tabs/);
   // 「（实验）」和「需重启」从文字里拿出来做成标题旁的小标签。
   const toggle = functionSource("FeatureToggle");
   assert.match(toggle, /EXPERIMENTAL_TITLE\.test\(title\)/);

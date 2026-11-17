@@ -188,6 +188,33 @@ pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
     ports.into_iter().map(local_responses_proxy_base_url).collect()
 }
 
+/// 本地 WS 入口只能把 `response.create` 转给原生 Responses 上游；Chat Completions /
+/// Anthropic 兼容路由只能走 HTTP/SSE。混合协议池一律在握手阶段回 426，让客户端继续
+/// 用 HTTP，而不是升级成功后在路由阶段把整轮请求打成失败（#2963 的能力边界）。
+pub(crate) fn websocket_upgrade_serves_all_routes(
+    settings: &crate::settings::BackendSettings,
+) -> bool {
+    let native_responses = |relay: &crate::settings::RelayProfile| {
+        relay.protocol == crate::settings::RelayProtocol::Responses
+    };
+    if settings.relay_profiles_enabled
+        && !settings.relay_profiles.iter().all(native_responses)
+    {
+        return false;
+    }
+    // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
+    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
+        // 读不到网关配置时不能假定全部是原生 Responses，否则会把错误推迟到 101 之后。
+        return false;
+    };
+    gateway
+        .with_extension_providers()
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .all(|provider| native_responses(&provider.relay))
+}
+
 pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
     let Ok(mut parsed) = reqwest::Url::parse(value.trim()) else {
         return false;
@@ -2904,6 +2931,12 @@ fn compaction_input_rejected(status_code: u16, body: &[u8]) -> bool {
         Err(_) => String::from_utf8_lossy(body).into_owned(),
     }
     .to_ascii_lowercase();
+    // #3101：ChatGPT 订阅共享（「ChatGPT API」上游，api.openai.com + ChatGPT 登录）按白名单收输入项，
+    // compaction_trigger 不在其中；报错只列白名单、不点名被拒的项，只能按错误码认。
+    // 这里只用于带 trigger 的探测请求：若真正被拒的是历史里别的项，降级重发后上游会再报同样的错，原样交回。
+    if text.contains("subscription_sharing_unsupported_capability") {
+        return true;
+    }
     let unrecognized = text.contains("unknown")
         || text.contains("unrecognized")
         || text.contains("unsupported")

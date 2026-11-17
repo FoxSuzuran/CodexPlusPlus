@@ -53,7 +53,18 @@
   当前原生 Fast 实现的验收；当前实现由前端 Fast 回归覆盖。
 - Rust 工作区 25 个测试程序：5,454 通过，50 忽略，0 失败；仅筛除 1 项需要真实
   Windows 8.3 短路径别名的用例。命令为 `cargo test --workspace --all-targets --message-format=json -- --test-threads=4 --skip multi_worker::windows_process_tree::native_tests::short_path_launch_matches_long_identity_and_preserves_unowned_processes`。
-- Windows 发布构建及 EXE 校验：待发布构建完成后补齐。
+- Windows 发布构建通过：完整 `vite:build` 后 `cargo xrelease`，共 778.12 秒。
+  固定 4 个编译任务、release 优化级别 3、无完整调试信息、无增量编译，
+  使用仓库 `target` 和已有 Sherpa 1.13.8 静态库，未使用 profile 环境覆盖。
+- EXE 版本 2.7.1，124,401,664 字节；PE x86_64 GUI 格式通过。
+  注入脚本、Windows 梦皮 JS/CSS 与当前源码逐字节解压一致且确实嵌入 EXE；
+  管理器前端与本轮 Vite 产物逐字节一致，协作刷新和启动健康标记均已嵌入。
+
+合并及发布源码提交：`64243bc313321a58e12b32015cffa38a67c60095`。
+
+固定交付文件：`D:\Programming\Projects\CodexPlusPlus\dist\windows\latest\codex-plus-plus.exe`。
+
+SHA-256：`522914ae8ea02e7c5087aa735a8aab8d323b44a550f2c0657d95b8d8de6e0365`。
 
 验证记录位于 `target/temp/upstream-20261117/`。首轮 Rust 编译启动后再次组装过
 注入资源，造成首轮打包资源与编译内嵌源码不一致；固定源码后重新编译复验。
@@ -64,6 +75,7 @@
 保留已有资源读取共享实现；缓存的限额、并发共享和失败重试另由前端行为用例覆盖。
 
 固定发布目录为 `dist/windows/latest`；新版单应用 EXE 构建和验证通过后才覆盖旧版。
+仅需手动替换原来的 `codex-plus-plus.exe`，配套清单和校验记录留在交付目录。
 未替换已安装 EXE，未验证本轮新 EXE 的实际冷启动和真实会话切换耗时。
 运行时性能验收范围限于上述已有优化保留和对应回归，不将夹具计数当作整机提速。
 

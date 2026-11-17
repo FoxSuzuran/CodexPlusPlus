@@ -80,4 +80,6 @@ SHA-256：`522914ae8ea02e7c5087aa735a8aab8d323b44a550f2c0657d95b8d8de6e0365`。
 运行时性能验收范围限于上述已有优化保留和对应回归，不将夹具计数当作整机提速。
 
 原有 `.serena/`、`output/`、未跟踪排查报告和本地 `AGENTS.md` 保留。
-`site/data/sponsors.json` 是上游修改/本地删除冲突留下的未跟踪文件，不进入提交或 EXE。
+上游修改/本地删除冲突留下的 `site/data/sponsors.json` 已核对为上游原始内容，
+保存在 `target/temp/upstream-20261117/sponsors.upstream-conflict.json`，恢复本地删除状态；
+该冲突材料不进入提交或 EXE。

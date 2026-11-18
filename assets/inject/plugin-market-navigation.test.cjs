@@ -9,6 +9,10 @@ const navigation = fragment("40-backend-settings.js");
 const entryNavigation = fragment("50-navigation.js");
 const scheduler = fragment("98-scan-schedule.js");
 const extract = (source, name) => source.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"))?.[0] || "";
+const scanSelector = scheduler.slice(
+  scheduler.indexOf("  const scanRelevantBaseSelector ="),
+  scheduler.indexOf("  function scanRelevantSelector("),
+);
 
 class Element {
   constructor(tag, attrs = {}) {
@@ -95,6 +99,7 @@ function fixture(layout = "sidebar") {
     extract(adapter, "codexPlusNativePluginNavigationEntry"), extract(adapter, "openCodexPlusNativePluginMarket"),
     ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation", "codexPlusNavEntryReusable"].map(name => extract(navigation, name)),
     extract(entryNavigation, "installCodexPlusNavigationEntries"),
+    scanSelector,
     ...["scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance", "isScanRelevantNode", "isChatContentMutation", "shouldScheduleScan"].map(name => extract(scheduler, name)),
   ].join("\n");
   vm.runInContext(functions, context);

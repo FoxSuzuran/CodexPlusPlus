@@ -334,7 +334,9 @@ async fn helper_ws_dead_connection_rejects_cached_continuation_without_replay() 
     let mut continuation = create("");
     continuation["previous_response_id"] = json!("cached");
     send(&mut ws, continuation).await;
-    assert_eq!(next(&mut ws).await["status"], 400);
+    let error = next(&mut ws).await;
+    assert_eq!(error["status"], 400);
+    assert_eq!(error["error"]["code"], "previous_response_not_found");
     send(&mut ws, create("")).await;
     assert_eq!(next(&mut ws).await["response"]["id"], "fresh");
     ws.close(None).await.unwrap();
@@ -368,132 +370,206 @@ async fn helper_ws_http_200_is_rejected_and_never_posts_a_generation() {
                 .is_err()
         );
     });
-    let (url, task) = helper(1).await;
-    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
+    let (url, task) = helper(3).await;
+    let mut ws = client(&format!("{url}/v1/responses"), &[("thread-id", "fallback".into())]).await;
     send(&mut ws, create("")).await;
-    assert_eq!(next(&mut ws).await["status"], 502);
-    ws.close(None).await.unwrap();
+    // 上游不接受 WS：不让客户端按 WS 错误重试到预算耗尽（#3154），直接关连接……
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("上游拒绝 WS 后下游连接应被关闭");
+    assert!(
+        matches!(frame, Some(Ok(Message::Close(_))) | None | Some(Err(_))),
+        "{frame:?}"
+    );
     drop(ws);
+    // ……客户端重连时在握手阶段拿到 426，立即改走 HTTP。
+    use tokio_tungstenite::tungstenite::{Error, client::IntoClientRequest};
+    let mut retry = format!("{url}/v1/responses").into_client_request().unwrap();
+    retry.headers_mut().insert("thread-id", "fallback".parse().unwrap());
+    let rejected = tokio_tungstenite::connect_async(retry).await.unwrap_err();
+    assert!(matches!(rejected, Error::Http(response) if response.status() == 426));
+    // The failed handshake must not force a different chat on the same entrypoint onto HTTP.
+    let mut other = client(&format!("{url}/v1/responses"), &[("thread-id", "other".into())]).await;
+    other.close(None).await.unwrap();
+    drop(other);
     finish(task).await;
     finish(upstream).await;
 }
 
-/// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。
-
 #[tokio::test]
-async fn helper_ws_chat_compatibility_route_preserves_http_fallback() {
-    if isolated("helper_ws_chat_compatibility_route_preserves_http_fallback").await {
+async fn gateway_ws_http_fallback_waits_for_other_active_lanes_before_closing() {
+    if isolated("gateway_ws_http_fallback_waits_for_other_active_lanes_before_closing").await {
         return;
     }
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
-    let server = MockServer::start().await;
-    let mut relay = profile(server.address().to_owned());
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native = profile(listener.local_addr().unwrap());
+    // 第二个供应商不接受 WS（握手回 404），按「供应商/模型」路由到它。
+    let plain = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut http_only = profile(plain.local_addr().unwrap());
+    http_only["id"] = json!("ws-http-only");
+    http_only["name"] = json!("HTTP only");
+    let fixture = Fixture::new(native.clone());
+    fixture.gateway_profiles(vec![native, http_only]);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let upstream = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        let event = next(&mut ws).await;
+        assert_eq!(event["stream_id"], "a");
+        release_rx.await.unwrap();
+        send(&mut ws, completed("a1", "a")).await;
+        let _ = ws.next().await;
+    });
+    let plain_upstream = tokio::spawn(async move {
+        let (mut socket, _) = plain.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.ends_with(b"\r\n\r\n") {
+            bytes.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+    });
+    let (url, task) = helper(1).await;
+    let mut ws = client(
+        &format!("{url}/gw/codex/v1/responses"),
+        &[("authorization", "Bearer local-test".into())],
+    )
+    .await;
+    let mut first = create("a");
+    first["model"] = json!("ws-test/ws-model");
+    send(&mut ws, first).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut other = create("b");
+    other["model"] = json!("ws-http-only/ws-model");
+    send(&mut ws, other).await;
+    // 还有进行中的响应：失败的流先收到错误，连接不立即关闭。
+    let error = next(&mut ws).await;
+    assert_eq!(error["stream_id"], "b", "{error}");
+    assert_eq!(error["type"], "error");
+    // 排空期间新的请求直接拒绝，不再发往上游。
+    send(&mut ws, create("c")).await;
+    let rejected = next(&mut ws).await;
+    assert_eq!(rejected["stream_id"], "c", "{rejected}");
+    assert_eq!(rejected["status"], 503);
+    release_tx.send(()).unwrap();
+    assert_eq!(next(&mut ws).await["response"]["id"], "a1");
+    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("进行中的响应结束后应关闭连接");
+    assert!(
+        matches!(frame, Some(Ok(Message::Close(_))) | None | Some(Err(_))),
+        "{frame:?}"
+    );
+    drop(ws);
+    finish(task).await;
+    finish(upstream).await;
+    finish(plain_upstream).await;
+}
+
+/// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。
+async fn upgrade_status(url: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // connect 只接受 host:port，URL 里的 /v1/responses 必须先去掉。
+    let authority = url
+        .trim_start_matches("ws://")
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET /v1/responses HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
+                 Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Sec-WebSocket-Version: 13\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut buffer = [0_u8; 1024];
+    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
+        .await
+        .expect("升级拒绝没有在 5 秒内返回")
+        .unwrap();
+    String::from_utf8_lossy(&buffer[..read])
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[tokio::test]
+async fn helper_ws_chat_only_pool_is_rejected_before_upgrade() {
+    if isolated("helper_ws_chat_only_pool_is_rejected_before_upgrade").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut relay = profile(listener.local_addr().unwrap());
     relay["protocol"] = json!("chatCompletions");
     let _fixture = Fixture::new(relay);
-    Mock::given(method("POST")).and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
-            .set_body_string("data: {\"id\":\"chat-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
-        .expect(1).mount(&server).await;
-    let (url, task) = helper(2).await;
-    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
-    send(&mut ws, create("")).await;
-    loop {
-        let event = next(&mut ws).await;
-        assert_ne!(event["type"], "error", "{event}");
-        if event["type"] == "response.completed" { break; }
-    }
-    ws.close(None).await.unwrap();
-    drop(ws);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
     finish(task).await;
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn mixed_protocol_pool_preserves_http_fallback() {
-    if isolated("mixed_protocol_pool_preserves_http_fallback").await {
+async fn mixed_protocol_pool_is_rejected_before_upgrade() {
+    if isolated("mixed_protocol_pool_is_rejected_before_upgrade").await {
         return;
     }
-    mixed_protocol_http_fallback(false).await;
-}
-
-#[tokio::test]
-async fn mixed_gateway_protocol_pool_preserves_http_fallback() {
-    if isolated("mixed_gateway_protocol_pool_preserves_http_fallback").await {
-        return;
-    }
-    mixed_protocol_http_fallback(true).await;
-}
-
-async fn mixed_protocol_http_fallback(gateway: bool) {
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::{method, path}};
-    let server = MockServer::start().await;
-    let mut chat = profile(server.address().to_owned());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut chat = profile(listener.local_addr().unwrap());
+    chat["id"] = json!("ws-chat");
     chat["protocol"] = json!("chatCompletions");
-    let mut native = profile(server.address().to_owned());
-    native["id"] = json!("ws-native");
-    native["model"] = json!("native-only");
-    native["modelList"] = json!("native-only");
-    let fixture = Fixture::with_profiles(vec![chat.clone(), native.clone()]);
-    if gateway {
-        fixture.gateway_profiles(vec![chat, native]);
-    }
-    Mock::given(method("POST")).and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
-            .set_body_string("data: {\"id\":\"chat-mixed\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
-        .expect(1).mount(&server).await;
-    let (url, task) = helper(2).await;
-    let path = if gateway { "/gw/codex/v1/responses" } else { "/v1/responses" };
-    let headers = if gateway { vec![("authorization", "Bearer local-test".to_string())] } else { vec![] };
-    let mut ws = client(&format!("{url}{path}"), &headers).await;
-    send(&mut ws, create("")).await;
-    loop {
-        let event = next(&mut ws).await;
-        assert_ne!(event["type"], "error", "{event}");
-        if event["type"] == "response.completed" { break; }
-    }
-    ws.close(None).await.unwrap();
-    drop(ws);
+    let _fixture = Fixture::with_profiles(vec![profile(listener.local_addr().unwrap()), chat]);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
     finish(task).await;
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn helper_ws_http_fallback_preserves_warmup_and_incremental_tool_context() {
-    if isolated("helper_ws_http_fallback_preserves_warmup_and_incremental_tool_context").await { return; }
-    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
-    let server = MockServer::start().await;
-    let _fixture = Fixture::new(profile(server.address().to_owned()));
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(426)).expect(4).mount(&server).await;
-    Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
-        let body = request.body_json::<Value>().unwrap();
-        let tool_result = body["input"].as_array().unwrap().iter().any(|item| item["type"] == "function_call_output");
-        let output = if tool_result { json!([]) } else { json!([{"type":"function_call","call_id":"call-1","name":"shell","arguments":"{}"}]) };
-        let event = json!({"type":"response.completed","response":{"id":if tool_result { "resp-2" } else { "resp-1" },"status":"completed","output":output}});
-        ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(format!("data: {event}\n\n"))
-    }).expect(2).mount(&server).await;
-    let (url, task) = helper(4).await;
-    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
-    send(&mut ws, json!({"type":"response.create","model":"ws-model","input":"warmup context","generate":false})).await;
-    assert_eq!(next(&mut ws).await["type"], "response.created");
-    let warmup = next(&mut ws).await;
-    assert_eq!(warmup["type"], "response.completed");
-    assert!(server.received_requests().await.unwrap().iter().all(|request| request.method == "GET"));
-    send(&mut ws, json!({"type":"response.create","model":"ws-model","previous_response_id":warmup["response"]["id"],"input":"question"})).await;
-    assert_eq!(next(&mut ws).await["response"]["id"], "resp-1");
-    send(&mut ws, json!({"type":"response.create","model":"ws-model","previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","output":"done"}]})).await;
-    assert_eq!(next(&mut ws).await["response"]["id"], "resp-2");
-    ws.close(None).await.unwrap();
-    drop(ws);
+async fn mixed_gateway_protocol_pool_is_rejected_before_upgrade() {
+    if isolated("mixed_gateway_protocol_pool_is_rejected_before_upgrade").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native = profile(listener.local_addr().unwrap());
+    let mut chat = profile(listener.local_addr().unwrap());
+    chat["id"] = json!("ws-gateway-chat");
+    chat["protocol"] = json!("chatCompletions");
+    let fixture = Fixture::new(native.clone());
+    fixture.gateway_profiles(vec![native, chat]);
+    let (url, task) = helper(1).await;
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
     finish(task).await;
-    let requests = server.received_requests().await.unwrap();
-    let posts: Vec<_> = requests.iter().filter(|request| request.method == "POST").collect();
-    assert_eq!(posts.len(), 2);
-    let body = posts[1].body_json::<Value>().unwrap();
-    assert!(body.get("previous_response_id").is_none());
-    assert_eq!(body["input"].as_array().unwrap().len(), 4);
-    assert_eq!(body["input"][0]["content"], "warmup context");
-    assert_eq!(body["input"][2]["type"], "function_call");
-    assert_eq!(body["input"][3]["call_id"], "call-1");
 }
 
 #[tokio::test]

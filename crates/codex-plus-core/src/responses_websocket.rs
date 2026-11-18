@@ -1,13 +1,7 @@
 //! 标准 Responses WS 传输；请求准备仍走 protocol_proxy / gateway。
-#[path = "responses_websocket_http.rs"]
-mod http_bridge;
-pub(crate) use http_bridge::{
-    http_request, mark_request, preferred, send_upstream, warmup_response, with_transport,
-};
-
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use futures_util::{SinkExt, StreamExt};
@@ -31,7 +25,47 @@ pub(crate) struct Unsupported(pub(crate) &'static str);
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct HttpFallback(pub(crate) &'static str);
+pub(crate) struct PreviousResponseNotFound(pub(crate) &'static str);
+
+/// 这次请求只能走 HTTP（HTTP 专用的压缩 / exec 转换）。与 [`Unsupported`] 不同，
+/// 它说明的是传输选择而不是请求本身有误：下游连接会被关掉，让客户端重连时拿到 426 改走 HTTP。
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct RequiresHttp(pub(crate) &'static str);
+
+/// 101 之后才知道上游不接受 WS：此时已不能回 426，客户端只会按 WS 错误重试，
+/// 重试预算耗尽（实测 5 次）才切 HTTP（#3154 / #3149 / #3145）。所以一旦遇到，
+/// 对同一入口及握手会话的重连直接回 426，其他会话可以继续使用 WS。
+const HTTP_FALLBACK_WINDOW: Duration = Duration::from_secs(30 * 60);
+const MAX_HTTP_FALLBACK_SCOPES: usize = 256;
+type FallbackScope = (String, Option<String>);
+static HTTP_FALLBACK_UNTIL: Mutex<VecDeque<(FallbackScope, Instant)>> =
+    Mutex::new(VecDeque::new());
+
+fn require_http_for_a_while(scope: &FallbackScope, reason: &str) {
+    let now = Instant::now();
+    {
+        let mut entries = HTTP_FALLBACK_UNTIL.lock().unwrap_or_else(|p| p.into_inner());
+        entries.retain(|(key, until)| key != scope && *until > now);
+        if entries.len() == MAX_HTTP_FALLBACK_SCOPES {
+            entries.pop_front();
+        }
+        entries.push_back((scope.clone(), now + HTTP_FALLBACK_WINDOW));
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.responses_websocket_http_fallback",
+        json!({ "reason": reason, "windowSecs": HTTP_FALLBACK_WINDOW.as_secs() }),
+    );
+}
+
+fn http_fallback_active(scope: &FallbackScope) -> bool {
+    let now = Instant::now();
+    HTTP_FALLBACK_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .any(|(key, until)| key == scope && *until > now)
+}
 
 #[derive(Clone)]
 struct Affinity {
@@ -79,7 +113,7 @@ pub(crate) fn pinned_relay() -> Option<String> {
 /// 原 Key 必须在路由收集阶段筛选，保留它的冷却候选，再由既有队列等名额。
 pub(crate) fn restrict_plan(plan: &mut RoutePlan) -> anyhow::Result<()> {
     if pinned_key().is_some() && plan.candidates.is_empty() && plan.waiting.is_empty() {
-        return Err(Unsupported(
+        return Err(PreviousResponseNotFound(
             "WS 续接的原供应商或 Key 已不在当前模型路由中；请使用完整上下文开始新响应",
         )
         .into());
@@ -194,7 +228,7 @@ pub(crate) async fn prepare(
                 if current.as_deref() != Some(&previous.connection)
                     || body.get("model").and_then(Value::as_str) != Some(&previous.model)
                 {
-                    return Err(Unsupported(
+                    return Err(PreviousResponseNotFound(
                         "WS 续接的原连接已关闭或模型已变更；请使用完整上下文开始新响应",
                     )
                     .into());
@@ -237,9 +271,6 @@ pub(crate) async fn prepare(
         let response = tokio::time::timeout(timeout, client.execute(request))
             .await
             .context("WS 上游握手超时")??;
-        if matches!(response.status().as_u16(), 400 | 404 | 405 | 426 | 501) {
-            return Err(HttpFallback("上游不支持原生 Responses WebSocket").into());
-        }
         if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
             return Ok(PreparedUpstream::Rejected(response));
         }
@@ -375,6 +406,20 @@ impl ClientHeaders {
 struct Opened {
     lane: String,
     response: ActiveResponse,
+}
+
+#[derive(PartialEq, Eq)]
+enum OpenFailureKind {
+    Request,
+    PreviousResponseNotFound,
+    RequiresHttp,
+}
+
+struct OpenFailure {
+    lane: String,
+    status: u16,
+    message: String,
+    kind: OpenFailureKind,
 }
 
 struct Reservation {
@@ -517,7 +562,11 @@ fn start_connection(
 }
 
 fn error_event(lane: &str, status: u16, message: &str) -> Message {
-    let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":"local_responses_websocket_error","message":message}});
+    error_event_with_code(lane, status, "local_responses_websocket_error", message)
+}
+
+fn error_event_with_code(lane: &str, status: u16, code: &str, message: &str) -> Message {
+    let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":code,"message":message}});
     if !lane.is_empty() {
         value["stream_id"] = json!(lane);
     }
@@ -560,7 +609,7 @@ async fn open_request(
     path: String,
     opener: crate::launcher::ProxyOpener,
     registry: Arc<Mutex<Registry>>,
-) -> Result<Opened, (String, u16, String)> {
+) -> Result<Opened, OpenFailure> {
     if registry
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -568,23 +617,29 @@ async fn open_request(
         .len()
         >= 4096
     {
-        return Err((
+        return Err(OpenFailure {
             lane,
-            429,
-            "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
-        ));
-    }
-    let previous = body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .and_then(|id| {
-            registry
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .responses
-                .get(id)
-                .cloned()
+            status: 429,
+            message: "本地 WS 响应亲和记录已达上限，请重新连接并发送完整上下文".into(),
+            kind: OpenFailureKind::Request,
         });
+    }
+    let previous = if let Some(id) = body.get("previous_response_id").and_then(Value::as_str) {
+        let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(affinity) = registry.responses.get(id).filter(|affinity| {
+            registry.connections.values().any(|id| id == &affinity.connection)
+        }) else {
+            return Err(OpenFailure {
+                lane,
+                status: 400,
+                message: "WS 续接的原连接或响应已失效，请使用完整上下文开始新响应".into(),
+                kind: OpenFailureKind::PreviousResponseNotFound,
+            });
+        };
+        Some(affinity.clone())
+    } else {
+        None
+    };
     let context = RequestContext { registry, previous };
     REQUEST.scope(context, crate::extension_gateway::with_codex_response_plan(async {
         let mut log = crate::launcher::ProxyRequestLog::begin("GET", &path, Some(&body), headers.thread.clone().or(headers.session.clone()));
@@ -603,23 +658,34 @@ async fn open_request(
         let (mut upstream, slot) = match result {
             Ok(result) => result,
             Err(error) => {
-                let (status, message) = match error.downcast_ref::<Unsupported>() {
-                    Some(error) => (400, error.to_string()),
-                    None if error.is::<HttpFallback>() => (426, error.to_string()),
-                    None => (502, "WS 上游连接或请求准备失败".to_string()),
+                let (status, kind, message) = if error.is::<RequiresHttp>() {
+                    (426, OpenFailureKind::RequiresHttp, error.to_string())
+                } else if error.is::<PreviousResponseNotFound>() {
+                    (400, OpenFailureKind::PreviousResponseNotFound, error.to_string())
+                } else if error.is::<Unsupported>() {
+                    (400, OpenFailureKind::Request, error.to_string())
+                } else {
+                    (502, OpenFailureKind::Request, "WS 上游连接或请求准备失败".into())
                 };
                 log.record_error(&status.to_string(), message.clone());
-                return Err((lane, status, message));
+                return Err(OpenFailure { lane, status, message, kind });
             }
         };
         let reservation = Reservation { slot, submitted: false };
         log.record_upstream(&upstream);
         log.entry.success = false;
         let Some(ready) = upstream.websocket.take() else {
-            let status = if upstream.status_code == 200 { 502 } else { upstream.status_code };
-            let message = "选中的上游未接受标准 Responses WebSocket，请为此配置使用 HTTP".to_string();
+            let handshake_status = upstream.response.as_ref().map_or(upstream.status_code, |response| response.status().as_u16());
+            let status = upstream.status_code;
+            // 鉴权失败、限流和临时故障保留原状态，避免把它们缓存为不支持 WS。
+            let kind = if matches!(handshake_status, 200..=299 | 400 | 404 | 405 | 426 | 501) {
+                OpenFailureKind::RequiresHttp
+            } else {
+                OpenFailureKind::Request
+            };
+            let message = format!("上游未接受 Responses WebSocket 升级（HTTP {handshake_status}）");
             log.record_error(&status.to_string(), message.clone());
-            return Err((lane, status, message));
+            return Err(OpenFailure { lane, status, message, kind });
         };
         let phase = crate::settings::SettingsStore::default().load().unwrap_or_default().codex_app_third_party_reasoning_collapse;
         let transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(Some(&body))
@@ -629,6 +695,19 @@ async fn open_request(
         response.filter = crate::extension_gateway::ResponseFilter::start(&path, Some(&body)).await;
         Ok(Opened { lane, response })
     })).await
+}
+
+const HTTP_FALLBACK_MESSAGE: &str = "上游需要使用 HTTP，本连接即将关闭；请重连并改用 HTTP";
+
+async fn close_for_http_fallback<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+) {
+    use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+    let frame = CloseFrame {
+        code: CloseCode::Again,
+        reason: "retry with HTTP".into(),
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), ws.close(Some(frame))).await;
 }
 
 async fn send_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -706,9 +785,7 @@ pub(crate) async fn handle(
     path: &str,
     mut opener: crate::launcher::ProxyOpener,
 ) -> anyhow::Result<()> {
-    let raw_headers = headers;
     let request_line = headers.lines().next().unwrap_or_default();
-    let endpoint = format!("http://{}{}", stream.local_addr()?, request_line.split_whitespace().nth(1).unwrap_or(path));
     let mut request = http::Request::builder()
         .method("GET")
         .uri(request_line.split_whitespace().nth(1).unwrap_or("/"));
@@ -742,11 +819,36 @@ pub(crate) async fn handle(
         .await?;
         return Ok(());
     };
-    // 握手阶段选好传输；混合协议池交给现有 HTTP/SSE 桥接，避免升级后再拒绝请求。
+    // 升级只在路由能全程服务原生 Responses 时才允许：客户端升级后才收到路由拒绝不会
+    // 自动回落 HTTP，整轮会失败。混合协议池按既有约定继续走 HTTP/SSE。
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    let http_fallback = !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings);
+    let client_headers = ClientHeaders::read(headers);
+    let fallback_scope = (
+        path.split('?').next().unwrap_or(path).to_string(),
+        client_headers.thread.as_ref().or(client_headers.session.as_ref()).cloned(),
+    );
+    let http_fallback = http_fallback_active(&fallback_scope);
+    if http_fallback || !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+        crate::launcher::write_http_response(
+            stream,
+            "426 Upgrade Required",
+            "application/json; charset=utf-8",
+            br#"{"status":"upgrade_required","message":"WebSocket transport requires native Responses upstreams; retry with HTTP."}"#,
+        )
+        .await?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "helper.responses_websocket_upgrade_required",
+            json!({
+                "method": "GET",
+                "path": path,
+                "status": "426 Upgrade Required",
+                "reason": if http_fallback { "upstream_requires_http" } else { "mixed_protocol_relays" },
+            }),
+        );
+        return Ok(());
+    }
     use tokio::io::AsyncWriteExt;
     let mut wire = "HTTP/1.1 101 Switching Protocols\r\n".to_string();
     for (name, value) in response.headers() {
@@ -757,23 +859,19 @@ pub(crate) async fn handle(
     let mut ws =
         WebSocketStream::from_partially_read(stream, read_ahead, Role::Server, Some(ws_config()))
             .await;
-    if http_fallback {
-        return Box::pin(http_bridge::serve_upgraded(ws, raw_headers, &endpoint, None)).await;
-    }
     // 官方身份的本地代理原本再跳一次网关；WS 直接调用同一网关准备入口，避免双重 hooks 与日志。
     if matches!(opener, crate::launcher::ProxyOpener::Legacy)
         && crate::gateway::apply::codex_hops_through_gateway()
     {
         opener = crate::launcher::ProxyOpener::Gateway(crate::tools::ToolId::Codex);
     }
-    let headers = ClientHeaders::read(headers);
+    let headers = client_headers;
     let registry = Arc::new(Mutex::new(Registry::default()));
     let (events_tx, mut events) = tokio::sync::mpsc::channel(64);
     let (opened_tx, mut opened_rx) = tokio::sync::mpsc::channel(16);
     let mut connections: HashMap<String, Connection> = HashMap::new();
     let mut active: HashMap<String, ActiveResponse> = HashMap::new();
-    let mut queue: std::collections::VecDeque<(String, Value, usize)> =
-        std::collections::VecDeque::new();
+    let mut queue: VecDeque<(String, Value, usize)> = VecDeque::new();
     let mut queued_bytes = 0usize;
     let mut lanes = HashSet::new();
     struct PreparationTasks(HashMap<String, tokio::task::JoinHandle<()>>);
@@ -785,9 +883,14 @@ pub(crate) async fn handle(
         }
     }
     let mut preparing = PreparationTasks(HashMap::new());
-    let mut first_request = None;
-    let mut request_count = 0usize;
+    // 有请求发现只能走 HTTP 后，不再接新的 response.create；手上的响应收尾后关掉连接，
+    // 客户端重连时在握手阶段拿到 426，立即改走 HTTP。
+    let mut draining = false;
     loop {
+        if draining && active.is_empty() && preparing.0.is_empty() {
+            close_for_http_fallback(&mut ws).await;
+            return Ok(());
+        }
         while active.len() + preparing.0.len() < 16 {
             let Some(index) = queue.iter().position(|(lane, _, _)| {
                 !active.contains_key(lane) && !preparing.0.contains_key(lane)
@@ -816,11 +919,10 @@ pub(crate) async fn handle(
         tokio::select! {
             message = ws.next() => match message {
                 Some(Ok(Message::Text(text))) => match parse_create(&text) {
+                    Ok((lane, _)) if draining => {
+                        send_message(&mut ws, error_event(&lane, 503, HTTP_FALLBACK_MESSAGE)).await?;
+                    }
                     Ok((lane, body)) => {
-                        request_count += 1;
-                        first_request = if request_count == 1 && lane.is_empty() {
-                            Some(Message::Text(text.clone()))
-                        } else { None };
                         if (!lane.is_empty() && !lanes.contains(&lane) && lanes.len() >= 32)
                             || queue.len() >= 64 || queued_bytes.saturating_add(text.len()) > 32 * 1024 * 1024
                         {
@@ -840,19 +942,25 @@ pub(crate) async fn handle(
             },
             result = opened_rx.recv(), if !preparing.0.is_empty() => {
                 match result.context("WS 请求准备任务退出")? {
-                    Err((lane, status, message)) => {
+                    Err(OpenFailure { lane, status, message, kind }) => {
                         preparing.0.remove(&lane);
-                        // shortcut: HTTP 回退仅在首个默认流提交前启用，需要命名并发流的 HTTP 桥接时扩展。
-                        if status == 426 && preparing.0.is_empty() && connections.is_empty() && queue.is_empty()
-                            && let Some(first) = first_request.take()
-                        {
-                            return Box::pin(http_bridge::serve_upgraded(ws, raw_headers, &endpoint, Some(first))).await;
+                        if kind == OpenFailureKind::RequiresHttp {
+                            require_http_for_a_while(&fallback_scope, &message);
+                            draining = true;
+                            queue.clear();
+                            queued_bytes = 0;
+                            // 没有其它进行中的响应时不发错误事件，直接关连接：客户端把断线当作可重试，
+                            // 重连拿到 426 就改走 HTTP。还有别的响应时先回错误，等它们收尾再关。
+                            if !active.is_empty() || !preparing.0.is_empty() {
+                                send_message(&mut ws, error_event(&lane, status, &message)).await?;
+                            }
+                        } else if kind == OpenFailureKind::PreviousResponseNotFound {
+                            send_message(&mut ws, error_event_with_code(&lane, status, "previous_response_not_found", &message)).await?;
+                        } else {
+                            send_message(&mut ws, error_event(&lane, status, &message)).await?;
                         }
-                        first_request = None;
-                        send_message(&mut ws, error_event(&lane, status, &message)).await?;
                     }
                     Ok(opened) => {
-                        first_request = None;
                         let Opened { lane, mut response } = opened;
                         preparing.0.remove(&lane);
                         let id = response.ready.connection.clone();
@@ -885,7 +993,11 @@ pub(crate) async fn handle(
             event = events.recv() => match event.context("WS 上游事件通道退出")? {
                 UpstreamEvent::Closed(id) => {
                     connections.remove(&id);
-                    registry.lock().unwrap_or_else(|p| p.into_inner()).connections.retain(|_, current| current != &id);
+                    {
+                        let mut registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+                        registry.connections.retain(|_, current| current != &id);
+                        registry.responses.retain(|_, affinity| affinity.connection != id);
+                    }
                     let failed: Vec<_> = active.iter().filter(|(_, r)| r.ready.connection == id).map(|(lane, _)| lane.clone()).collect();
                     for lane in failed {
                         if let Some(mut response) = active.remove(&lane) {

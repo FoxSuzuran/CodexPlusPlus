@@ -262,7 +262,7 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
 /// 但成员的供应商全被这个 Agent 的『挑选』排除」时才不列（#2969），否则选了也只会报错。
 /// 本来就展开不了的组（成员模型没人提供等）保持原样列出，由默认模型等环节各自处理。
 /// `advance = false`：只看能不能展开，不推进轮换进度。
-fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
+pub(crate) fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
     if group.disabled || group.members.is_empty() {
         return false;
     }
@@ -466,6 +466,35 @@ pub fn model_entry_window(
                 .provider(&relay.id)
                 .and_then(|provider| provider.window_for(&upstream))
         })
+        .min()
+}
+
+/// 这一项只发给官方账号供应商时，本机 Codex 官方缓存给这些模型的窗口（取最小）。
+/// 有一家不是官方账号、或缓存里没有这个模型时返回 None，不替别家猜窗口（#3161）。
+pub fn official_native_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<u64> {
+    let members = model_entry_members(gateway, binding, model);
+    if members.is_empty() {
+        return None;
+    }
+    members
+        .iter()
+        .map(|(relay, upstream)| {
+            // 只看是不是官方账号供应商（Responses、没有另配 API 地址），不看此刻是否登录：
+            // 目录不能随登录状态来回变。
+            let official = crate::official_login::is_official_login_profile(relay)
+                && relay.protocol == crate::settings::RelayProtocol::Responses
+                && !(!relay.base_url.trim().is_empty()
+                    && (!relay.api_key.trim().is_empty() || relay.uses_no_auth()));
+            official
+                .then(|| crate::model_suffix::native_cache_context_window(upstream))
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
         .min()
 }
 

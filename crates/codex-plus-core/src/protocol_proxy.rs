@@ -3794,7 +3794,7 @@ async fn open_responses_proxy_request_once(
         (route.relay.clone(), vec![route.relay.clone()])
     } else if let Some(id) = crate::responses_websocket::pinned_relay() {
         let relay = settings.relay_profiles.iter().find(|relay| relay.id == id)
-            .cloned().ok_or(crate::responses_websocket::Unsupported("WS 续接的原供应商已移除，请使用完整上下文开始新响应"))?;
+            .cloned().ok_or(crate::responses_websocket::PreviousResponseNotFound("WS 续接的原供应商已移除，请使用完整上下文开始新响应"))?;
         (relay.clone(), vec![relay])
     } else {
         let relay = crate::relay_rotation::select_relay_for_request(&settings, context)?;
@@ -3875,7 +3875,7 @@ async fn open_responses_proxy_request_once(
         let has_more_candidates = attempt + 1 < relay_count;
         validate_upstream(&relay)?;
         if crate::responses_websocket::active() && relay.protocol != crate::settings::RelayProtocol::Responses {
-            return Err(crate::responses_websocket::HttpFallback("此上游需要 HTTP/SSE 兼容传输").into());
+            return Err(crate::responses_websocket::RequiresHttp("此 WS 路径只支持原生 Responses 上游；HTTP/SSE 兼容路由请继续使用 HTTP").into());
         }
         // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
         let official_member =
@@ -4167,7 +4167,7 @@ async fn open_responses_proxy_request_once(
         }
         if crate::responses_websocket::active() {
             if compaction || experimental_local_compaction || forced_adapted || local_exec_adapted {
-                return Err(crate::responses_websocket::HttpFallback("此请求需要 HTTP 压缩或 exec 协议转换").into());
+                return Err(crate::responses_websocket::RequiresHttp("此 WS 路径不执行 HTTP 压缩或 exec 协议转换，请继续使用 HTTP").into());
             }
             let builder = build_responses_upstream_request(
                 &relay, &endpoint, &upstream_body, wire_api, false,
@@ -4199,15 +4199,19 @@ async fn open_responses_proxy_request_once(
                 }
                 Ok(crate::responses_websocket::PreparedUpstream::Rejected(response)) => {
                     let status = response.status().as_u16();
+                    if (200..300).contains(&status) {
+                        return Err(crate::responses_websocket::RequiresHttp("上游返回 HTTP 响应，没有升级到 WebSocket").into());
+                    }
                     if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
                     if has_more_candidates && matches!(status, 401 | 403 | 429 | 500..=599) {
                         retry_reasons.push(format!("WS handshake {status}"));
                         continue;
                     }
-                    // HTTP 200 不是升级成功，不能在网关中当成成功候选。
-                    (None, Some(response), if (200..300).contains(&status) { 502 } else { status })
+                    (None, Some(response), status)
                 }
-                Err(error) if error.is::<crate::responses_websocket::Unsupported>() || error.is::<crate::responses_websocket::HttpFallback>() => return Err(error),
+                Err(error) if error.is::<crate::responses_websocket::Unsupported>()
+                    || error.is::<crate::responses_websocket::PreviousResponseNotFound>()
+                    || error.is::<crate::responses_websocket::RequiresHttp>() => return Err(error),
                 Err(error) => {
                     if !strict_aggregate_model { crate::relay_rotation::record_relay_request_failure(&settings); }
                     if has_more_candidates {
@@ -6212,15 +6216,6 @@ async fn upstream_request_parts(
     official_base: Option<&str>,
     session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
-    let local_warmup = crate::responses_websocket::preferred()
-        && relay.requires_protocol_proxy_conversion()
-        && request_json.get("generate").and_then(Value::as_bool) == Some(false);
-    if crate::responses_websocket::preferred()
-        && (relay.requires_protocol_proxy_conversion()
-            || request_json.get("background").and_then(Value::as_bool) == Some(true))
-    {
-        request_json = crate::responses_websocket::http_request(request_json)?;
-    }
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
@@ -6281,7 +6276,7 @@ async fn upstream_request_parts(
     let request_conversion =
         !crate::extension_gateway::builtin_replaced("builtin:request-conversion");
     let mut body = match relay.protocol {
-        _ if !request_conversion || local_warmup => request_json,
+        _ if !request_conversion => request_json,
         RelayProtocol::Responses => request_json,
         RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
             request_json,
@@ -6409,7 +6404,6 @@ async fn upstream_request_parts(
     }
 
     let wire_api = match relay.protocol {
-        _ if local_warmup => UpstreamWireApi::Responses,
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
         RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
@@ -6450,29 +6444,10 @@ async fn send_responses_upstream_request(
     official_credential: Option<&crate::official_login::OfficialCredential>,
     header_timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
-    if crate::responses_websocket::preferred()
-        && relay.requires_protocol_proxy_conversion()
-        && upstream_body.get("generate").and_then(Value::as_bool) == Some(false)
-    {
-        return crate::responses_websocket::warmup_response(upstream_body);
-    }
     let builder = build_responses_upstream_request(
         relay, endpoint, upstream_body, wire_api, is_stream,
         original_user_agent, beta_features, session_headers, official_credential,
     )?;
-    if crate::responses_websocket::preferred()
-        && wire_api == UpstreamWireApi::Responses
-        && is_stream
-        && !is_local_protocol_proxy_base_url(endpoint)
-        && !upstream_body.get("background").and_then(Value::as_bool).unwrap_or(false)
-    {
-        // WS 分支装箱，避免扩大多层 HTTP 管线的 future 导致 Windows 默认栈溢出。
-        let route_id = format!("{}:{:?}", relay.id, relay.gateway_proxy);
-        return Box::pin(crate::responses_websocket::send_upstream(
-            builder, upstream_body, header_timeout, &route_id,
-            &effective_user_agent(&relay.user_agent, original_user_agent),
-        )).await;
-    }
     send_upstream_request_with_header_timeout(builder, header_timeout).await
 }
 
@@ -6508,7 +6483,6 @@ fn build_responses_upstream_request(
     // 只发往本机回环地址，外部中转站看不到这个头。
     if is_local_protocol_proxy_base_url(endpoint) {
         builder = builder.header(crate::extension_gateway::EXTENSIONS_APPLIED_HEADER, "1");
-        builder = crate::responses_websocket::mark_request(builder);
     }
     if relay.protocol == crate::settings::RelayProtocol::AnthropicMessages {
         // 1M 上下文 / Claude Code 身份都靠 anthropic-beta 表达；用户显式配了该头就不插手。
@@ -7810,7 +7784,7 @@ impl ChatSseState {
     }
 }
 
-pub(crate) fn take_sse_block(buffer: &mut String) -> Option<String> {
+fn take_sse_block(buffer: &mut String) -> Option<String> {
     let lf = buffer.find("\n\n").map(|index| (index, 2));
     let crlf = buffer.find("\r\n\r\n").map(|index| (index, 4));
     let (index, delimiter_len) = match (lf, crlf) {
@@ -7829,7 +7803,7 @@ pub(crate) fn take_sse_block(buffer: &mut String) -> Option<String> {
     Some(block)
 }
 
-pub(crate) fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u8]) {
+fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, bytes: &[u8]) {
     if bytes.is_empty() {
         return;
     }
@@ -13028,7 +13002,7 @@ pub(crate) struct ResponsesSseTransformer {
     apply_patch_declared_as_function: bool,
     /// 从 `response.completed` 里抓到的 usage，供请求日志使用。
     usage: Option<crate::request_log::RequestUsage>,
-    final_response_usage: Option<crate::request_log::RequestUsage>,
+    final_response_usage: Option<crate::request_log::FinalResponseUsage>,
     final_response_invalid: bool,
     /// 终态失败事件里的 code/message 摘要。只进请求日志与诊断日志，
     /// 不拼进 failure 原因（原因会随 SSE 回给客户端，不能泄露上游 payload）。
@@ -13330,7 +13304,7 @@ impl ResponsesSseTransformer {
         self.usage.take()
     }
 
-    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::RequestUsage> {
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::FinalResponseUsage> {
         (self.completed
             && !self.failed
             && !self.final_response_invalid
@@ -13493,7 +13467,7 @@ fn sse_event_type_from_prefix(prefix: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) fn extract_sse_data(event_str: &str) -> Option<String> {
+fn extract_sse_data(event_str: &str) -> Option<String> {
     let mut parts = Vec::new();
     for line in event_str.lines() {
         if let Some(rest) = line.strip_prefix("data:") {
@@ -14053,7 +14027,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
             final_stream.push_bytes(chunk);
         }
         assert_eq!(
-            final_stream.final_response_usage().unwrap().input_tokens,
+            final_stream.final_response_usage().unwrap().usage.input_tokens,
             12
         );
         assert!(final_stream.finish().is_none());
@@ -14075,7 +14049,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
         let mut done = ResponsesSseTransformer::default();
         done.push_bytes(completed);
         done.push_bytes(b"data: [DONE]\n\n");
-        assert_eq!(done.final_response_usage().unwrap().input_tokens, 12);
+        assert_eq!(done.final_response_usage().unwrap().usage.input_tokens, 12);
         for body in [
             &completed[..completed.len() - 2],
             &b"data: [DONE]\n\n"[..],
@@ -14102,6 +14076,7 @@ data: {"type":"response.output_item.done","item":{"type":"function_call","name":
             returned_attempt
                 .final_response_usage()
                 .unwrap()
+                .usage
                 .input_tokens,
             12
         );

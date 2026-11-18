@@ -1510,59 +1510,6 @@ async fn gateway_end_to_end() {
             assert!(tokio::time::Instant::now() < deadline, "WS requests were not logged exactly once");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let (chat_base, chat_seen) = mock_upstream(vec![
-            (200, "text/event-stream", chat_tool_sse()),
-            (200, "text/event-stream", chat_sse("兼容回答")),
-        ]).await;
-        ws_gateway.providers = providers(vec![relay(
-            "ws-chat", &chat_base, "sk-chat", RelayProtocol::ChatCompletions, "chat-ws",
-        )]);
-        ws_gateway.bindings.insert("codex".into(), binding("chat-ws", "cpx-gw-codex-e2e"));
-        save(&ws_gateway);
-        let mut request = format!("ws://127.0.0.1:{port}/gw/codex/v1/responses")
-            .into_client_request().unwrap();
-        request.headers_mut().insert("authorization", "Bearer cpx-gw-codex-e2e".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        let mut previous = Value::Null;
-        for turn in 0..3 {
-            let mut create = json!({
-                "type":"response.create","model":"chat-ws","store":false,
-                "tools":[{"type":"function","name":"Bash","parameters":{"type":"object","properties":{}}}],
-                "input":match turn {
-                    0 => json!([]),
-                    1 => json!([{"role":"user","content":"run a tool"}]),
-                    _ => json!([{"type":"function_call_output","call_id":"call_7","output":"tool result"}]),
-                },
-            });
-            if turn == 0 {
-                create["generate"] = json!(false);
-            } else {
-                create["previous_response_id"] = previous.clone();
-            }
-            socket.send(Message::text(create.to_string())).await.unwrap();
-            loop {
-                let frame = tokio::time::timeout(
-                    std::time::Duration::from_secs(10), socket.next(),
-                ).await.unwrap().unwrap().unwrap();
-                let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                assert_ne!(event["type"], "error", "{event}");
-                if event["type"] == "response.completed" {
-                    previous = event["response"]["id"].clone();
-                    break;
-                }
-            }
-            if turn == 0 {
-                assert!(chat_seen.lock().unwrap().is_empty(), "HTTP warmup must not start generation");
-            }
-        }
-        socket.close(None).await.unwrap();
-        let chat_seen = chat_seen.lock().unwrap();
-        assert_eq!(chat_seen.len(), 2);
-        assert!(chat_seen.iter().all(|(head, _)| head.starts_with("POST /v1/chat/completions")));
-        let messages = chat_seen[1].1["messages"].as_array().unwrap();
-        assert!(messages.iter().any(|message| message["role"] == "user"));
-        assert!(messages.iter().any(|message| message["role"] == "assistant" && message["tool_calls"].is_array()));
-        assert!(messages.iter().any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_7"));
         save(&gateway);
     }
     assert!(

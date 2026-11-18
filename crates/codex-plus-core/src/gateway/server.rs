@@ -252,8 +252,7 @@ pub(crate) async fn handle(
             let beta_features = header_value_from_headers(headers, "x-codex-beta-features");
             // Codex 的客户端身份头（originator、x-codex-* 等）照原样带给上游（#2783）。
             let client_identity = client_identity_headers(&agent, headers);
-            // task-local 包装只持有指针，避免多层复制完整 HTTP 管线 future 超过 Windows 默认栈。
-            crate::responses_websocket::with_transport(headers, Box::pin(handle_protocol_proxy_connection(
+            handle_protocol_proxy_connection(
                 stream,
                 &request_body,
                 user_agent.as_deref(),
@@ -268,7 +267,7 @@ pub(crate) async fn handle(
                 path,
                 remote_addr_text,
                 ProxyOpener::Gateway(agent),
-            )))
+            )
             .await
         }
         (_, "POST", "/images/generations" | "/images/edits") => {

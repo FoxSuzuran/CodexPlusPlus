@@ -21,8 +21,7 @@
     return isCodexPlusExtensionNode(node);
   }
 
-  function scanRelevantSelector() {
-    return [
+  const scanRelevantBaseSelector = [
       selectors.sidebarThread,
       '[data-app-action-sidebar-section-heading="Chats"]',
       '[data-app-action-sidebar-section-heading="Projects"]',
@@ -48,38 +47,40 @@
       "[data-codex-approval-surface]",
       // Codex 设置页导航出现时补上 settings.nav 插槽。
       "[data-settings-panel-slug]",
-      ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
-    ].join(", ");
+  ].join(", ");
+
+  function scanRelevantSelector() {
+    return codexPluginMarketplacePatchEnabled()
+      ? `${scanRelevantBaseSelector}, ${selectors.disabledInstallButton}`
+      : scanRelevantBaseSelector;
   }
 
-  function nodeSelfOrAncestorMatchesScanRelevance(node) {
-    if (node.nodeType !== 1) return false;
-    if (isExtensionUiNode(node)) return false;
-    const relevantSelector = scanRelevantSelector();
+  function nodeSelfOrAncestorMatchesScanRelevance(node, relevantSelector) {
     return !!node.closest?.(relevantSelector) ||
       nodeOrAncestorLooksLikeCodexUserBubble(node);
   }
 
-  function isScanRelevantNode(node) {
+  function isScanRelevantNode(node, relevantSelector) {
     if (node.nodeType !== 1) return false;
     if (isExtensionUiNode(node)) return false;
-    return nodeSelfOrAncestorMatchesScanRelevance(node) || !!node.querySelector?.(scanRelevantSelector()) || nodeLooksLikeCodexUserBubble(node);
+    return nodeSelfOrAncestorMatchesScanRelevance(node, relevantSelector) ||
+      !!node.querySelector?.(relevantSelector) || nodeLooksLikeCodexUserBubble(node);
   }
 
-  function isChatContentMutation(mutation) {
+  function isChatContentMutation(mutation, relevantSelector) {
     const target = mutation.target;
     if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose')) return false;
-    const selector = scanRelevantSelector();
     // A streamed child inherits its turn's relevance; only new scan targets need a full pass.
     return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) =>
       node.nodeType === 1 && !isExtensionUiNode(node) &&
-      (node.matches?.(selector) || node.querySelector?.(selector) || nodeLooksLikeCodexUserBubble(node)));
+      (node.matches?.(relevantSelector) || node.querySelector?.(relevantSelector) || nodeLooksLikeCodexUserBubble(node)));
   }
 
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
+    const relevantSelector = scanRelevantSelector();
     return mutations.some((mutation) => {
-      if (isChatContentMutation(mutation)) return false;
+      if (isChatContentMutation(mutation, relevantSelector)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
       // 新版工具栏同时包住编辑器。输入由命令监听处理，不为每次按键重扫全部布局。
@@ -91,8 +92,8 @@
       // 空闲时也每秒全量扫描五次，macOS 上足以吃满一个核（issue #1960）。
       // 一次变更如果只动了我们自己的 UI，就不该再排一次 scan。
       if (changedElements.length && changedElements.every(isExtensionUiNode)) return false;
-      if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target)) return true;
-      return changedElements.some((node) => isScanRelevantNode(node));
+      if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target, relevantSelector)) return true;
+      return changedElements.some((node) => isScanRelevantNode(node, relevantSelector));
     });
   }
 

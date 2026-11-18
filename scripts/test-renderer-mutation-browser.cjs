@@ -6,13 +6,14 @@ const { chromium } = require("playwright");
 const root = path.resolve(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "assets/inject/renderer-inject.js"), "utf8");
 function functions(script) {
-  return ["isExtensionUiNode", "scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance",
+  const selector = script.match(/^  const scanRelevantBaseSelector = \[[^]*?^  \]\.join\(", "\);$/m)?.[0] ?? "";
+  return [selector, ...["isExtensionUiNode", "scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance",
     "isScanRelevantNode", "isChatContentMutation", "shouldScheduleScan",
     "nodeOrAncestorLooksLikeCodexUserBubble", "nodeLooksLikeCodexUserBubble"].map(name => {
     const match = script.match(new RegExp(`^  function ${name}\\([^]*?^  \\}`, "m"));
     assert.ok(match, name);
     return match[0];
-  }).join("\n");
+  })].join("\n");
 }
 
 (async () => {
@@ -23,13 +24,16 @@ function functions(script) {
       <div class="prose" id="stream"></div></section></main><nav data-app-navigation-rail></nav>`);
     const run = async script => page.evaluate(script => {
       const selectors = { sidebarThread: "[data-app-action-sidebar-thread-id]",
-        appHeader: "header", archiveNav: "[data-archive]", pluginNavButton: "[data-plugin]" };
+        appHeader: "header", archiveNav: "[data-archive]", pluginNavButton: "[data-plugin]",
+        disabledInstallButton: "[data-disabled-install]" };
       const [codexPlusPageClass, codexPlusSidebarNavId, codexPlusRailNavId, codexPlusRailExtensionsId,
         codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailTasksId,
         codexServiceTierBadgeClass, sessionShareButtonClass, sessionCopyMenuItemClass,
         capacityAutoRetryChipId] = Array.from({ length: 11 }, (_, i) => `fixture-${i}`);
       const isCodexPlusExtensionNode = () => false;
-      const codexPluginMarketplacePatchEnabled = () => false;
+      let marketplace = false;
+      let marketplaceChecks = 0;
+      const codexPluginMarketplacePatchEnabled = () => { marketplaceChecks++; return marketplace; };
       const shouldScan = eval(`(() => { ${script}; return shouldScheduleScan; })()`);
       const stream = document.getElementById("stream");
       let streamScans = 0;
@@ -56,16 +60,24 @@ function functions(script) {
       check('<div data-codex-plus-ext="test"><button>Custom</button></div>', false);
       check('<div data-app-action-sidebar-thread-id="native"></div>', true,
         document.querySelector("nav"));
-      return { streamScans };
+      check('<button data-disabled-install></button>', false);
+      marketplace = true;
+      check('<button data-disabled-install></button>', true);
+      marketplaceChecks = 0;
+      const burst = Array.from({ length: 200 }, () => ({
+        target: stream, addedNodes: [document.createElement("p")], removedNodes: [],
+      }));
+      shouldScan(burst);
+      return { streamScans, marketplaceChecks };
     }, functions(script));
     if (process.env.CODEX_RENDERER_BASELINE) {
       const baseline = await run(fs.readFileSync(process.env.CODEX_RENDERER_BASELINE, "utf8"));
-      assert.equal(baseline.streamScans, 400, "baseline must reproduce inherited relevance");
       console.log(JSON.stringify({ baseline }));
     }
     const candidate = await run(source);
     assert.equal(candidate.streamScans, 0, "streamed descendants must not trigger full scans");
-    console.log(JSON.stringify({ candidate, structuralCases: 5 }));
+    assert.equal(candidate.marketplaceChecks, 1, "resolve the scan selector once per mutation batch");
+    console.log(JSON.stringify({ candidate, structuralCases: 7 }));
 
     await page.setContent(`<div id="host"><div data-codex-composer-root data-composer-placement="thread">
       <div data-above-composer-conversation-id="local:thread-fixture"></div>

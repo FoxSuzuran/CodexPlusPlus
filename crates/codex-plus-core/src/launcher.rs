@@ -1751,6 +1751,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
             let child = Command::new(executable)
                 .args(&command[1..])
+                // `open` 会把自身环境带给新启动的应用：回环地址不走系统代理（issue #3131）。
+                .envs(crate::proxy::codex_launch_no_proxy_env())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -1782,6 +1784,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         if let Some(state_dir) = instance.state_dir.as_deref() {
             child_command.env(crate::paths::STATE_DIR_ENV, state_dir);
         }
+        // 发往本地网关 / 协议代理的请求不能被系统代理拦走（issue #3131）。
+        child_command.envs(crate::proxy::codex_launch_no_proxy_env());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
@@ -2432,7 +2436,7 @@ pub(crate) async fn handle_helper_connection_on(
         // 只有转给网关的那一跳才用得上（见 handle_protocol_proxy_connection），这里先取出来（#2783）。
         let request_client_identity =
             crate::protocol_proxy::codex_client_identity_headers(&request_headers);
-        return crate::responses_websocket::with_transport(&request_headers, handle_protocol_proxy_connection(
+        return handle_protocol_proxy_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
@@ -2447,7 +2451,7 @@ pub(crate) async fn handle_helper_connection_on(
             path,
             remote_addr_text,
             ProxyOpener::Legacy,
-        ))
+        )
         .await;
     }
     let request_body = String::from_utf8_lossy(&request.body);
@@ -2905,6 +2909,7 @@ impl ProxyRequestLog {
                 usage: None,
                 cache_hit_ratio: None,
                 final_response_evidence: None,
+                final_response_id: None,
                 agent: None,
             },
             written: false,
@@ -2931,6 +2936,7 @@ impl ProxyRequestLog {
     ) {
         self.final_response_eligible = false;
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status_code;
         self.entry.success = (200..300).contains(&status_code);
         self.entry.stream = stream;
@@ -2951,6 +2957,7 @@ impl ProxyRequestLog {
 
     pub(crate) fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.final_response_eligible = upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses
             && !upstream.compaction
             && !upstream.native_compaction_passthrough
@@ -2986,6 +2993,7 @@ impl ProxyRequestLog {
 
     pub(crate) fn record_error(&mut self, status: &str, error: String) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status
             .split_whitespace()
             .next()
@@ -3002,17 +3010,19 @@ impl ProxyRequestLog {
     }
 
     /// 仅在全部响应字节成功写出并正常关闭后调用；usage 必须来自最终终态。
-    pub(crate) fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
+    pub(crate) fn record_final_response(&mut self, terminal: Option<crate::request_log::FinalResponseUsage>) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
+        let Some(terminal) = terminal else { return };
         if self.final_response_eligible
             && self.entry.success
             && (200..300).contains(&self.entry.status_code)
             && self.entry.error.is_none()
-            && usage.is_some()
-            && usage == self.entry.usage
+            && Some(&terminal.usage) == self.entry.usage.as_ref()
         {
             self.entry.final_response_evidence =
                 Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string());
+            self.entry.final_response_id = terminal.response_id;
         }
     }
 
@@ -3025,6 +3035,7 @@ impl ProxyRequestLog {
         match failure {
             Some(reason) => {
                 self.entry.final_response_evidence = None;
+                self.entry.final_response_id = None;
                 self.entry.success = false;
                 self.entry.stream_outcome = Some(reason.to_string());
                 if self.entry.error.is_none() {
@@ -3164,7 +3175,7 @@ async fn handle_protocol_proxy_connection_inner(
     // 经网关的非 Codex 客户端（Grok 等）不认识 ChatGPT 订阅后端的私有事件。
     let foreign_client =
         matches!(&opener, ProxyOpener::Gateway(agent) if *agent != crate::tools::ToolId::Codex);
-    let opening = Box::pin(async { match &opener {
+    let opened = match &opener {
         ProxyOpener::Legacy => {
             crate::protocol_proxy::open_responses_proxy_request_for_path_with_session_headers_and_live_id(
                 request_body,
@@ -3179,7 +3190,7 @@ async fn handle_protocol_proxy_connection_inner(
         }
         ProxyOpener::Gateway(agent) => {
             request_log.set_agent(agent);
-            Box::pin(crate::gateway::server::open_responses_for_agent(
+            crate::gateway::server::open_responses_for_agent(
                 agent,
                 path,
                 request_body,
@@ -3187,21 +3198,9 @@ async fn handle_protocol_proxy_connection_inner(
                 session_headers,
                 Some(live_request_id.as_str()),
                 Some(&*stream),
-            ))
+            )
             .await
         }
-    }});
-    let opened = if crate::responses_websocket::preferred() {
-        tokio::select! {
-            opened = opening => Some(opened),
-            _ = crate::gateway::pipeline::client_gone(Some(&*stream)) => None,
-        }
-    } else {
-        Some(opening.await)
-    };
-    let Some(opened) = opened else {
-        request_log.record_error("499 Client Closed Request", "WebSocket client disconnected".to_string());
-        return Ok(());
     };
     // `_key_slot`：网关的限速名额，持有到这个函数返回（响应转发完、出错或客户端断开）才释放。
     let (mut upstream, _key_slot) =
@@ -5627,7 +5626,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     thread_id: Option<&str>,
     foreign_client: bool,
     live_request_id: Option<&str>,
-    final_response_usage: &mut Option<crate::request_log::RequestUsage>,
+    final_response_usage: &mut Option<crate::request_log::FinalResponseUsage>,
 ) -> anyhow::Result<(
     Option<String>,
     Option<crate::request_log::RequestUsage>,
@@ -5953,7 +5952,7 @@ fn resolve_http_body_bytes(env_value: Option<&str>, setting_bytes: usize) -> usi
         .unwrap_or_else(|| normalize_http_body_bytes(setting_bytes))
 }
 
-pub(crate) fn configured_http_body_bytes() -> usize {
+fn configured_http_body_bytes() -> usize {
     let stored = CONFIGURED_HTTP_BODY_BYTES.load(std::sync::atomic::Ordering::Relaxed);
     let setting_bytes = if stored == 0 {
         DEFAULT_HTTP_BODY_BYTES
@@ -8292,19 +8291,21 @@ mod tests {
             response: None,
         };
         let usage = crate::request_log::final_response_usage(&serde_json::json!({
-            "status":"completed","usage":{"input_tokens":12,"output_tokens":3,
+            "id":"resp_returned","status":"completed","usage":{"input_tokens":12,"output_tokens":3,
                 "input_tokens_details":{"cached_tokens":0}}
         })).unwrap();
         log.record_upstream(&upstream);
         assert!(log.entry.final_response_evidence.is_none(), "HTTP 200 is insufficient");
-        log.record_stream(None, Some(usage.clone()), None);
+        log.record_stream(None, Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert_eq!(log.entry.final_response_id.as_deref(), Some("resp_returned"));
         assert_eq!(log.entry.final_response_evidence.as_deref(), Some("final-response-v1"));
         assert_eq!(log.entry.relay_id, "final-supplier");
         assert_eq!(log.entry.upstream_model, "after-middleware");
         assert_eq!(log.entry.attempts, 2);
-        log.record_stream(Some("incomplete"), Some(usage.clone()), None);
+        log.record_stream(Some("incomplete"), Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert!(log.entry.final_response_id.is_none());
         assert!(log.entry.final_response_evidence.is_none());
         log.entry.error = None;
 
@@ -8322,7 +8323,7 @@ mod tests {
                 _ => unreachable!(),
             }
             log.record_upstream(&upstream);
-            log.record_stream(None, Some(usage.clone()), None);
+            log.record_stream(None, Some(usage.usage.clone()), None);
             log.record_final_response(Some(usage.clone()));
             assert!(log.entry.final_response_evidence.is_none(), "{case}");
             upstream.request_trace = saved_trace;
@@ -8335,7 +8336,9 @@ mod tests {
         log.record_upstream(&upstream);
         log.record_final_response(None);
         assert!(log.entry.final_response_evidence.is_none(), "unverified response middleware / counts");
-        log.record_final_response(Some(crate::request_log::RequestUsage { input_tokens: 999, ..usage }));
+        let mut discarded = usage;
+        discarded.usage.input_tokens = 999;
+        log.record_final_response(Some(discarded));
         assert!(log.entry.final_response_evidence.is_none(), "counts from a discarded attempt");
     }
 
@@ -9565,6 +9568,7 @@ mod tests {
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
         assert_eq!(entry.cache_hit_ratio, Some(100.0 / 120.0));
+        assert_eq!(entry.final_response_id.as_deref(), Some("resp_logged"));
         assert_eq!(entry.final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
@@ -9683,6 +9687,7 @@ mod tests {
         assert_eq!(entries[0].attempts, 2);
         assert_eq!(entries[0].auto_retries, 1);
         assert_eq!(entries[0].usage.as_ref().map(|u| u.input_tokens), Some(12));
+        assert_eq!(entries[0].final_response_id.as_deref(), Some("resp_ok"));
         assert_eq!(entries[0].final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);

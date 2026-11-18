@@ -1353,6 +1353,8 @@
 /* 用骨架重排过的页面：一列，块与块之间统一 16px。 */
 :root .shell .cx-page {
   display: flex;
+  /* 网格项允许收窄，避免长路径和标识符把页面操作区推出窗口。 */
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   gap: 16px;

@@ -258,7 +258,7 @@ async fn changed_oauth_account_cannot_reuse_cached_continuation() {
     let error = continuation_after_auth_change(Some("account-a"), Some("account-b"))
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    assert!(error.is::<PreviousResponseNotFound>());
 }
 
 #[tokio::test]
@@ -266,7 +266,7 @@ async fn changed_api_key_cannot_reuse_cached_continuation() {
     let error = continuation_after_auth_change(None, None)
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    assert!(error.is::<PreviousResponseNotFound>());
 }
 
 #[tokio::test]
@@ -274,7 +274,7 @@ async fn unknown_oauth_account_keeps_credentials_in_connection_identity() {
     let error = continuation_after_auth_change(Some(""), Some(""))
         .await
         .unwrap_err();
-    assert!(error.is::<Unsupported>());
+    assert!(error.is::<PreviousResponseNotFound>());
 }
 
 #[tokio::test]

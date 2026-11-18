@@ -23,9 +23,17 @@ type UpstreamSocket = WebSocketStream<reqwest::Upgraded>;
 #[error("{0}")]
 pub(crate) struct Unsupported(pub(crate) &'static str);
 
+/// WS 续接（带 `previous_response_id`）接不上：原连接已关（上游闲置断开等）、模型变了、
+/// 原供应商或 Key 已不在路由里，或本连接根本没有这个响应。回给客户端 OpenAI 的标准错误码
+/// `previous_response_not_found`：Codex 收到后自己重连并发送完整上下文（0.169 实测），
+/// 用户看不到报错；以前回自定义错误码，Codex 把它当失败显示出来（#3169 / #3176 / #3183）。
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
-pub(crate) struct PreviousResponseNotFound(pub(crate) &'static str);
+pub(crate) struct ContinuationLost(pub(crate) &'static str);
+
+/// 客户端据此重发完整上下文的错误码（OpenAI Responses WebSocket 的约定）。
+const CONTINUATION_LOST_CODE: &str = "previous_response_not_found";
+const LOCAL_ERROR_CODE: &str = "local_responses_websocket_error";
 
 /// 这次请求只能走 HTTP（HTTP 专用的压缩 / exec 转换）。与 [`Unsupported`] 不同，
 /// 它说明的是传输选择而不是请求本身有误：下游连接会被关掉，让客户端重连时拿到 426 改走 HTTP。
@@ -113,7 +121,7 @@ pub(crate) fn pinned_relay() -> Option<String> {
 /// 原 Key 必须在路由收集阶段筛选，保留它的冷却候选，再由既有队列等名额。
 pub(crate) fn restrict_plan(plan: &mut RoutePlan) -> anyhow::Result<()> {
     if pinned_key().is_some() && plan.candidates.is_empty() && plan.waiting.is_empty() {
-        return Err(PreviousResponseNotFound(
+        return Err(ContinuationLost(
             "WS 续接的原供应商或 Key 已不在当前模型路由中；请使用完整上下文开始新响应",
         )
         .into());
@@ -228,7 +236,7 @@ pub(crate) async fn prepare(
                 if current.as_deref() != Some(&previous.connection)
                     || body.get("model").and_then(Value::as_str) != Some(&previous.model)
                 {
-                    return Err(PreviousResponseNotFound(
+                    return Err(ContinuationLost(
                         "WS 续接的原连接已关闭或模型已变更；请使用完整上下文开始新响应",
                     )
                     .into());
@@ -411,7 +419,7 @@ struct Opened {
 #[derive(PartialEq, Eq)]
 enum OpenFailureKind {
     Request,
-    PreviousResponseNotFound,
+    ContinuationLost,
     RequiresHttp,
 }
 
@@ -562,11 +570,14 @@ fn start_connection(
 }
 
 fn error_event(lane: &str, status: u16, message: &str) -> Message {
-    error_event_with_code(lane, status, "local_responses_websocket_error", message)
+    error_event_with_code(lane, status, LOCAL_ERROR_CODE, message)
 }
 
 fn error_event_with_code(lane: &str, status: u16, code: &str, message: &str) -> Message {
     let mut value = json!({"type":"error","status":status,"error":{"type":"invalid_request_error","code":code,"message":message}});
+    if code == CONTINUATION_LOST_CODE {
+        value["error"]["param"] = json!("previous_response_id");
+    }
     if !lane.is_empty() {
         value["stream_id"] = json!(lane);
     }
@@ -624,8 +635,13 @@ async fn open_request(
             kind: OpenFailureKind::Request,
         });
     }
-    let previous = if let Some(id) = body.get("previous_response_id").and_then(Value::as_str) {
+    let previous = if let Some(id) = body
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+    {
         let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+        // 增量输入只能在原连接续接，需要完整上下文时由客户端重放。
         let Some(affinity) = registry.responses.get(id).filter(|affinity| {
             registry.connections.values().any(|id| id == &affinity.connection)
         }) else {
@@ -633,7 +649,7 @@ async fn open_request(
                 lane,
                 status: 400,
                 message: "WS 续接的原连接或响应已失效，请使用完整上下文开始新响应".into(),
-                kind: OpenFailureKind::PreviousResponseNotFound,
+                kind: OpenFailureKind::ContinuationLost,
             });
         };
         Some(affinity.clone())
@@ -660,8 +676,8 @@ async fn open_request(
             Err(error) => {
                 let (status, kind, message) = if error.is::<RequiresHttp>() {
                     (426, OpenFailureKind::RequiresHttp, error.to_string())
-                } else if error.is::<PreviousResponseNotFound>() {
-                    (400, OpenFailureKind::PreviousResponseNotFound, error.to_string())
+                } else if error.is::<ContinuationLost>() {
+                    (400, OpenFailureKind::ContinuationLost, error.to_string())
                 } else if error.is::<Unsupported>() {
                     (400, OpenFailureKind::Request, error.to_string())
                 } else {
@@ -829,8 +845,12 @@ pub(crate) async fn handle(
         path.split('?').next().unwrap_or(path).to_string(),
         client_headers.thread.as_ref().or(client_headers.session.as_ref()).cloned(),
     );
-    let http_fallback = http_fallback_active(&fallback_scope);
-    if http_fallback || !crate::protocol_proxy::websocket_upgrade_serves_all_routes(&settings) {
+    let blocked = if http_fallback_active(&fallback_scope) {
+        Some("upstream_requires_http")
+    } else {
+        crate::protocol_proxy::websocket_upgrade_block_reason(&settings)
+    };
+    if let Some(reason) = blocked {
         crate::launcher::write_http_response(
             stream,
             "426 Upgrade Required",
@@ -844,7 +864,7 @@ pub(crate) async fn handle(
                 "method": "GET",
                 "path": path,
                 "status": "426 Upgrade Required",
-                "reason": if http_fallback { "upstream_requires_http" } else { "mixed_protocol_relays" },
+                "reason": reason,
             }),
         );
         return Ok(());
@@ -954,8 +974,8 @@ pub(crate) async fn handle(
                             if !active.is_empty() || !preparing.0.is_empty() {
                                 send_message(&mut ws, error_event(&lane, status, &message)).await?;
                             }
-                        } else if kind == OpenFailureKind::PreviousResponseNotFound {
-                            send_message(&mut ws, error_event_with_code(&lane, status, "previous_response_not_found", &message)).await?;
+                        } else if kind == OpenFailureKind::ContinuationLost {
+                            send_message(&mut ws, error_event_with_code(&lane, status, CONTINUATION_LOST_CODE, &message)).await?;
                         } else {
                             send_message(&mut ws, error_event(&lane, status, &message)).await?;
                         }

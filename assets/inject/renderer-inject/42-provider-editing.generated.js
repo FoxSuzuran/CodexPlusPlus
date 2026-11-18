@@ -1630,11 +1630,15 @@ ${key} = ${value}`]);
   var gateway_model_exports = {};
   __export(gateway_model_exports, {
     BUILTIN_GATEWAY_AGENTS: () => BUILTIN_GATEWAY_AGENTS,
+    COMPACTION_FALLBACK_REASON_PREFIX: () => COMPACTION_FALLBACK_REASON_PREFIX,
+    COMPACTION_MODEL_REASON_PREFIX: () => COMPACTION_MODEL_REASON_PREFIX,
     DIRECT_PROXY: () => DIRECT_PROXY,
     FOREIGN_COMPACTION_DROPPED_REASON: () => FOREIGN_COMPACTION_DROPPED_REASON,
     GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
     GATEWAY_CLAUDE_PROVIDER_ID: () => GATEWAY_CLAUDE_PROVIDER_ID,
     GROUP_MODEL_PREFIX: () => GROUP_MODEL_PREFIX,
+    MAX_GATEWAY_PORT: () => MAX_GATEWAY_PORT,
+    MIN_GATEWAY_PORT: () => MIN_GATEWAY_PORT,
     QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
     RECENT_USE_MS: () => RECENT_USE_MS,
     activeAutoGroup: () => activeAutoGroup,
@@ -1646,6 +1650,7 @@ ${key} = ${value}`]);
     bindingFromDraft: () => bindingFromDraft,
     blankBinding: () => blankBinding,
     cacheHitRate: () => cacheHitRate,
+    compactionNote: () => compactionNote,
     connectedAgents: () => connectedAgents,
     costText: () => costText,
     currencySymbol: () => currencySymbol,
@@ -1687,7 +1692,9 @@ ${key} = ${value}`]);
     modelRoutable: () => modelRoutable,
     niceCeiling: () => niceCeiling,
     ownPickerSection: () => ownPickerSection,
+    parseCompactionNote: () => parseCompactionNote,
     parseContextWindow: () => parseContextWindow,
+    parseGatewayPort: () => parseGatewayPort,
     parseKeyLimit: () => parseKeyLimit,
     parseWeight: () => parseWeight,
     patternMatches: () => patternMatches,
@@ -1706,10 +1713,14 @@ ${key} = ${value}`]);
     proxyAddressError: () => proxyAddressError,
     qualifiedProvider: () => qualifiedProvider,
     queueWaitMs: () => queueWaitMs,
+    quotaEntries: () => quotaEntries,
     quotaRemaining: () => quotaRemaining,
+    quotaSupported: () => quotaSupported,
     quotaWindowFresh: () => quotaWindowFresh,
     quotaWindowLabel: () => quotaWindowLabel,
     relativeTime: () => relativeTime,
+    relayFilterArgs: () => relayFilterArgs,
+    relayFilterFromFocus: () => relayFilterFromFocus,
     rememberAgentNames: () => rememberAgentNames,
     routeNarrative: () => routeNarrative,
     servingProviders: () => servingProviders,
@@ -1996,6 +2007,66 @@ ${key} = ${value}`]);
     };
   }
 
+  // apps/codex-plus-manager/src/relay-headers.ts
+  var FORBIDDEN_RELAY_HEADERS = [
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "upgrade",
+    "expect"
+  ];
+  function normalizeRelayHeaders(rows) {
+    return rows.map((row) => ({ key: row.key.trim(), value: row.value.trim() })).filter((row) => row.key.length > 0 || row.value.length > 0);
+  }
+  function isToken(name) {
+    return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name);
+  }
+  function relayHeadersValidationMessage(rows) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const row of normalizeRelayHeaders(rows)) {
+      const name = row.key;
+      if (!name) {
+        return "自定义请求头存在空的名称";
+      }
+      if (!isToken(name)) {
+        return `自定义请求头「${name}」不是合法的 HTTP 头名称`;
+      }
+      const lowered = name.toLowerCase();
+      if (FORBIDDEN_RELAY_HEADERS.includes(lowered)) {
+        return `自定义请求头「${name}」由协议层掌控，不允许覆盖（Host、Content-Length 等传输头）`;
+      }
+      if (seen.has(lowered)) {
+        return `自定义请求头「${name}」重复配置`;
+      }
+      seen.add(lowered);
+      if (/[\r\n]/.test(row.value)) {
+        return `自定义请求头「${name}」的值不能包含换行`;
+      }
+    }
+    return null;
+  }
+  function providerHeaderRows(headers) {
+    return (headers ?? []).map(
+      (header) => header.masked ? { key: header.key, value: "", masked: header.masked, savedKey: header.key } : { key: header.key, value: header.value }
+    );
+  }
+  function keepsSaved(row) {
+    return Boolean(row.masked && row.savedKey) && row.value.trim() === "" && row.key.trim().toLowerCase() === (row.savedKey ?? "").trim().toLowerCase();
+  }
+  function providerHeaderInputs(rows) {
+    return rows.map((row) => ({ key: row.key.trim(), value: row.value.trim(), keep: keepsSaved(row) })).filter((row) => row.key.length > 0 || row.value.length > 0);
+  }
+  function providerHeadersValidationMessage(rows) {
+    const renamed = rows.find((row) => row.masked && row.savedKey && row.value.trim() === "" && row.key.trim() && !keepsSaved(row));
+    if (renamed) return `改了请求头「${renamed.key.trim()}」的名称，请重新填写它的值`;
+    return relayHeadersValidationMessage(rows);
+  }
+
   // apps/codex-plus-manager/src/gateway-model.ts
   function keyLabel(keys, keyId) {
     const list = keys ?? [];
@@ -2029,6 +2100,8 @@ ${key} = ${value}`]);
       unknownModel: source.unknownModel,
       autoReviewModel: source.autoReviewModel ?? "",
       titleModel: source.titleModel ?? "",
+      compactionModel: source.compactionModel ?? "",
+      compactionReasoningEffort: source.compactionReasoningEffort ?? "",
       contextWindow: source.contextWindow ? String(source.contextWindow) : "",
       claudeEnableEffort: source.claudeEnableEffort,
       poolExclude: [...source.poolExclude ?? []],
@@ -2064,6 +2137,26 @@ ${key} = ${value}`]);
   }
   var QUEUE_REASON_PREFIX = "local_rate_limit_wait_ms:";
   var FOREIGN_COMPACTION_DROPPED_REASON = "foreign_compaction_dropped";
+  var COMPACTION_MODEL_REASON_PREFIX = "compaction_model:";
+  var COMPACTION_FALLBACK_REASON_PREFIX = "compaction_fallback:";
+  function parseCompactionNote(reason) {
+    if (reason.startsWith(COMPACTION_MODEL_REASON_PREFIX)) {
+      return { kind: "model", model: reason.slice(COMPACTION_MODEL_REASON_PREFIX.length) };
+    }
+    if (reason.startsWith(COMPACTION_FALLBACK_REASON_PREFIX)) {
+      const rest = reason.slice(COMPACTION_FALLBACK_REASON_PREFIX.length);
+      const at = rest.indexOf(":");
+      return at < 0 ? { kind: "fallback", reason: rest, model: "" } : { kind: "fallback", reason: rest.slice(0, at), model: rest.slice(at + 1) };
+    }
+    return null;
+  }
+  function compactionNote(reasons) {
+    for (const reason of reasons ?? []) {
+      const note = parseCompactionNote(reason);
+      if (note) return note;
+    }
+    return null;
+  }
   function foreignCompactionDropped(reasons) {
     return (reasons ?? []).includes(FOREIGN_COMPACTION_DROPPED_REASON);
   }
@@ -2102,6 +2195,8 @@ ${key} = ${value}`]);
       unknownModel: draft.unknownModel,
       autoReviewModel: draft.autoReviewModel.trim(),
       titleModel: draft.titleModel.trim(),
+      compactionModel: draft.compactionModel.trim(),
+      compactionReasoningEffort: draft.compactionReasoningEffort.trim(),
       contextWindow: window && Number.isFinite(window) ? window : null,
       claudeEnableEffort: draft.claudeEnableEffort,
       poolExclude: [...draft.poolExclude],
@@ -2437,6 +2532,14 @@ ${key} = ${value}`]);
     if (!Number.isFinite(value)) return null;
     return Math.max(1, Math.floor(value));
   }
+  var MIN_GATEWAY_PORT = 1024;
+  var MAX_GATEWAY_PORT = 65535;
+  function parseGatewayPort(text) {
+    const trimmed = text.trim();
+    if (!/^\d{1,5}$/.test(trimmed)) return null;
+    const value = Number(trimmed);
+    return value >= MIN_GATEWAY_PORT && value <= MAX_GATEWAY_PORT ? value : null;
+  }
   function isPattern(model) {
     return model.includes("*");
   }
@@ -2466,6 +2569,12 @@ ${key} = ${value}`]);
     if (minutes % 1440 === 0) return { text: "{0} 天", args: [minutes / 1440] };
     if (minutes % 60 === 0) return { text: "{0} 小时", args: [minutes / 60] };
     return { text: "{0} 分钟", args: [minutes] };
+  }
+  function quotaSupported(entry) {
+    return entry.quotaApi ?? (entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok");
+  }
+  function quotaEntries(pool) {
+    return (pool ?? []).filter((entry) => entry.enabled !== false && quotaSupported(entry));
   }
   function quotaRemaining(quota, nowMs) {
     if (quota.officialAllowed === false) return 0;
@@ -2742,7 +2851,8 @@ ${key} = ${value}`]);
       stripImageGenerationTool: entry.stripImageGenerationTool === true,
       subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
       stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
-      disableToolSearch: entry.disableToolSearch === true
+      disableToolSearch: entry.disableToolSearch === true,
+      customHeaders: providerHeaderRows(entry.customHeaders)
     };
   }
   function providerInput(draft) {
@@ -2759,7 +2869,8 @@ ${key} = ${value}`]);
       stripImageGenerationTool: draft.stripImageGenerationTool === true,
       ...draft.subscriptionPolicy !== void 0 ? { subscriptionPolicy: draft.subscriptionPolicy } : {},
       stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
-      disableToolSearch: draft.disableToolSearch === true
+      disableToolSearch: draft.disableToolSearch === true,
+      ...draft.customHeaders !== void 0 ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}
     };
   }
   function priceNumber(text) {
@@ -2784,7 +2895,7 @@ ${key} = ${value}`]);
     if (!/^https?:\/\/\S+$/i.test(draft.baseUrl.trim())) return "地址要以 http:// 或 https:// 开头";
     if (!editing && !draft.keys.trim()) return "请填写 API Key";
     if (!draft.model.trim() && splitModels(draft.modelList).length === 0) return "至少填一个模型";
-    return proxyAddressError(draft.proxy);
+    return proxyAddressError(draft.proxy) ?? providerHeadersValidationMessage(draft.customHeaders ?? []);
   }
   function usageRangeStart(range, now = /* @__PURE__ */ new Date()) {
     const days = range === "today" ? 1 : range === "7d" ? 7 : range === "30d" ? 30 : 0;
@@ -2792,6 +2903,13 @@ ${key} = ${value}`]);
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     start.setDate(start.getDate() - (days - 1));
     return start.getTime();
+  }
+  function relayFilterFromFocus(focus) {
+    if (focus.relayUnknown) return { id: "", label: focus.relayLabel || "", unknown: true };
+    return focus.relayId ? { id: focus.relayId, label: focus.relayLabel || focus.relayId } : null;
+  }
+  function relayFilterArgs(filter) {
+    return filter?.unknown ? { relayId: null, relayUnknown: true } : { relayId: filter?.id || null, relayUnknown: false };
   }
   function formatRequestCost(cost) {
     if (cost.amount <= 0) return "—";

@@ -176,13 +176,13 @@ it("cleans up the previous extension before opening another extension page", () 
 });
 
 it("keeps only the current rail entry selected and removes inactive aria-current attributes", () => {
-  const buttons = Array.from({ length: 6 }, () => ({
+  const ids = ["home", "extensions", "provider", "remote", "weixin", "tasks"];
+  const buttons = Array.from({ length: ids.length + 1 }, () => ({
     dataset: {} as Record<string, string>,
     attributes: new Map<string, string>(),
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
     removeAttribute(name: string) { this.attributes.delete(name); },
   }));
-  const ids = ["home", "extensions", "provider", "remote", "tasks"];
   const document = {
     getElementById: (id: string) => {
       assert.equal(id, "sidebar", "retired plugin navigation must not be queried");
@@ -196,6 +196,7 @@ it("keeps only the current rail entry selected and removes inactive aria-current
     const codexPlusRailExtensionsId = "extensions";
     const codexPlusRailProviderId = "provider";
     const codexPlusRailRemoteId = "remote";
+    const codexPlusRailWeixinId = "weixin";
     const codexPlusRailTasksId = "tasks";
     function syncCodexPlusRailNativeSelection() {}
     ${functionSource("setCodexPlusSidebarNavActive")}

@@ -58,7 +58,7 @@ impl GatewayUpstream {
         }
     }
 
-    fn is_success(&self) -> bool {
+    pub(crate) fn is_success(&self) -> bool {
         self.status_code()
             .is_some_and(|status| (200..300).contains(&status))
     }
@@ -603,6 +603,11 @@ fn estimate_tokens(request: &GatewayRequest<'_>) -> u64 {
         .anthropic
         .as_ref()
         .map_or(&request.responses_body, |passthrough| passthrough.body);
+    estimate_body_tokens(body)
+}
+
+/// 同 [`estimate_tokens`]，直接按一个请求体估。
+pub(crate) fn estimate_body_tokens(body: &Value) -> u64 {
     text_bytes(body) / 4
 }
 
@@ -882,8 +887,8 @@ fn conversation_seed(request: &GatewayRequest<'_>) -> Option<String> {
 /// 这些错误是请求内容本身不被支持（附件、加密内容、原生搜索、缺视觉配置），换上游也一样。
 fn is_request_rejection(error: &anyhow::Error) -> bool {
     error.is::<crate::responses_websocket::Unsupported>()
-        || error.is::<crate::responses_websocket::PreviousResponseNotFound>()
         || error.is::<crate::responses_websocket::RequiresHttp>()
+        || error.is::<crate::responses_websocket::ContinuationLost>()
         || error
         .downcast_ref::<crate::protocol_proxy::UnsupportedEncryptedAgentContent>()
         .is_some()

@@ -13,4 +13,4 @@
 
 前端测试 2,444 项通过，2 项沿用跳过。相关 Rust 测试 263 项、模型菜单浏览器测试 23 项、每日用量采集测试 22 项通过。Windows 单应用发布包完成嵌入资源核验。
 
-每日用量和彩虹侧栏为独立的市场脚本补丁，见 [每日用量补丁](../../patches/daily-token-parallel-conversations.md) 和 [彩虹侧栏补丁](../../patches/rainbow-sidebar-interaction-motion.md)。采样与构建记录保存于 `target/temp/interaction-performance-20261119/`。旧安装的完整会话继续运行，界面切换的新版实机耗时仍待安装后测量。
+本机每日用量和彩虹侧栏脚本已按哈希核对并更新，下次加载用户脚本时生效。两份补丁可独立使用，见 [每日用量补丁](../../patches/daily-token-parallel-conversations.md) 和 [彩虹侧栏补丁](../../patches/rainbow-sidebar-interaction-motion.md)。旧版脚本备份及诊断记录保存在 `target/temp/interaction-performance-20261119/`。当前会话继续运行在旧安装包上，界面切换的新版实机耗时仍待安装后测量。

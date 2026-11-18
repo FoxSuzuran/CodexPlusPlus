@@ -48,7 +48,7 @@ import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
-import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
+import { gatewayGeneration, publishGatewayPayload, requestGatewayPayload, subscribeGatewayPayload, subscribeGatewayPolling } from "./gateway-store";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
@@ -127,9 +127,10 @@ export function GatewayPage({
 
   const refresh = async (silent = true) => {
     setBusy("load");
+    const started = gatewayGeneration();
     try {
-      const result = await invoke<GatewayResult>("load_gateway");
-      accept(result);
+      const result = await requestGatewayPayload();
+      if (started === gatewayGeneration()) accept(result);
       if (result.status !== "ok") await notify(t("读取失败"), result.message, "failed");
       else if (!silent) await notify(t("已刷新"), result.message, "ok");
     } catch (error) {
@@ -150,7 +151,7 @@ export function GatewayPage({
     let cancelled = false;
     const onFocus = () => {
       const started = gatewayGeneration();
-      void invoke<GatewayResult>("load_gateway")
+      void requestGatewayPayload()
         .then((result) => {
           // 读的过程中保存过：这份是旧的，不用。
           if (!cancelled && started === gatewayGeneration()) accept(result);
@@ -168,19 +169,10 @@ export function GatewayPage({
   // 订阅额度在后台预取；供应商页也要及时收到首次查询和授权后的结果。
   useEffect(() => {
     if (tab !== "routing" && tab !== "providers") return;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      const started = gatewayGeneration();
-      void invoke<GatewayResult>("load_gateway")
-        .then((result) => {
-          if (!cancelled && started === gatewayGeneration()) accept(result);
-        })
-        .catch(() => undefined);
-    }, LIVE_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+    return subscribeGatewayPolling(LIVE_REFRESH_MS, (next) => {
+      memo.payload = next;
+      setPayload(next);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 

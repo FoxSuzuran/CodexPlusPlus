@@ -3130,7 +3130,8 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     // 切换会话可以改历史容器的 ID，也可以直接激活已挂载的标签页。
     assert!(script.contains(concat!(
         "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\", ",
-        "\"data-above-composer-conversation-id\", \"data-app-shell-active-page\"]"
+        "\"data-above-composer-conversation-id\", \"data-app-shell-active-page\", ",
+        "\"data-model-picker-view\"]"
     )));
 
     let cases = run_session_ref_contract_harness();

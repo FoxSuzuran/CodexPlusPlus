@@ -697,6 +697,10 @@ class FakeTurnBadge {
     this.attributes[name] = value;
   }
 
+  getAttribute(name: string) {
+    return this.attributes[name] ?? null;
+  }
+
   remove() {
     if (this.parentElement) {
       const index = this.parentElement.children.indexOf(this);
@@ -769,6 +773,7 @@ test("消息 token 角标只挂在真实 turn 的最后一个 assistant 动作�
   const rows = [oldRow, latestRow, otherRowWithoutUsage, rowWithoutTime];
   const documentStub = {
     documentElement: { lang: "en-US" },
+    querySelector: () => null,
     querySelectorAll: (selector: string) => (selector === ".turn-action-controls" ? rows : []),
     createElement: () => new FakeTurnBadge(),
   };

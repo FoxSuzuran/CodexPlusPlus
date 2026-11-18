@@ -50,3 +50,5 @@ patches/rainbow-context-bar-performance.patch text eol=lf whitespace=-blank-at-e
 patches/rainbow-sidebar-performance.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-lazy-panel.patch text eol=lf whitespace=-blank-at-eol
 patches/daily-token-inactive-pages.patch text eol=lf whitespace=-blank-at-eol
+patches/daily-token-parallel-conversations.patch text eol=lf whitespace=-blank-at-eol
+patches/rainbow-sidebar-interaction-motion.patch text eol=lf whitespace=-blank-at-eol

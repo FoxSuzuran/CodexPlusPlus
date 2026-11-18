@@ -79,7 +79,11 @@ function functions(script) {
     assert.equal(candidate.marketplaceChecks, 1, "resolve the scan selector once per mutation batch");
     console.log(JSON.stringify({ candidate, structuralCases: 7 }));
 
-    await page.setContent(`<div id="host"><div data-codex-composer-root data-composer-placement="thread">
+    await page.setContent(`<style>[data-app-shell-active-page="false"]{display:none}</style>
+      <div data-app-shell-active-page="false"><div data-codex-composer-root data-composer-placement="thread">
+      <div data-above-composer-conversation-id="local:cached-thread"></div>
+      <div data-composer-surface-variant><textarea></textarea></div></div></div>
+      <div id="host" data-app-shell-active-page="true"><div data-codex-composer-root data-composer-placement="thread">
       <div data-above-composer-conversation-id="local:thread-fixture"></div>
       <div data-composer-surface-variant><textarea></textarea></div></div></div>`);
     const proxyStatus = await page.evaluate(async script => {
@@ -125,19 +129,31 @@ function functions(script) {
         tick();
         node = document.getElementById("codex-plus-proxy-request-status");
         if (!node || !node.querySelector(".codex-plus-proxy-phase")) throw new Error("status did not remount");
-        document.querySelector("[data-above-composer-conversation-id]")
+        const beforeSwitch = rectReads;
+        document.querySelector("#host [data-above-composer-conversation-id]")
           .setAttribute("data-above-composer-conversation-id", "local:other-thread");
         tick();
         if (node.dataset.hidden !== "true") throw new Error("request leaked into another conversation");
         observer.takeRecords();
         for (let i = 0; i < 5; i++) tick();
         if (observer.takeRecords().length) throw new Error("hidden proxy status repeats attribute writes");
+        if (rectReads !== beforeSwitch) throw new Error("background requests must skip composer geometry");
+        document.querySelector("#host").setAttribute("data-app-shell-active-page", "false");
+        document.querySelector('[data-app-shell-active-page="false"]:not(#host)').setAttribute("data-app-shell-active-page", "true");
+        requests = [{ threadId: "cached-thread", phase: "generating" }, requests[0]];
+        await runtime.refresh();
+        if (node.dataset.hidden !== "false" || node.dataset.phase !== "generating"
+            || !node.closest('[data-app-shell-active-page="true"]')) {
+          throw new Error("request status did not follow the newly active conversation");
+        }
+        if (rectReads !== beforeSwitch + 1) throw new Error("only the active composer is measured");
         runtime.dispose();
         if (document.getElementById("codex-plus-proxy-request-status")) throw new Error("status survived disposal");
         if (/\bnode\s*:/.test(script.match(/const codexPlusProxyStatusState = \{[^]*?\n  \};/)[0])) {
           throw new Error("persistent state retains a DOM reference");
         }
-        return { idleLayoutReads: 0, idleWrites, stableWrites: 0, remount: true, threadIsolation: true, disposal: true };
+        return { idleLayoutReads: 0, idleWrites, stableWrites: 0, backgroundLayoutReads: 0,
+          switchedLayoutReads: 1, remount: true, threadIsolation: true, disposal: true };
       } finally {
         observer.disconnect();
         runtime.dispose();

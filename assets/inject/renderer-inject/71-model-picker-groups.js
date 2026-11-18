@@ -110,7 +110,7 @@
     state.signature = "";
     state.catalogRetryAt = 0;
     if (options.sourceChanged) codexPlusModelPickerPersist();
-    if (!state.disposed && state.timer) codexPlusModelPickerSchedule(0);
+    if (!state.disposed && (state.hasActiveList || state.timer)) codexPlusModelPickerSchedule(0);
   }
 
   function codexPlusModelPickerText() {
@@ -2141,7 +2141,7 @@
     state.activeGroupId = "";
     state.observer?.disconnect();
     state.observer = new MutationObserver((records) => {
-      if (!codexPlusModelPickerNeedsRescan(records)) return;
+      if (document.hidden || !codexPlusModelPickerNeedsRescan(records)) return;
       codexPlusModelPickerScheduleRescan();
     });
     state.observer.observe(list, {
@@ -2151,12 +2151,6 @@
   }
 
   /**
-   * 一次扫描：菜单开着就确保分组已打好；关闭后只检查菜单是否重开。
-   *
-   * 为什么还要轮询：React 复用行节点时不会产生 childList 变更，只靠 MutationObserver
-   * 会漏掉"标签变了"这种情况。列表解析仅在菜单存在时执行。
-   */
-  /**
    * 模型菜单开着却认不出来时（#2753：旧版 Codex 上分组不出现），记一次结构快照，
    * 好据此补上旧版的识别规则。只在页面上真有一个装着目录里模型的原生单选菜单时记，
    * 每个页面最多一次；只记标记数量和结构特征，不记模型名等文本。
@@ -2164,8 +2158,7 @@
   function codexPlusModelPickerReportUnrecognized() {
     const state = codexPlusModelPickerGroupsState;
     if (state.unrecognizedReported) return;
-    // #2883：诊断也节流到每 2 秒最多一次——菜单关着时每 250ms 的扫描轮
-    // 都会走到这里，对每个 [role=menu] 读布局是白做工。
+    // 菜单可能分多批挂载，限制重复诊断产生的布局读取。
     const now = Date.now();
     if (state.lastUnrecognizedProbe && now - state.lastUnrecognizedProbe < 2000) return;
     state.lastUnrecognizedProbe = now;
@@ -2252,15 +2245,40 @@
     const state = codexPlusModelPickerGroupsState;
     if (state.disposed) return;
     clearTimeout(state.timer);
+    state.timer = 0;
+    if (document.hidden && !globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups")) return;
     state.timer = setTimeout(() => {
+      state.timer = 0;
       codexPlusModelPickerScan();
-      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它重新开始。
-      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      if (state.hasActiveList) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 
+  function codexPlusModelPickerDiscover(mutations) {
+    const state = codexPlusModelPickerGroupsState;
+    if (state.disposed || state.hasActiveList || state.timer || document.hidden
+        || globalThis.__codexPlusBuiltinInactive?.has("model-picker-groups")) return;
+    const menu = '[data-model-picker-view], [role="menu"]';
+    for (const mutation of mutations) {
+      if (mutation.attributeName === "data-model-picker-view"
+          || (mutation.addedNodes.length && (
+            mutation.target.closest?.("[data-model-picker-view]") ||
+            Array.prototype.some.call(mutation.addedNodes, (node) =>
+              node.nodeType === 1 && (node.matches(menu) || node.querySelector(menu)))
+          ))) {
+        codexPlusModelPickerSchedule(0);
+        break;
+      }
+    }
+  }
+
+  function codexPlusModelPickerVisibilityChanged() {
+    codexPlusModelPickerSchedule(0);
+  }
+
   codexPlusModelPickerInstallStyle();
-  // 轮询由内置拓展「模型分组」装上时启动（96-builtin-extensions.js），这里不再自启。
+  document.addEventListener("visibilitychange", codexPlusModelPickerVisibilityChanged);
+  // 初次同步由内置拓展触发，之后由菜单挂载唤醒；只有打开的菜单需要定期自检。
   window.__codexPlusModelPickerGroupsRuntime = {
     version: 3,
     catalogChanged: (previous, next) => {
@@ -2322,6 +2340,7 @@
       state.disposed = true;
       clearTimeout(state.timer);
       clearTimeout(state.rescanTimer);
+      document.removeEventListener("visibilitychange", codexPlusModelPickerVisibilityChanged);
       state.observer?.disconnect();
       document.querySelectorAll("[data-codex-plus-model-groups]").forEach((list) => {
         list.removeEventListener("keydown", codexPlusModelPickerNavigationKeydown, true);

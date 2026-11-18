@@ -136,10 +136,48 @@ async function main() {
       }
       return { toggles, rebuilds, lateResponses, fixtureOnly: true, scheduling: "deterministic timers", dom: "real browser" };
     }, sources);
+    await page.setContent(`<style>[data-app-shell-active-page="false"]{display:none}</style>
+      ${["A", "B", "C"].map((letter, index) => `<section id="${letter}" data-app-shell-active-page="${index === 0}">
+        <div data-content-search-turn-key="${letter}"><div class="turn-action-controls">
+          <span data-assistant-message-sent-time>12:00</span>
+        </div></div>
+      </section>`).join("")}`);
+    const turnBadges = await page.evaluate(script => {
+      const { render, state } = new Function(`${script}
+        return {render: codexPlusUsageRenderTurnUsage, state: codexPlusUsageState};
+      `)();
+      for (const [name, total] of [["A", 120], ["B", 240], ["C", 360]]) {
+        state.turnUsage.set(name, { byTurn: new Map([[name, { usage: { total } }]]) });
+      }
+      const buttonRow = name => document.querySelector(`#${name} .turn-action-controls`);
+      const observer = new MutationObserver(() => {});
+      observer.observe(document.body, { childList: true, characterData: true, attributes: true, subtree: true });
+      const badge = name => buttonRow(name).querySelector("[data-codex-plus-turn-usage]");
+      render("A");
+      const first = badge("A");
+      observer.takeRecords();
+      for (let i = 0; i < 40; i++) render("A");
+      const steadyWrites = observer.takeRecords().length;
+      document.getElementById("A").dataset.appShellActivePage = "false";
+      document.getElementById("B").dataset.appShellActivePage = "true";
+      render("B");
+      const second = badge("B");
+      document.getElementById("B").dataset.appShellActivePage = "false";
+      document.getElementById("C").dataset.appShellActivePage = "true";
+      render("C");
+      const third = badge("C");
+      document.getElementById("C").dataset.appShellActivePage = "false";
+      document.getElementById("A").dataset.appShellActivePage = "true";
+      render("A");
+      observer.disconnect();
+      return { steadyWrites, firstReused: badge("A") === first, secondReused: badge("B") === second,
+        amounts: [first.textContent, second.textContent, third.textContent].map(value => value.match(/\d+/)?.[0]) };
+    }, fs.readFileSync(path.join(root, "assets/extensions/usage-statusline/statusline.js"), "utf8"));
+    assert.deepEqual(turnBadges, { steadyWrites: 0, firstReused: true, secondReused: true, amounts: ["120", "240", "360"] });
     assert.deepEqual(pageErrors, []);
     fs.writeFileSync(path.join(root, "target/temp/v220-status-extensions-browser-result.json"),
-      JSON.stringify({ ...result, browser: browser.version(), pageErrors }, null, 2) + "\n");
-    console.log(JSON.stringify(result));
+      JSON.stringify({ ...result, turnBadges, browser: browser.version(), pageErrors }, null, 2) + "\n");
+    console.log(JSON.stringify({ ...result, turnBadges }));
   } finally {
     await browser.close();
   }

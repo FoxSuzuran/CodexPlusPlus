@@ -194,7 +194,15 @@ export async function createPickerFixture(browser: any, options: {
       for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value);
     }, options.storage);
     const inject = async (scan = true) => {
-      await page.addScriptTag({ content: `(() => {\n${content}\n})();` });
+      await page.addScriptTag({ content: `(() => {\n${content}
+        window.fixturePickerObserver?.disconnect();
+        if (typeof codexPlusModelPickerDiscover === "function") {
+          window.fixturePickerObserver = new MutationObserver(codexPlusModelPickerDiscover);
+          window.fixturePickerObserver.observe(document.body, {
+            childList: true, subtree: true, attributes: true, attributeFilter: ["data-model-picker-view"],
+          });
+        }
+      })();` });
       if (scan) await page.evaluate(() => (window as any).__codexPlusModelPickerGroupsRuntime.scan());
     };
     await inject();
@@ -850,6 +858,66 @@ export const pickerViewScenarios: Array<{
       await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).waitFor({ state: "visible" });
       assert.equal(await page.getByText("选择模型", { exact: true }).count(), 1);
       await assertNativeRowsUntouched(page);
+    },
+  },
+  {
+    name: "closed model picker skips scans during parallel streaming and wakes on a real trigger",
+    async run({ page }) {
+      await page.evaluate(() => {
+        const w = window as any;
+        w.__codexPlusModelPickerGroupsRuntime.sync();
+        const mount = document.querySelector("#fixture-menu-mount")!;
+        document.querySelector("[data-codex-intelligence-trigger]")!.addEventListener("click", () => {
+          if (mount.firstChild) mount.replaceChildren();
+          else {
+            w.fixtureState.reparented.length = 0;
+            w.fixtureMountMenu();
+          }
+        });
+      });
+      const trigger = page.locator("[data-codex-intelligence-trigger]");
+      await trigger.click();
+      await page.waitForFunction(() => !(window as any).__codexPlusModelPickerGroupsRuntime.state().hasActiveList);
+      const queries = await page.evaluate(async () => {
+        const original = document.querySelectorAll;
+        let reads = 0;
+        document.querySelectorAll = ((selector: string) => {
+          if (selector === "[data-model-picker-view]") reads++;
+          return Reflect.apply(original, document, [selector]);
+        }) as typeof document.querySelectorAll;
+        const streams = document.createElement("main");
+        for (let i = 0; i < 3; i++) streams.append(document.createElement("article"));
+        document.body.append(streams);
+        try {
+          for (let batch = 0; batch < 30; batch++) {
+            for (const article of streams.children) {
+              const line = document.createElement("p");
+              line.textContent = `chunk ${batch}`;
+              article.append(line);
+            }
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+          return reads;
+        } finally {
+          document.querySelectorAll = original;
+          streams.remove();
+        }
+      });
+      assert.equal(queries, 0, "closed-menu streaming must not query the whole document");
+      await trigger.click();
+      await page.locator(".codex-plus-model-provider-grid").waitFor({ state: "visible" });
+      await assertNativeRowsUntouched(page);
+      await trigger.click();
+      await page.waitForFunction(() => !(window as any).__codexPlusModelPickerGroupsRuntime.state().hasActiveList);
+      await page.evaluate(() => {
+        const menu = (window as any).fixtureMountMenu();
+        menu.removeAttribute("role");
+        menu.removeAttribute("data-model-picker-view");
+      });
+      await page.locator(".ModelList-fixture").waitFor({ state: "visible" });
+      await page.evaluate(() => document.querySelector(".ModelList-fixture")!.parentElement!
+        .setAttribute("data-model-picker-view", "simple"));
+      await page.locator(".codex-plus-model-provider-grid").waitFor({ state: "visible" });
     },
   },
   {

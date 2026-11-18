@@ -110,28 +110,60 @@ function functions(source, names) {
     const from = dailySource.indexOf("    observer = new MutationObserver((records) => {");
     const to = dailySource.indexOf("    observer.observe(", from);
     assert.ok(from >= 0 && to > from);
+    const scopedDaily = dailySource.includes("function changesChromeLayout(record)");
+    const dailySchedule = dailySource.slice(from, to) + (scopedDaily
+      ? functions(dailySource, ["changesChromeLayout", "changesDomTools"]) : "");
     const scheduling = await page.evaluate(script => {
+      const INACTIVE_PAGE_SELECTOR = '[data-app-shell-active-page="false"]';
+      const CONTENT_SELECTOR = '[data-message-author-role], [data-codex-composer-root]';
+      const IMAGE_MARKER_SELECTOR = '[data-image-preview-toolbar]';
+      const DOM_TOOL_SELECTOR = '[data-testid="exec-shell-body"]';
       const root = document.createElement("div"), panel = document.createElement("section");
       const stream = document.createElement("article");
       stream.setAttribute("data-message-author-role", "assistant");
       const editor = document.createElement("div");
       editor.contentEditable = "true";
+      const composer = document.createElement("section");
+      composer.setAttribute("data-codex-composer-root", "");
+      const status = document.createElement("span");
+      composer.append(status);
       let callback, layouts = 0, toolScans = 0;
       const MutationObserver = class { constructor(fn) { callback = fn; } };
       const scheduleMountRoot = () => { layouts++; };
       const scheduleDomToolScan = () => { toolScans++; };
       eval(`let observer;${script}`);
-      for (let i = 0; i < 100; i++) callback([{ target: stream }, { target: root }]);
+      const record = (target, addedNodes = [], removedNodes = [], attributeName = null) =>
+        ({ target, addedNodes, removedNodes, attributeName });
+      for (let i = 0; i < 100; i++) callback([record(stream, [document.createElement("p")]), record(root)]);
       const streamLayouts = layouts;
       const streamToolScans = toolScans;
-      for (let i = 0; i < 100; i++) callback([{ target: editor }]);
+      for (let i = 0; i < 100; i++) callback([record(editor)]);
       const editorLayouts = layouts - streamLayouts;
       const editorToolScans = toolScans - streamToolScans;
-      callback([{ target: document.querySelector("header") }]);
-      callback([{ target: root }]);
-      return { streamLayouts, streamToolScans, editorLayouts, editorToolScans,
+      callback([record(document.querySelector("header"))]);
+      callback([record(root)]);
+      const result = { streamLayouts, streamToolScans, editorLayouts, editorToolScans,
         headerLayouts: layouts - streamLayouts - editorLayouts, toolScans };
-    }, dailySource.slice(from, to));
+      const beforeLayout = layouts, beforeTools = toolScans;
+      for (let i = 0; i < 100; i++) callback([record(status, [document.createTextNode("10 tok/s")])]);
+      result.composerLayouts = layouts - beforeLayout;
+      result.composerToolScans = toolScans - beforeTools;
+      const image = document.createElement("div");
+      image.setAttribute("data-image-preview-toolbar", "");
+      const beforePreview = layouts;
+      callback([record(composer, [image])]);
+      callback([record(composer, [], [image])]);
+      result.previewLayouts = layouts - beforePreview;
+      const tool = document.createElement("div");
+      tool.dataset.testid = "exec-shell-body";
+      const beforeToolMount = toolScans;
+      callback([record(stream, [tool])]);
+      const activePage = document.createElement("section");
+      activePage.setAttribute("data-app-shell-active-page", "true");
+      callback([record(activePage, [], [], "data-app-shell-active-page")]);
+      result.toolAndSwitchScans = toolScans - beforeToolMount;
+      return result;
+    }, dailySchedule);
     if (process.env.STUTTER_EXPECT_BASELINE === "1") {
       assert.ok(context.steadyMutations >= 1000);
       assert.equal(mount.firstQueries, 100);
@@ -147,10 +179,16 @@ function functions(source, names) {
       assert.equal(scheduling.editorToolScans, 0, "typing cannot rescan existing tool outputs");
     }
     assert.equal(daily.obstacles, 40);
-    assert.equal(scheduling.streamToolScans, 100, "streamed tool events still need accounting");
+    assert.equal(scheduling.streamToolScans, scopedDaily ? 0 : 100, "plain text streams need no tool-card scan");
     assert.equal(scheduling.headerLayouts, 1);
-    assert.equal(scheduling.toolScans, process.env.STUTTER_EXPECT_BASELINE === "1" ? 201 : 101,
+    assert.equal(scheduling.toolScans, scopedDaily ? 0 : process.env.STUTTER_EXPECT_BASELINE === "1" ? 201 : 101,
       "own UI and editor changes must not rescan existing tool outputs");
+    if (scopedDaily) {
+      assert.equal(scheduling.composerLayouts, 0);
+      assert.equal(scheduling.composerToolScans, 0);
+      assert.equal(scheduling.previewLayouts, 2, "preview opening and removal still affect chrome layout");
+      assert.equal(scheduling.toolAndSwitchScans, 2, "tool-card mounting and activating a cached thread trigger accounting");
+    }
     await page.setContent(`<header style="position:fixed;top:30px;left:0">
       <button id="header" style="width:20px;height:20px"></button></header>
       <main>${"<button>chat action</button><a href='#'>file</a>".repeat(1000)}</main>
@@ -291,8 +329,31 @@ function functions(source, names) {
       modelBuilt: "fixture-model", liveTotal: "90", reusedText: true, reopenedTotal: "120",
       compactUnchanged: true, stableWidthScans: 0 },
       "closed details defer DOM work while totals, opening, live updates and reopening stay current");
+    let toolScope;
+    if (scopedDaily) {
+      await detailPage.addScriptTag({ content: dailySource });
+      toolScope = await detailPage.evaluate(() => {
+        const api = window.__codexDailyTokenUsage;
+        const first = document.createElement("section"), second = document.createElement("section");
+        for (const [page, id, active] of [[first, "cached-thread", false], [second, "active-thread", true]]) {
+          page.dataset.appShellActivePage = String(active);
+          page.innerHTML = `<span data-above-composer-conversation-id="local:${id}"></span>
+            <article data-turn-key="${id}-turn"><div data-testid="exec-shell-body"></div></article>`;
+          document.body.append(page);
+        }
+        const current = () => api.__test.extractDomToolCallEvents().map(event => [event.conversationKey, event.turnKey]);
+        const before = current();
+        second.dataset.appShellActivePage = "false";
+        first.dataset.appShellActivePage = "true";
+        const after = current();
+        api.destroy();
+        return { before, after };
+      });
+      assert.deepEqual(toolScope, { before: [["local:active-thread", "active-thread-turn"]],
+        after: [["local:cached-thread", "cached-thread-turn"]] }, "tool cards must be attributed to the active conversation");
+    }
     assert.deepEqual(detailErrors, []);
     await detailPage.close();
-    console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry, resize, detail }));
+    console.log(JSON.stringify({ context, mount, daily, scheduling, dailyGeometry, resize, detail, toolScope }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

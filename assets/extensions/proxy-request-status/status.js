@@ -35,22 +35,17 @@
     slotHosts: new Set(),
   };
 
-  // 开关就是拓展本身（#2824）：停用后不显示、不轮询；重新启用后装上即接上。
-  function codexPlusProxyStatusEnabled() {
-    return codexPlusProxyStatusState.running;
-  }
-
   function codexPlusProxyStatusVisibleElement(element) {
     if (!element?.isConnected) return false;
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }
 
-  function codexPlusProxyStatusComposerCard() {
-    const cards = [...document.querySelectorAll("[data-composer-surface-variant]")];
+  function codexPlusProxyStatusComposerCard(scope) {
+    const cards = scope.querySelectorAll("[data-composer-surface-variant]");
     let fallback = null;
     for (const card of cards) {
-      if (!codexPlusProxyStatusVisibleElement(card) || card.closest("[data-codex-plus-ext]")) continue;
+      if (card.closest('[data-app-shell-active-page="false"], [data-codex-plus-ext]') || !codexPlusProxyStatusVisibleElement(card)) continue;
       fallback = card;
       if (card.querySelector('.ProseMirror[contenteditable="true"], textarea:not(:disabled):not([readonly]), [role="textbox"][contenteditable="true"]')) {
         return card;
@@ -69,8 +64,7 @@
     const fromComposer = composerRoot
       ?.querySelector("[data-above-composer-conversation-id]")
       ?.getAttribute("data-above-composer-conversation-id");
-    const inThread = composerRoot?.getAttribute("data-composer-placement") === "thread";
-    const fromSidebar = inThread
+    const fromSidebar = !fromComposer && placement === "thread"
       ? document
         .querySelector('[data-app-action-sidebar-thread-selected="true"][data-app-action-sidebar-thread-id]')
         ?.getAttribute("data-app-action-sidebar-thread-id")
@@ -172,17 +166,25 @@
 
   function codexPlusProxyStatusRender() {
     if (document.hidden || !codexPlusProxyStatusState.running) return;
-    if (!codexPlusProxyStatusEnabled()) {
-      codexPlusProxyStatusHide();
-      return;
-    }
     // 没有任何进行中的请求（绝大多数时间）：先返回，不去找输入框。找输入框要对每张卡片读一次布局，
     // 原先空闲时也每 500ms 读一轮（#2883 跟进：实测约 2.9 次/秒的强制布局全来自这里）。
     if (!codexPlusProxyStatusState.requests.length) {
       codexPlusProxyStatusHide();
       return;
     }
-    const card = codexPlusProxyStatusComposerCard();
+    const activePage = document.querySelector('[data-app-shell-active-page="true"]');
+    const markers = activePage?.querySelectorAll("[data-above-composer-conversation-id]");
+    // 单一原生会话可以先按身份排除其他并行请求，避免读取输入框几何。
+    if (markers?.length === 1) {
+      const activeId = codexPlusProxyStatusNormalizeThreadId(markers[0].getAttribute("data-above-composer-conversation-id"));
+      if (activeId && !codexPlusProxyStatusState.requests.some(
+        (item) => codexPlusProxyStatusNormalizeThreadId(item?.threadId) === activeId,
+      )) {
+        codexPlusProxyStatusHide();
+        return;
+      }
+    }
+    const card = codexPlusProxyStatusComposerCard(activePage || document);
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
     // 否则会把别的会话里正在运行的请求显示到首页（串会话）。

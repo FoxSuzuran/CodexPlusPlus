@@ -5,6 +5,7 @@ const { chromium } = require("playwright");
 
 assert.ok(process.env.RAINBOW_SIDEBAR_SCRIPT, "Set RAINBOW_SIDEBAR_SCRIPT to renderer.js");
 const source = fs.readFileSync(process.env.RAINBOW_SIDEBAR_SCRIPT, "utf8");
+const interactionMotion = source.includes("(prefers-reduced-motion: no-preference)");
 
 async function main() {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -19,7 +20,7 @@ async function main() {
         [data-marquee-content] {display:block;white-space:nowrap}
       </style>
       <aside id="app-shell-sidebar">
-        <div class="row" id="working" data-app-action-sidebar-thread-row data-sidebar-indicator="working">
+        <div class="row" id="working" tabindex="0" data-app-action-sidebar-thread-row data-sidebar-indicator="working">
           <span class="track"><span data-marquee-content="true"><span>正在运行的长标题保持原生横向滚动</span></span></span>
         </div>
         <div class="row" id="idle" data-app-action-sidebar-thread-row>
@@ -42,6 +43,13 @@ async function main() {
       })});
     }, source);
     const selector = "#working [data-marquee-content]";
+    const working = page.locator("#working");
+    if (interactionMotion) {
+      assert.equal(await page.$eval(selector, node => node.getAnimations().length), 0,
+        "working titles keep a static rainbow while the user is reading");
+      assert.match(await page.$eval(selector, node => getComputedStyle(node).backgroundImage), /linear-gradient/);
+      await working.hover();
+    }
     await page.waitForFunction(selector => document.querySelector(selector).getAnimations().length === 1, selector);
     const animation = await page.$eval(selector, node => {
       const effect = node.getAnimations()[0].effect;
@@ -54,7 +62,8 @@ async function main() {
       "rainbow animation must not repaint background-position every frame");
     assert.deepEqual(animation.frames.map(frame => frame.filter), ["hue-rotate(0deg)", "hue-rotate(360deg)"]);
     assert.equal(animation.timing.duration, 3200);
-    assert.equal(animation.style.willChange, "filter");
+    assert.equal(animation.style.willChange, interactionMotion ? "auto" : "filter");
+    if (interactionMotion) assert.equal(animation.timing.iterations, 1);
     assert.match(animation.style.image, /linear-gradient/);
     assert.equal(animation.style.color, "rgba(0, 0, 0, 0)");
     assert.deepEqual(await geometry(), before, "does not change row geometry or native marquee transform");
@@ -75,13 +84,25 @@ async function main() {
     })), {animation: "none", willChange: "auto"});
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.waitForFunction(selector => document.querySelector(selector).getAnimations().length === 1, selector);
+    if (interactionMotion) {
+      await page.mouse.move(410, 200);
+      await page.waitForFunction(selector => document.querySelector(selector).getAnimations().length === 0, selector);
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement.id), "working");
+      await page.waitForFunction(selector => document.querySelector(selector).getAnimations().length === 1, selector);
+      await page.waitForFunction(selector => document.querySelector(selector).getAnimations().length === 0, selector);
+      await page.evaluate(() => document.activeElement.blur());
+    }
+    if (process.env.RAINBOW_SIDEBAR_SCREENSHOT) {
+      await page.locator("#app-shell-sidebar").screenshot({ path: process.env.RAINBOW_SIDEBAR_SCREENSHOT, scale: "css" });
+    }
     await page.evaluate(() => window.disposeRainbow());
     assert.equal(await page.locator("#codex-plus-ext-rainbow-sidebar-active-style").count(), 0);
     assert.equal(await page.$eval(selector, node => node.getAnimations().length), 0);
     assert.deepEqual(await geometry(), before);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: browser.version(), compositorProperties: true, workingOnly: true,
-      marquee: true, rebuiltNode: true, reducedMotion: true, cleanup: true}));
+      marquee: true, rebuiltNode: true, reducedMotion: true, interactionMotion, cleanup: true}));
   } finally {
     await browser.close();
   }

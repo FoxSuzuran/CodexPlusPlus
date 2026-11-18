@@ -267,9 +267,10 @@
    * 把根标记也算作新版会让旧版永远走不到兜底。
    */
   function codexPlusUsageComposerCard() {
+    const scope = document.querySelector('[data-app-shell-active-page="true"]') || document;
     let fallback = null;
-    for (const card of document.querySelectorAll(codexPlusUsageCardSelector)) {
-      if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
+    for (const card of scope.querySelectorAll(codexPlusUsageCardSelector)) {
+      if (card.closest('[data-codex-plus-ext], [data-app-shell-active-page="false"]') || !codexPlusUsageVisible(card)) continue;
       fallback = card;
       // 首页可能同时挂着多个 composer 外壳；带真实输入框的那个才是当前会话。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "surface-variant" };
@@ -279,18 +280,18 @@
       codexPlusUsageState.modernDom = true;
     }
     if (codexPlusUsageState.modernDom) return null;
-    for (const card of document.querySelectorAll(codexPlusUsageLegacyCardSelector)) {
+    for (const card of scope.querySelectorAll(codexPlusUsageLegacyCardSelector)) {
       if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
       // 旧版类名也可能挂在装饰容器上，必须真的包着输入框才算。
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "legacy-chrome" };
     }
     // 有 composer 根标记、没有旧类名的过渡版本：根节点包着输入框时就挂在根上。
-    for (const card of document.querySelectorAll("[data-codex-composer-root]")) {
+    for (const card of scope.querySelectorAll("[data-codex-composer-root]")) {
       if (!codexPlusUsageVisible(card) || card.closest('[data-codex-plus-ext]')) continue;
       if (card.querySelector(codexPlusUsageEditorSelector)) return { card, source: "composer-root" };
     }
     // 类名也对不上时按输入框本身找：取 ProseMirror 所在的 form。
-    for (const editor of document.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
+    for (const editor of scope.querySelectorAll('.ProseMirror[contenteditable="true"]')) {
       if (!codexPlusUsageVisible(editor) || editor.closest('[data-codex-plus-ext], [role="dialog"]')) continue;
       const form = editor.closest("form");
       if (form && codexPlusUsageVisible(form)) return { card: form, source: "editor-form" };
@@ -811,10 +812,13 @@
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
 
-    parts.speed.value.textContent = text.speed(speed);
-    parts.ttft.value.textContent = text.ttft(firstToken);
-    parts.cache.value.textContent = text.cache(cache);
-    parts.context.value.textContent = text.context(context);
+    for (const [part, value] of [
+      ["speed", text.speed(speed)], ["ttft", text.ttft(firstToken)],
+      ["cache", text.cache(cache)], ["context", text.context(context)],
+    ]) {
+      const label = parts[part].value;
+      if (label.textContent !== value) label.textContent = value;
+    }
     if (parts.ring) {
       const filled = snapshot?.context == null ? 0 : (snapshot.context / 100) * codexPlusUsageRingCircumference;
       parts.ring.setAttribute("stroke-dasharray", `${filled.toFixed(2)} ${codexPlusUsageRingCircumference}`);
@@ -837,7 +841,8 @@
     if (!threadId) return;
     const bundle = codexPlusUsageState.turnUsage.get(threadId);
     const byTurn = bundle?.byTurn instanceof Map ? bundle.byTurn : new Map();
-    const rows = [...document.querySelectorAll(".turn-action-controls")]
+    const scope = document.querySelector('[data-app-shell-active-page="true"]') || document;
+    const rows = [...scope.querySelectorAll(".turn-action-controls")]
       .filter((row) => row.querySelector("[data-assistant-message-sent-time]"));
     const rowTurns = new Map();
     const latestByTurn = new Map();
@@ -870,9 +875,10 @@
         row.insertBefore(badge, time || null);
       }
       const total = text.turnUsage(codexPlusUsageFormatNumber(usage.total));
-      badge.textContent = total;
-      badge.setAttribute("aria-label", total);
-      badge.setAttribute("title", text.turnUsageTitle(usage));
+      if (badge.textContent !== total) badge.textContent = total;
+      if (badge.getAttribute("aria-label") !== total) badge.setAttribute("aria-label", total);
+      const title = text.turnUsageTitle(usage);
+      if (badge.getAttribute("title") !== title) badge.setAttribute("title", title);
     }
   }
 
@@ -1036,10 +1042,11 @@
       codexPlusUsageState.lastFingerprint = "";
     }
     codexPlusUsageShow(node);
-    codexPlusUsageRender(codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId)));
+    const snapshot = codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId));
+    codexPlusUsageRender(snapshot);
     codexPlusUsageRenderTurnUsage(threadId);
     if (changed) void codexPlusUsageRefreshTurnUsage(threadId);
-    return { card, threadId, changed };
+    return { card, threadId, changed, snapshot };
   }
 
   /**
@@ -1049,11 +1056,8 @@
   function codexPlusUsageSyncDom() {
     if (!codexPlusUsageState.running) return null;
     const placement = codexPlusUsageSyncPlacement();
-    const threadId = placement?.threadId || codexPlusUsageState.threadId;
-    if (!threadId) return placement;
-    codexPlusUsageRenderTurnUsage(threadId);
-    if (!codexPlusUsageTurnUsageCurrent(threadId)) {
-      void codexPlusUsageRefreshTurnUsage(threadId);
+    if (placement && !codexPlusUsageTurnUsageCurrent(placement.threadId)) {
+      void codexPlusUsageRefreshTurnUsage(placement.threadId);
     }
     return placement;
   }
@@ -1199,11 +1203,7 @@
       codexPlusUsageSchedule(current ? 0 : codexPlusUsageIdleIntervalMs);
       return;
     }
-    const snapshot = codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId));
-    if (snapshot) {
-      codexPlusUsageRender(snapshot);
-      codexPlusUsageRenderTurnUsage(threadId);
-    }
+    const { snapshot } = current;
     if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
       // 保留栏位和已有读数，等桥接恢复，避免网络异常时反复闪烁。
       codexPlusUsageSchedule(30000);
@@ -1216,8 +1216,6 @@
     }
     // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，
     // 用较慢的间隔等第一条数据，避免空转。
-    codexPlusUsageRender(null);
-    codexPlusUsageRenderTurnUsage(threadId);
     codexPlusUsageSchedule(codexPlusUsageWarmupIntervalMs);
   }
 

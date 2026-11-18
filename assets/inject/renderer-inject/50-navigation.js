@@ -139,21 +139,6 @@
     return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime" || restored === "openai-api-curated" || restored === "openai-curated-remote";
   }
 
-  const codexPluginFilterSourceCache = new WeakMap();
-
-  function codexPluginFilterCallbackSource(callback) {
-    if (codexPluginFilterSourceCache.has(callback)) {
-      return codexPluginFilterSourceCache.get(callback);
-    }
-    let source = "";
-    try {
-      source = Function.prototype.toString.call(callback);
-    } catch {
-    }
-    codexPluginFilterSourceCache.set(callback, source);
-    return source;
-  }
-
   // 这三种 marketplace 过滤器由 Codex 打包后压缩，标识符每版都会换名
   // （历史形态: !u(e.marketplaceName)||e.marketplaceName===r / !ne(...) / !Eu(...) /
   // 26.928.31416 起: !Mj(e.marketplaceName)||e.marketplaceName===n）。
@@ -169,11 +154,22 @@
   const codexPluginFeaturedFilterSourcePattern =
     /([A-Za-z_$][\w$]*)\s*==\s*null\s*\|\|\s*!\s*[A-Za-z_$][\w$]*\s*\(\s*\1\s*\)\s*\|\|\s*\1\s*===\s*[A-Za-z_$][\w$]*(?![\w$(])/;
 
+  const codexPluginFilterKindCache = new WeakMap();
+
+  function codexPluginFilterKind(callback) {
+    if (typeof callback !== "function") return 0;
+    const cached = codexPluginFilterKindCache.get(callback);
+    if (cached !== undefined) return cached;
+    const source = Function.prototype.toString.call(callback);
+    const kinds = (codexPluginBuildFlavorFilterSourcePattern.test(source) ? 1 : 0)
+      | (codexPluginHiddenFilterSourcePattern.test(source) ? 2 : 0)
+      | (codexPluginFeaturedFilterSourcePattern.test(source) ? 4 : 0);
+    codexPluginFilterKindCache.set(callback, kinds);
+    return kinds;
+  }
+
   function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginBuildFlavorFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 1) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
       && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
@@ -182,10 +178,7 @@
   // featuredPluginIds 过滤：sample 是字符串数组，回调按 id 反查 marketplace 后剔除官方目录。
   // 外部拿不到 id→marketplace 的映射，所以这里只做「结构 + 确实过滤掉了元素」的判定。
   function isCodexPluginFeaturedFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginFeaturedFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 4) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.every((id) => typeof id === "string")) return false;
     if (Array.isArray(filtered) && filtered.length >= sample.length) return false;
     return true;

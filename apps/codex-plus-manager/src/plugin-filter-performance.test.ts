@@ -18,7 +18,7 @@ function declarations(file: string, names: string[]) {
 
 const runtime = [
   declarations("50-navigation.js", ["restorePluginMarketplaceName", "codexPluginOfficialMarketplaceName",
-    "codexPluginFilterSourceCache", "codexPluginFilterCallbackSource",
+    "codexPluginFilterKindCache", "codexPluginFilterKind",
     "codexPluginBuildFlavorFilterSourcePattern", "codexPluginFeaturedFilterSourcePattern",
     "isCodexPluginBuildFlavorFilter", "isCodexPluginFeaturedFilter"]),
   declarations("60-plugin-marketplace.js", ["codexPluginHiddenFilterSourcePattern",
@@ -48,6 +48,19 @@ test("unrelated filters never inspect marketplace fields or re-run the callback"
   assert.equal(result.reads, 0);
   assert.equal(result.calls, 20000);
   assert.deepEqual(Array.from(result.ids), Array.from({length:10000},(_,i)=>i*2));
+});
+
+test("repeated chat filters classify the callback once and preserve native generic filters", () => {
+  const result = run(`
+    let regexRuns = 0;
+    const nativeTest = RegExp.prototype.test;
+    RegExp.prototype.test = function(source) { regexRuns++; return nativeTest.call(this, source); };
+    const predicate = n => n > 1;
+    for (let i = 0; i < 400; i++) [1,2].filter(predicate);
+    const generic = Array.prototype.filter.call({0:1,1:2,length:2}, predicate);
+    [regexRuns, generic[0]];
+  `);
+  assert.deepEqual(Array.from(result), [3, 2]);
 });
 
 test("official and featured plugin compatibility remains gated by data and callback shape", () => {

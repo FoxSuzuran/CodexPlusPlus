@@ -8941,11 +8941,14 @@ pub async fn load_request_logs(
     since_ms: Option<u64>,
     agent: Option<String>,
     relay_id: Option<String>,
+    relay_unknown: Option<bool>,
     model: Option<String>,
 ) -> CommandResult<Value> {
     match tauri::async_runtime::spawn_blocking(move || {
-        load_request_logs_blocking(limit, since_ms, agent, relay_id, model)
-    }).await {
+        load_request_logs_blocking(limit, since_ms, agent, relay_id, relay_unknown, model)
+    })
+    .await
+    {
         Ok(result) => result,
         Err(error) => failed(&format!("读取请求日志失败：{error}"), json!({ "entries": [] })),
     }

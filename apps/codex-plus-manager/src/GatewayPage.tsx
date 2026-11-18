@@ -878,8 +878,8 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   const restoreOnExit = payload.gateway.restoreOnExit;
   const modelSuffix = payload.gateway.modelSuffix !== false;
   const localDiscovery = payload.gateway.localLoginDiscovery === true;
-  const responsesWebsocket = payload.gateway.responsesWebsocket === true;
-  const websocketHint = t("Codex 与 Codex++ 之间改用 WebSocket 长连接，延迟更低。只建议上游是 ChatGPT 官方账号或 OpenAI API 时打开；第三方中转常不保留连接内的上下文，会导致工具调用后丢上下文。关着时走 HTTP，与 2.6 一致。新连接生效。");
+  const responsesWebsocket = payload.gateway.responsesWebsocket !== false;
+  const websocketHint = t("默认对 ChatGPT 官方账号和 OpenAI API 使用 WebSocket。第三方中转和混合协议池走 HTTP/SSE；续接失效时由 Codex 重发完整上下文。更改在新连接上生效。");
   const subagentFollow = payload.gateway.subagentModelFollowRequest === true;
   const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
   const listen = `http://127.0.0.1:${payload.port}`;

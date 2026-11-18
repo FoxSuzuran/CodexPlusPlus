@@ -27,9 +27,9 @@ function functions(script) {
         appHeader: "header", archiveNav: "[data-archive]", pluginNavButton: "[data-plugin]",
         disabledInstallButton: "[data-disabled-install]" };
       const [codexPlusPageClass, codexPlusSidebarNavId, codexPlusRailNavId, codexPlusRailExtensionsId,
-        codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailTasksId,
+        codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId,
         codexServiceTierBadgeClass, sessionShareButtonClass, sessionCopyMenuItemClass,
-        capacityAutoRetryChipId] = Array.from({ length: 11 }, (_, i) => `fixture-${i}`);
+        capacityAutoRetryChipId] = Array.from({ length: 12 }, (_, i) => `fixture-${i}`);
       const isCodexPlusExtensionNode = () => false;
       let marketplace = false;
       let marketplaceChecks = 0;

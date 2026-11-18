@@ -16,6 +16,7 @@ function fixture(selector = "[data-codex-intelligence-trigger]") {
   const calls: unknown[] = [], toasts: string[] = [];
   const settings = { enhancementsEnabled: true };
   let schedules = 0;
+  let geometryReads = 0;
   const context = vm.createContext({
     codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: settings,
     showToast: (message: string) => toasts.push(message),
@@ -23,10 +24,12 @@ function fixture(selector = "[data-codex-intelligence-trigger]") {
   });
   vm.runInContext(source.slice(start, end), context);
   const trigger: any = {
-    isConnected: true, disabled: false, composer: true, visible: true,
+    isConnected: true, disabled: false, composer: true, visible: true, activePage: null,
     matches: (selectors: string) => selectors.split(",").some(value => value.trim() === selector),
-    closest: () => trigger.composer ? {} : null,
-    getClientRects: () => trigger.visible ? [{}] : [], getAttribute: () => null,
+    closest: (selector: string) => selector === "[data-app-shell-active-page]"
+      ? trigger.activePage === null ? null : { getAttribute: () => String(trigger.activePage) }
+      : trigger.composer ? {} : null,
+    getClientRects: () => { geometryReads++; return trigger.visible ? [{}] : []; }, getAttribute: () => null,
   };
   const props = {
     selectedServiceTier: null as string | null,
@@ -45,8 +48,19 @@ function fixture(selector = "[data-codex-intelligence-trigger]") {
       currentTarget: { previousElementSibling: trigger }, preventDefault() {}, stopPropagation() {},
     }),
     schedules: () => schedules,
+    geometryReads: () => geometryReads,
   };
 }
+
+test("cached inactive composers skip layout and regain shortcuts when selected", () => {
+  const f = fixture();
+  f.trigger.activePage = false;
+  assert.equal(f.state(), null);
+  assert.equal(f.geometryReads(), 0);
+  f.trigger.activePage = true;
+  assert.equal(f.state().next.value, "priority");
+  assert.equal(f.geometryReads(), 1);
+});
 
 test("shortcut cycles only native options and rereads the current selection before each click", async () => {
   const f = fixture();

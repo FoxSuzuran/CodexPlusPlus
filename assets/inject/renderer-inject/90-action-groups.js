@@ -882,6 +882,7 @@
   function codexNativeFastShortcutState(trigger) {
     if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']")
         || !trigger.closest("[data-codex-composer-root], .composer-footer, .composer-surface-chrome")
+        || trigger.closest('[data-app-shell-active-page]')?.getAttribute("data-app-shell-active-page") === "false"
         || !trigger.getClientRects().length) return null;
     // shortcut: 依赖原生菜单 props；上游变更接口时隐藏入口，再更新适配。
     const props = codexNativeFastMenuProps(trigger);

@@ -860,7 +860,7 @@ describe("renderer injection header compatibility", () => {
     api.patchResponseData({ type: "mcp-response", message: { method: "install-plugin", result: { installed: true } } });
     assert.deepEqual(invalidations, [{ queryKey: ["plugins"] }]);
     assert.doesNotMatch(navigation + plugin, /__CODEX_PLUS_PLUGIN_MARKETPLACES__|mergeLocalPluginMarketplaces|plugin_marketplace_local_merged/);
-    assert.match(navigation, /codexPluginFilterSourceCache = new WeakMap/);
+    assert.match(navigation, /codexPluginFilterKindCache = new WeakMap/);
   });
 
   it("uses the same plugin enhancement settings regardless of a legacy launch mode", async () => {

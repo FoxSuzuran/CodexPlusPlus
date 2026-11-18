@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_tungstenite::{
     WebSocketStream,
-    tungstenite::{Message, protocol::Role},
+    tungstenite::{Message, Utf8Bytes, protocol::Role},
 };
 
 use crate::gateway::{
@@ -452,6 +452,8 @@ struct ActiveResponse {
     filter: Option<crate::extension_gateway::ResponseFilter>,
     started: std::time::Instant,
     response_id: Option<String>,
+    upstream_model: String,
+    previous_response_id: Option<String>,
 }
 
 impl Drop for ActiveResponse {
@@ -584,6 +586,12 @@ fn error_event_with_code(lane: &str, status: u16, code: &str, message: &str) -> 
     Message::Text(value.to_string().into())
 }
 
+fn previous_response_id(body: &Value) -> Option<&str> {
+    body.get("previous_response_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+}
+
 fn parse_create(text: &str) -> anyhow::Result<(String, Value)> {
     let mut body: Value = serde_json::from_str(text)?;
     if body["type"] != "response.create" {
@@ -635,11 +643,8 @@ async fn open_request(
             kind: OpenFailureKind::Request,
         });
     }
-    let previous = if let Some(id) = body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-    {
+    let previous_id = previous_response_id(&body).map(str::to_string);
+    let previous = if let Some(id) = previous_id.as_deref() {
         let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
         // 增量输入只能在原连接续接，需要完整上下文时由客户端重放。
         let Some(affinity) = registry.responses.get(id).filter(|affinity| {
@@ -703,11 +708,19 @@ async fn open_request(
             log.record_error(&status.to_string(), message.clone());
             return Err(OpenFailure { lane, status, message, kind });
         };
+        // 中间件可改请求正文，续接 ID 仍必须对应已经验证的原连接。
+        if previous_response_id(&ready.body) != previous_id.as_deref() {
+            let message = "WS 续接标识在请求准备期间变化，请使用完整上下文开始新响应";
+            log.record_error("400", message.into());
+            let kind = if previous_id.is_some() { OpenFailureKind::ContinuationLost } else { OpenFailureKind::Request };
+            return Err(OpenFailure { lane, status: 400, message: message.into(), kind });
+        }
+        let upstream_model = ready.body["model"].as_str().unwrap_or("").to_string();
         let phase = crate::settings::SettingsStore::default().load().unwrap_or_default().codex_app_third_party_reasoning_collapse;
         let transformer = crate::protocol_proxy::ResponsesSseTransformer::for_request(Some(&body))
             .filling_message_phase(phase && !crate::extension_gateway::builtin_replaced("builtin:reasoning-collapse"));
         let mut response = ActiveResponse { ready, log, reservation, transformer, filter: None,
-            started: std::time::Instant::now(), response_id: None };
+            started: std::time::Instant::now(), response_id: None, upstream_model, previous_response_id: previous_id };
         response.filter = crate::extension_gateway::ResponseFilter::start(&path, Some(&body)).await;
         Ok(Opened { lane, response })
     })).await
@@ -734,6 +747,20 @@ async fn send_message<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         .await
         .context("WS 下游写入超时")??;
     Ok(())
+}
+
+async fn send_unsubmitted_disconnect<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    ws: &mut WebSocketStream<S>,
+    lane: &str,
+    response: &mut ActiveResponse,
+) -> anyhow::Result<()> {
+    let (status, code, message) = if response.previous_response_id.is_some() {
+        (400, CONTINUATION_LOST_CODE, "WS 续接的原连接已关闭，请使用完整上下文开始新响应")
+    } else {
+        (502, LOCAL_ERROR_CODE, "WS 上游连接已关闭")
+    };
+    response.log.record_error(&status.to_string(), message.into());
+    send_message(ws, error_event_with_code(lane, status, code, message)).await
 }
 
 async fn send_sse<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
@@ -763,8 +790,13 @@ async fn forward_response_event<S: tokio::io::AsyncRead + tokio::io::AsyncWrite 
     ws: &mut WebSocketStream<S>,
     lane: &str,
     response: &mut ActiveResponse,
-    text: &str,
+    text: &Utf8Bytes,
+    kind: &str,
 ) -> anyhow::Result<()> {
+    // 普通增量不参与阶段填补、工具改写或用量记账。无响应中间件时直接保留 WS 帧。
+    if response.filter.is_none() && kind.starts_with("response.") && kind.ends_with(".delta") {
+        return send_message(ws, Message::Text(text.clone())).await;
+    }
     let bytes = response.transformer.push_bytes(format!("data: {text}\n\n").as_bytes());
     let bytes = if let Some(filter) = response.filter.as_mut() {
         filter.push(&bytes).await
@@ -840,6 +872,12 @@ pub(crate) async fn handle(
     let settings = crate::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
+    // 托管入口与网关共用同一条准备链，握手也按实际网关池检查。
+    if matches!(opener, crate::launcher::ProxyOpener::Legacy)
+        && settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+    {
+        opener = crate::launcher::ProxyOpener::Gateway(crate::tools::ToolId::Codex);
+    }
     let client_headers = ClientHeaders::read(headers);
     let fallback_scope = (
         path.split('?').next().unwrap_or(path).to_string(),
@@ -848,14 +886,17 @@ pub(crate) async fn handle(
     let blocked = if http_fallback_active(&fallback_scope) {
         Some("upstream_requires_http")
     } else {
-        crate::protocol_proxy::websocket_upgrade_block_reason(&settings)
+        match crate::gateway::store::GatewayStore::default().load() {
+            Ok(gateway) => crate::protocol_proxy::websocket_upgrade_block_reason(&settings, gateway, &opener),
+            Err(_) => Some("gateway_settings_unreadable"),
+        }
     };
     if let Some(reason) = blocked {
         crate::launcher::write_http_response(
             stream,
             "426 Upgrade Required",
             "application/json; charset=utf-8",
-            br#"{"status":"upgrade_required","message":"WebSocket transport requires native Responses upstreams; retry with HTTP."}"#,
+            br#"{"status":"upgrade_required","message":"Use HTTP/SSE for this Responses route."}"#,
         )
         .await?;
         let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -879,12 +920,6 @@ pub(crate) async fn handle(
     let mut ws =
         WebSocketStream::from_partially_read(stream, read_ahead, Role::Server, Some(ws_config()))
             .await;
-    // 官方身份的本地代理原本再跳一次网关；WS 直接调用同一网关准备入口，避免双重 hooks 与日志。
-    if matches!(opener, crate::launcher::ProxyOpener::Legacy)
-        && crate::gateway::apply::codex_hops_through_gateway()
-    {
-        opener = crate::launcher::ProxyOpener::Gateway(crate::tools::ToolId::Codex);
-    }
     let headers = client_headers;
     let registry = Arc::new(Mutex::new(Registry::default()));
     let (events_tx, mut events) = tokio::sync::mpsc::channel(64);
@@ -989,19 +1024,17 @@ pub(crate) async fn handle(
                             registry.lock().unwrap_or_else(|p| p.into_inner()).connections.insert(response.ready.fingerprint.clone(), id.clone());
                         }
                         response.ready.registration.take();
-                        let mut body = response.ready.body.clone();
+                        let mut body = std::mem::take(&mut response.ready.body);
                         let object = body.as_object_mut().context("WS 上游请求不是 JSON 对象")?;
                         object.remove("stream"); object.remove("background");
                         object.insert("type".into(), json!("response.create"));
                         if !lane.is_empty() { object.insert("stream_id".into(), json!(lane)); }
                         let Some(connection) = connections.get(&id) else {
-                            response.log.record_error("502", "WS 上游连接已关闭".into());
-                            send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭")).await?;
+                            send_unsubmitted_disconnect(&mut ws, &lane, &mut response).await?;
                             continue;
                         };
                         if connection.sender.send(Message::Text(body.to_string().into())).await.is_err() {
-                            response.log.record_error("502", "WS 上游连接已关闭".into());
-                            send_message(&mut ws, error_event(&lane, 502, "WS 上游连接已关闭")).await?;
+                            send_unsubmitted_disconnect(&mut ws, &lane, &mut response).await?;
                             continue;
                         }
                         // 入上游写队列后可能已生成；取消不再退 RPM，更不能自动重发。
@@ -1042,7 +1075,7 @@ pub(crate) async fn handle(
                                 let status = error_status(&event);
                                 response.log.entry.status_code = status;
                                 response.log.record_stream(Some("failed"), None, None);
-                                forward_response_event(&mut ws, &lane, &mut response, &text).await?;
+                                forward_response_event(&mut ws, &lane, &mut response, &text, kind).await?;
                                 finish_response(&mut ws, &lane, &mut response).await?;
                                 record_failure(&response, status, text.as_bytes());
                             }
@@ -1058,12 +1091,12 @@ pub(crate) async fn handle(
                         response.response_id = Some(response_id.into());
                         registry.lock().unwrap_or_else(|p| p.into_inner()).responses.insert(response_id.into(), Affinity {
                             connection: id.clone(), relay: response.ready.relay.clone(),
-                            model: response.ready.body["model"].as_str().unwrap_or("").into(),
+                            model: response.upstream_model.clone(),
                             key: response.ready.gateway.as_ref().map(|gateway| gateway.candidate.key.clone()),
                         });
                     }
                     if kind.ends_with(".delta") { response.log.mark_first_token_at(crate::launcher::current_time_ms()); }
-                    forward_response_event(&mut ws, &lane, response, &text).await?;
+                    forward_response_event(&mut ws, &lane, response, &text, kind).await?;
                     if matches!(kind, "response.completed" | "response.failed" | "response.incomplete" | "error") {
                         finish_response(&mut ws, &lane, response).await?;
                         let success = kind == "response.completed" && event.pointer("/response/status").and_then(Value::as_str).is_none_or(|s| s == "completed");

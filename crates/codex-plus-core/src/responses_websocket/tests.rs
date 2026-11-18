@@ -92,10 +92,9 @@ impl Fixture {
             json!({"relayProfiles":profiles,"activeRelayId":active}).to_string(),
         )
         .unwrap();
-        // WS 默认关（`responsesWebsocket`）；这些用例测的是打开之后的行为。
-        let enabled: GatewaySettings =
-            serde_json::from_value(json!({"version":3,"responsesWebsocket":true,"autoModels":false})).unwrap();
-        GatewayStore::default().save(&enabled).unwrap();
+        let defaults: GatewaySettings =
+            serde_json::from_value(json!({"version":3,"autoModels":false})).unwrap();
+        GatewayStore::default().save(&defaults).unwrap();
         Self {
             previous,
             _gateway: gateway,
@@ -276,6 +275,11 @@ async fn helper_ws_named_lanes_share_connection_run_in_parallel_and_keep_fifo() 
                 .is_err(),
             "same lane must wait for its terminal"
         );
+        for lane in ["a", "b"] {
+            ws.send(Message::Text(format!(
+                r#"{{ "type":"response.output_text.delta", "stream_id":"{lane}", "delta":"{lane}" }}"#
+            ).into())).await.unwrap();
+        }
         send(&mut ws, completed("b", "b")).await;
         send(&mut ws, completed("a1", "a")).await;
         let third = next(&mut ws).await;
@@ -297,6 +301,12 @@ async fn helper_ws_named_lanes_share_connection_run_in_parallel_and_keep_fifo() 
     second["input"] = json!("second a");
     send(&mut ws, second).await;
     send(&mut ws, create("b")).await;
+    for lane in ["a", "b"] {
+        let text = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        assert_eq!(text.as_str(), format!(
+            r#"{{ "type":"response.output_text.delta", "stream_id":"{lane}", "delta":"{lane}" }}"#
+        ));
+    }
     for lane in ["b", "a", "a"] {
         assert_eq!(next(&mut ws).await["stream_id"], lane);
     }
@@ -313,6 +323,12 @@ async fn helper_ws_dead_connection_rejects_cached_continuation_without_replay() 
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let _fixture = Fixture::new(profile(listener.local_addr().unwrap()));
+    let full_input = json!([
+        {"type":"message","role":"user","content":[{"type":"input_text","text":"original context"}]},
+        {"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{}"},
+        {"type":"function_call_output","call_id":"call_1","output":"keep the tool result"}
+    ]);
+    let expected_input = full_input.clone();
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
     let upstream = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
@@ -326,6 +342,7 @@ async fn helper_ws_dead_connection_rejects_cached_continuation_without_replay() 
         let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
         let event = next(&mut ws).await;
         assert!(event.get("previous_response_id").is_none());
+        assert_eq!(event["input"], expected_input);
         send(&mut ws, completed("fresh", "")).await;
         let _ = ws.next().await;
     });
@@ -343,7 +360,9 @@ async fn helper_ws_dead_connection_rejects_cached_continuation_without_replay() 
     // 标准错误码：Codex 收到后重连并发完整上下文，不把它当失败显示（#3169）。
     assert_eq!(error["error"]["code"], "previous_response_not_found", "{error}");
     assert_eq!(error["error"]["param"], "previous_response_id");
-    send(&mut ws, create("")).await;
+    let mut replay = create("");
+    replay["input"] = full_input;
+    send(&mut ws, replay).await;
     assert_eq!(next(&mut ws).await["response"]["id"], "fresh");
     ws.close(None).await.unwrap();
     drop(ws);
@@ -477,20 +496,22 @@ async fn gateway_ws_http_fallback_waits_for_other_active_lanes_before_closing() 
 
 /// 升级请求直接打在本地 WS 入口上，只看握手状态行：拒绝必须发生在 101 之前。
 async fn upgrade_status(url: &str) -> String {
+    upgrade_status_at(url, "").await
+}
+
+async fn upgrade_status_at(url: &str, headers: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    // connect 只接受 host:port，URL 里的 /v1/responses 必须先去掉。
-    let authority = url
+    let (authority, tail) = url
         .trim_start_matches("ws://")
-        .split('/')
-        .next()
-        .unwrap_or_default();
+        .split_once('/')
+        .unwrap();
     let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
     stream
         .write_all(
             format!(
-                "GET /v1/responses HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
+                "GET /{tail} HTTP/1.1\r\nHost: {authority}\r\nUpgrade: websocket\r\n\
                  Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-                 Sec-WebSocket-Version: 13\r\n\r\n"
+                 Sec-WebSocket-Version: 13\r\n{headers}\r\n"
             )
             .as_bytes(),
         )
@@ -567,7 +588,10 @@ async fn mixed_gateway_protocol_pool_is_rejected_before_upgrade() {
     fixture.gateway_profiles(vec![native, chat]);
     let (url, task) = helper(1).await;
     assert_eq!(
-        upgrade_status(&format!("{url}/v1/responses")).await,
+        upgrade_status_at(
+            &format!("{url}/gw/codex/v1/responses"),
+            "Authorization: Bearer local-test\r\n",
+        ).await,
         "HTTP/1.1 426 Upgrade Required"
     );
     assert!(
@@ -1093,15 +1117,16 @@ fn websocket_error_without_http_status_preserves_failure_classification() {
 }
 
 #[tokio::test]
-async fn helper_ws_is_off_by_default_and_upgrade_gets_426() {
-    if isolated("helper_ws_is_off_by_default_and_upgrade_gets_426").await {
+async fn helper_ws_explicit_off_is_kept_and_upgrade_gets_426() {
+    if isolated("helper_ws_explicit_off_is_kept_and_upgrade_gets_426").await {
         return;
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let _fixture = Fixture::new(profile(listener.local_addr().unwrap()));
-    // 没打开 `responsesWebsocket`（旧配置、新装）：握手阶段回 426，Codex 走 HTTP，与 2.6 一致。
+    assert!(GatewaySettings::default().responses_websocket);
+    assert!(GatewayStore::default().load().unwrap().responses_websocket);
     let gateway: GatewaySettings =
-        serde_json::from_value(json!({"version":3,"autoModels":false})).unwrap();
+        serde_json::from_value(json!({"version":3,"autoModels":false,"responsesWebsocket":false})).unwrap();
     assert!(!gateway.responses_websocket);
     GatewayStore::default().save(&gateway).unwrap();
     let (url, task) = helper(1).await;
@@ -1114,6 +1139,31 @@ async fn helper_ws_is_off_by_default_and_upgrade_gets_426() {
             .await
             .is_err(),
         "关着时不应连上游"
+    );
+    finish(task).await;
+}
+
+#[tokio::test]
+async fn helper_ws_defaults_allow_official_upstream_and_reject_unverified_responses() {
+    if isolated("helper_ws_defaults_allow_official_upstream_and_reject_unverified_responses").await {
+        return;
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut relay = profile(listener.local_addr().unwrap());
+    relay["upstreamBaseUrl"] = json!("https://api.openai.com/v1");
+    let fixture = Fixture::new(relay.clone());
+    let (url, task) = helper(2).await;
+    let mut ws = client(&format!("{url}/v1/responses"), &[]).await;
+    // 只验证本地握手。客户端未发 response.create，测试不会连接外部 API。
+    ws.close(None).await.unwrap();
+    drop(ws);
+    relay["upstreamBaseUrl"] = json!("https://api.openai.com.relay.invalid/v1");
+    std::fs::write(fixture.temp.path().join("settings.json"), json!({
+        "relayProfiles": [relay], "activeRelayId": "ws-test"
+    }).to_string()).unwrap();
+    assert_eq!(
+        upgrade_status(&format!("{url}/v1/responses")).await,
+        "HTTP/1.1 426 Upgrade Required"
     );
     finish(task).await;
 }

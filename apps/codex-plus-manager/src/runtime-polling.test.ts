@@ -27,7 +27,7 @@ function harness(code: string) {
   let timer: (() => void) | undefined;
   const filterRef = { current: { model: "first" } };
   const context = {
-    document, filterRef, range: "all", agentScope: "all", relayFilter: null, modelFilter: "", autoRefresh: true, USAGE_REFRESH_MS: 30_000,
+    document, filterRef, filterArgs: filterRef.current, range: "all", agentScope: "all", modelFilter: "", autoRefresh: true, USAGE_REFRESH_MS: 30_000,
     t: (text: string) => text,
     useRef: (value: unknown) => ({ current: value }),
     useEffect: (effect: () => (() => void) | void) => effects.push(effect),

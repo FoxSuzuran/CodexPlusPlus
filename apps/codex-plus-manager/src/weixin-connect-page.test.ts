@@ -14,16 +14,18 @@ const shardPath = "../../../assets/inject/renderer-inject/45-weixin-connect-page
 type PageState = Record<string, any>;
 
 /** 分片顶层只有常量和函数声明：补上它依赖的工具函数，直接求值拿出渲染函数。 */
-async function loadShard() {
+async function loadShard(bridge = async (_path: string, _args: PageState): Promise<PageState> => ({ status: "failed" }), doc?: unknown) {
   const source = await read(shardPath);
   const stubs = `
     const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
     const codexPlusMenuIcons = { chevron: "<svg data-chevron></svg>", check: "<svg data-check></svg>" };
-    const postJson = async () => ({ status: "failed" });
+    class Element {}
   `;
-  return new Function(`${stubs}\n${source}\nreturn { codexPlusWeixinPageHtml, codexPlusWeixinPageState };`)() as {
+  return new Function("postJson", "document", `${stubs}\n${source}\nreturn { codexPlusWeixinPageHtml, codexPlusWeixinPageState, codexPlusWeixinPoll, codexPlusWeixinRun };`)(bridge, doc) as {
     codexPlusWeixinPageHtml: (state: PageState) => string;
     codexPlusWeixinPageState: PageState;
+    codexPlusWeixinPoll: () => Promise<void> | undefined;
+    codexPlusWeixinRun: (action: string, args?: PageState) => Promise<PageState | null>;
   };
 }
 
@@ -138,6 +140,28 @@ test("按键在 window 捕获阶段接，关页时移除并停掉轮询；不用
   assert.doesNotMatch(source, /<select/);
   assert.match(source, /class="codex-plus-menu-trigger"/);
   assert.match(source, /class="codex-plus-menu-popover codex-plus-weixin-menu-popover"/);
+});
+
+test("微信状态读取只保留一个在途轮询，较早的结果不会盖回新设置", async () => {
+  const replies: Array<(value: PageState) => void> = [];
+  const panel = { querySelector: () => null, closest: () => null, innerHTML: "" };
+  const doc = { hidden: false, activeElement: null, querySelector: () => panel };
+  const { codexPlusWeixinPoll: poll, codexPlusWeixinRun: run, codexPlusWeixinPageState: state } =
+    await loadShard(() => new Promise(resolve => replies.push(resolve)), doc);
+  const pending = poll();
+  for (let tick = 0; tick < 12; tick++) poll();
+  assert.equal(replies.length, 1);
+  const manual = run("state");
+  const updated = baseState().data;
+  replies[1](updated);
+  await manual;
+  replies[0]({ status: "ok", settings: { weixinConnectModel: "old" } });
+  await pending;
+  assert.equal(state.data, updated);
+  assert.equal(state.pollRequest, null);
+  doc.hidden = true;
+  assert.equal(poll(), undefined);
+  assert.equal(replies.length, 2);
 });
 
 test("样式：引用 Codex 变量、长文本省略号截断、行内控件可收缩", async () => {

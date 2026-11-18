@@ -93,7 +93,7 @@
     {
       "name": "45-weixin-connect-page.js",
       "description": "左侧图标栏「微信连接」页：扫码登录、启停微信连接并调整常用设置",
-      "lines": 597
+      "lines": 608
     },
     {
       "name": "46-service-settings.js",
@@ -108,12 +108,12 @@
     {
       "name": "50-navigation.js",
       "description": "导航入口安装、rail 按钮、页面布局与选中态同步",
-      "lines": 192
+      "lines": 185
     },
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 2098
+      "lines": 2096
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -178,7 +178,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1253
+      "lines": 1254
     },
     {
       "name": "91-extension-api.js",
@@ -268,7 +268,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 205
+      "lines": 194
     },
     {
       "name": "98-avatar-overlay-layout.js",

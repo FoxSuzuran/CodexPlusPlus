@@ -301,37 +301,57 @@ pub(crate) fn managed_protocol_proxy_base_urls() -> Vec<String> {
     ports.into_iter().map(local_responses_proxy_base_url).collect()
 }
 
-/// 本地 WS 入口只能把 `response.create` 转给原生 Responses 上游；Chat Completions /
-/// Anthropic 兼容路由只能走 HTTP/SSE。混合协议池一律在握手阶段回 426，让客户端继续
-/// 用 HTTP，而不是升级成功后在路由阶段把整轮请求打成失败（#2963 的能力边界）。
-/// 不允许 WS 升级的原因（诊断日志用）；`None` 表示可以升级。
+fn stateful_responses_websocket_endpoint(base: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(&responses_url(base)) else {
+        return false;
+    };
+    // 测试用明确隔离的本地上游复现多流、缓存失效和网络故障。
+    #[cfg(test)]
+    if std::env::var_os("CODEX_PLUS_WS_TEST_CHILD").is_some()
+        && url.host_str() == Some("127.0.0.1")
+    {
+        return true;
+    }
+    url.scheme() == "https"
+        && url.port_or_known_default() == Some(443)
+        && matches!(
+            (url.host_str(), url.path()),
+            (Some("api.openai.com"), "/v1/responses")
+                | (Some("chatgpt.com"), "/backend-api/codex/responses")
+        )
+}
+
+/// 在握手时提前排除混合协议池和未知续接能力，避免把只带增量的后续回合交给第三方。
 pub(crate) fn websocket_upgrade_block_reason(
     settings: &crate::settings::BackendSettings,
+    gateway: crate::gateway::store::GatewaySettings,
+    opener: &crate::launcher::ProxyOpener,
 ) -> Option<&'static str> {
-    // 读不到网关配置时不能假定可以用 WS，否则会把错误推迟到 101 之后。
-    let Ok(gateway) = crate::gateway::store::GatewayStore::default().load() else {
-        return Some("gateway_settings_unreadable");
-    };
-    // 默认关：Codex 走 HTTP/SSE，与 2.6 一致（见 `GatewaySettings::responses_websocket`）。
     if !gateway.responses_websocket {
         return Some("websocket_disabled");
     }
-    let native_responses = |relay: &crate::settings::RelayProfile| {
-        relay.protocol == crate::settings::RelayProtocol::Responses
+    let blocked_relay = |relay: &crate::settings::RelayProfile| {
+        if relay.protocol != crate::settings::RelayProtocol::Responses {
+            return Some("mixed_protocol_relays");
+        }
+        let official = crate::official_login::member_uses_official_login_transport(relay)
+            .then(crate::official_login::official_base_url);
+        let base = official.as_deref().unwrap_or(&relay.base_url);
+        (!stateful_responses_websocket_endpoint(base)).then_some("unverified_websocket_upstream")
     };
-    if settings.relay_profiles_enabled
-        && !settings.relay_profiles.iter().all(native_responses)
-    {
-        return Some("mixed_protocol_relays");
+    if matches!(opener, crate::launcher::ProxyOpener::Legacy) {
+        return if settings.relay_profiles_enabled {
+            settings.relay_profiles.iter().find_map(blocked_relay)
+        } else {
+            None
+        };
     }
-    // 网关成员各自有协议；池里只要有一位是 Chat / Anthropic，升级成功也可能在路由阶段失败。
-    let all_native = gateway
+    gateway
         .with_extension_providers()
         .providers
         .iter()
         .filter(|provider| provider.enabled)
-        .all(|provider| native_responses(&provider.relay));
-    (!all_native).then_some("mixed_protocol_relays")
+        .find_map(|provider| blocked_relay(&provider.relay))
 }
 
 pub(crate) fn is_managed_protocol_proxy_base_url(value: &str) -> bool {
@@ -4116,6 +4136,15 @@ async fn open_responses_proxy_request_once(
         // 官方登录成员：用该账号 OAuth 凭据发往 chatgpt.com，而不是 API Key。
         let official_member =
             crate::official_login::member_uses_official_login_transport(&relay);
+        let official_base = official_member.then(crate::official_login::official_base_url);
+        let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
+        if crate::responses_websocket::active()
+            && !stateful_responses_websocket_endpoint(official_base.as_deref().unwrap_or(&relay.base_url))
+        {
+            return Err(crate::responses_websocket::RequiresHttp(
+                "上游的 WS 续接能力未经验证，请通过 HTTP/SSE 发送完整上下文",
+            ).into());
+        }
         let mut official_credential = if official_member {
             match crate::official_login::resolve_official_credential(&relay, false).await {
                 Ok(credential) => Some(credential),
@@ -4140,7 +4169,6 @@ async fn open_responses_proxy_request_once(
         } else {
             None
         };
-        let official_base = official_member.then(crate::official_login::official_base_url);
         let model_override = match &forced {
             Some(forced) => forced.upstream_model.clone(),
             None => aggregate_model
@@ -4283,7 +4311,6 @@ async fn open_responses_proxy_request_once(
         request_trace.relay_name = relay.name.clone();
         request_trace.wire_api = upstream_wire_api_label(wire_api).to_string();
         // Codex 托管的网关供应商：这一跳的上游就是本机网关，它自己按候选控制超时。
-        let via_gateway = relay.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID;
         // 别家签发的加密内容（#2777）：只在发往真实上游时处理（网关那一跳由网关自己处理）；
         // 「严格推理历史」的约定是认证失败不降级，开着时不动。
         // 拓展用 gateway.replaces 关掉 builtin:foreign-reasoning 时同样不动：加密项原样发出，拒收也不重发。

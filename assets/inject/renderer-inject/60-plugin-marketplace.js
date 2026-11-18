@@ -6,17 +6,15 @@
     /filter\s*\(\s*([A-Za-z_$][\w$]*)\s*=>\s*!\s*[A-Za-z_$][\w$]*\s*\.includes\s*\(\s*\1\s*\.name\s*\)/;
 
   function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginHiddenFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 2) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
     return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
       && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
 
   function installPluginBuildFlavorFilterPatch() {
-    if (window.__codexPluginBuildFlavorFilterPatch === codexPluginMarketplaceUnlockVersion) return;
+    const revision = `${codexPluginMarketplaceUnlockVersion}:2`;
+    if (window.__codexPluginBuildFlavorFilterPatch === revision) return;
     if (!codexPluginMarketplacePatchEnabled()) return;
     const originalFilter = Array.prototype.__codexPluginBuildFlavorOriginalFilter || Array.prototype.filter;
     if (!Array.prototype.__codexPluginBuildFlavorOriginalFilter) {
@@ -26,13 +24,13 @@
         writable: true,
       });
     }
-    if (Array.prototype.filter.__codexPluginBuildFlavorPatched === codexPluginMarketplaceUnlockVersion) {
-      window.__codexPluginBuildFlavorFilterPatch = codexPluginMarketplaceUnlockVersion;
+    if (Array.prototype.filter.__codexPluginBuildFlavorPatched === revision) {
+      window.__codexPluginBuildFlavorFilterPatch = revision;
       return;
     }
     const patchedFilter = function codexPluginBuildFlavorFilterPatch(callback, thisArg) {
       const filtered = originalFilter.call(this, callback, thisArg);
-      if (filtered.length === this.length) return filtered;
+      if (!Array.isArray(this) || filtered.length === this.length || !codexPluginFilterKind(callback)) return filtered;
       if (isCodexPluginBuildFlavorFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_build_flavor_filter_bypassed", { pluginCount: this.length });
         return Array.from(this);
@@ -47,9 +45,9 @@
       }
       return filtered;
     };
-    patchedFilter.__codexPluginBuildFlavorPatched = codexPluginMarketplaceUnlockVersion;
+    patchedFilter.__codexPluginBuildFlavorPatched = revision;
     Array.prototype.filter = patchedFilter;
-    window.__codexPluginBuildFlavorFilterPatch = codexPluginMarketplaceUnlockVersion;
+    window.__codexPluginBuildFlavorFilterPatch = revision;
     sendCodexPlusDiagnostic("plugin_build_flavor_filter_patch_installed", {});
   }
 

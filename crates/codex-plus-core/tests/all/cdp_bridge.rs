@@ -2530,8 +2530,8 @@ fn injection_script_does_not_bypass_plugin_marketplace_search_filters() {
     let script = assets::injection_script(57321);
 
     assert!(script.contains("codexPluginMarketplaceUnlockVersion = \"17\""));
-    assert!(script.contains("codexPluginFilterSourceCache = new WeakMap()"));
-    assert!(script.contains("function codexPluginFilterCallbackSource(callback)"));
+    assert!(script.contains("codexPluginFilterKindCache = new WeakMap()"));
+    assert!(script.contains("function codexPluginFilterKind(callback)"));
     assert!(script.contains("isCodexPluginBuildFlavorFilter"));
     // 过滤器识别已从字面量匹配改为结构正则（Codex 每版都会重命名压缩标识符，
     // 写死字面量会在发版后静默失效）。断言正则本体仍在，并守住两个真实反例。

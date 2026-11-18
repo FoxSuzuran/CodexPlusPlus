@@ -16949,6 +16949,8 @@ ${key} = ${value}`]);
     copied: false,
     renderPending: false,
     pollTimer: null,
+    pollRequest: null,
+    pollRevision: 0,
   };
 
   async function codexPlusWeixinRequest(action, args = {}) {
@@ -16970,6 +16972,7 @@ ${key} = ${value}`]);
   /** 跑一个会改状态的动作：期间按钮置灰，失败时显示原因并重读一次状态。 */
   async function codexPlusWeixinRun(action, args = {}, busy = action) {
     const state = codexPlusWeixinPageState;
+    state.pollRevision += 1;
     state.busy = busy;
     state.error = "";
     renderCodexPlusWeixinPage();
@@ -17445,16 +17448,22 @@ ${key} = ${value}`]);
   /** 连接状态（启动中 → 运行中、处理了几条消息）、别处（管理器）改了设置：静默刷新。 */
   function codexPlusWeixinPoll() {
     const state = codexPlusWeixinPageState;
-    const panel = document.querySelector("[data-codex-weixin-panel]");
-    if (!panel || state.busy || document.hidden) return;
-    void codexPlusWeixinRequest("state").then((data) => {
-      if (state.busy) return;
+    if (state.pollRequest || state.busy || document.hidden || !document.querySelector("[data-codex-weixin-panel]")) return;
+    const revision = state.pollRevision;
+    const request = codexPlusWeixinRequest("state");
+    state.pollRequest = request;
+    return request.then((data) => {
+      if (revision !== state.pollRevision || state.busy || document.hidden) return;
+      const panel = document.querySelector("[data-codex-weixin-panel]");
+      if (!panel) return;
       const before = JSON.stringify(state.data);
       state.data = data;
       if (JSON.stringify(data) === before) return;
       if (codexPlusWeixinEditing(panel)) state.renderPending = true;
       else renderCodexPlusWeixinPage();
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => {
+      if (state.pollRequest === request) state.pollRequest = null;
+    });
   }
 
   function openCodexPlusWeixinConnectPage() {
@@ -17498,6 +17507,8 @@ ${key} = ${value}`]);
     window.__codexPlusExtensionPageCleanup = () => {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
+      state.pollRevision += 1;
+      state.pollRequest = null;
       // 停掉扫码轮询；关页前把正在编辑的输入框存掉（节点马上被移除，不会再有 change）。
       state.qrGeneration += 1;
       state.qr = null;
@@ -19154,21 +19165,6 @@ ${key} = ${value}`]);
     return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime" || restored === "openai-api-curated" || restored === "openai-curated-remote";
   }
 
-  const codexPluginFilterSourceCache = new WeakMap();
-
-  function codexPluginFilterCallbackSource(callback) {
-    if (codexPluginFilterSourceCache.has(callback)) {
-      return codexPluginFilterSourceCache.get(callback);
-    }
-    let source = "";
-    try {
-      source = Function.prototype.toString.call(callback);
-    } catch {
-    }
-    codexPluginFilterSourceCache.set(callback, source);
-    return source;
-  }
-
   // 这三种 marketplace 过滤器由 Codex 打包后压缩，标识符每版都会换名
   // （历史形态: !u(e.marketplaceName)||e.marketplaceName===r / !ne(...) / !Eu(...) /
   // 26.928.31416 起: !Mj(e.marketplaceName)||e.marketplaceName===n）。
@@ -19184,11 +19180,22 @@ ${key} = ${value}`]);
   const codexPluginFeaturedFilterSourcePattern =
     /([A-Za-z_$][\w$]*)\s*==\s*null\s*\|\|\s*!\s*[A-Za-z_$][\w$]*\s*\(\s*\1\s*\)\s*\|\|\s*\1\s*===\s*[A-Za-z_$][\w$]*(?![\w$(])/;
 
+  const codexPluginFilterKindCache = new WeakMap();
+
+  function codexPluginFilterKind(callback) {
+    if (typeof callback !== "function") return 0;
+    const cached = codexPluginFilterKindCache.get(callback);
+    if (cached !== undefined) return cached;
+    const source = Function.prototype.toString.call(callback);
+    const kinds = (codexPluginBuildFlavorFilterSourcePattern.test(source) ? 1 : 0)
+      | (codexPluginHiddenFilterSourcePattern.test(source) ? 2 : 0)
+      | (codexPluginFeaturedFilterSourcePattern.test(source) ? 4 : 0);
+    codexPluginFilterKindCache.set(callback, kinds);
+    return kinds;
+  }
+
   function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginBuildFlavorFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 1) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
     return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
       && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
@@ -19197,10 +19204,7 @@ ${key} = ${value}`]);
   // featuredPluginIds 过滤：sample 是字符串数组，回调按 id 反查 marketplace 后剔除官方目录。
   // 外部拿不到 id→marketplace 的映射，所以这里只做「结构 + 确实过滤掉了元素」的判定。
   function isCodexPluginFeaturedFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginFeaturedFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 4) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.every((id) => typeof id === "string")) return false;
     if (Array.isArray(filtered) && filtered.length >= sample.length) return false;
     return true;
@@ -19213,17 +19217,15 @@ ${key} = ${value}`]);
     /filter\s*\(\s*([A-Za-z_$][\w$]*)\s*=>\s*!\s*[A-Za-z_$][\w$]*\s*\.includes\s*\(\s*\1\s*\.name\s*\)/;
 
   function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    if (!codexPluginHiddenFilterSourcePattern.test(source)) return false;
+    if (!(codexPluginFilterKind(callback) & 2) || !Array.isArray(sample) || sample.length === 0) return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
     return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
       && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
 
   function installPluginBuildFlavorFilterPatch() {
-    if (window.__codexPluginBuildFlavorFilterPatch === codexPluginMarketplaceUnlockVersion) return;
+    const revision = `${codexPluginMarketplaceUnlockVersion}:2`;
+    if (window.__codexPluginBuildFlavorFilterPatch === revision) return;
     if (!codexPluginMarketplacePatchEnabled()) return;
     const originalFilter = Array.prototype.__codexPluginBuildFlavorOriginalFilter || Array.prototype.filter;
     if (!Array.prototype.__codexPluginBuildFlavorOriginalFilter) {
@@ -19233,13 +19235,13 @@ ${key} = ${value}`]);
         writable: true,
       });
     }
-    if (Array.prototype.filter.__codexPluginBuildFlavorPatched === codexPluginMarketplaceUnlockVersion) {
-      window.__codexPluginBuildFlavorFilterPatch = codexPluginMarketplaceUnlockVersion;
+    if (Array.prototype.filter.__codexPluginBuildFlavorPatched === revision) {
+      window.__codexPluginBuildFlavorFilterPatch = revision;
       return;
     }
     const patchedFilter = function codexPluginBuildFlavorFilterPatch(callback, thisArg) {
       const filtered = originalFilter.call(this, callback, thisArg);
-      if (filtered.length === this.length) return filtered;
+      if (!Array.isArray(this) || filtered.length === this.length || !codexPluginFilterKind(callback)) return filtered;
       if (isCodexPluginBuildFlavorFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_build_flavor_filter_bypassed", { pluginCount: this.length });
         return Array.from(this);
@@ -19254,9 +19256,9 @@ ${key} = ${value}`]);
       }
       return filtered;
     };
-    patchedFilter.__codexPluginBuildFlavorPatched = codexPluginMarketplaceUnlockVersion;
+    patchedFilter.__codexPluginBuildFlavorPatched = revision;
     Array.prototype.filter = patchedFilter;
-    window.__codexPluginBuildFlavorFilterPatch = codexPluginMarketplaceUnlockVersion;
+    window.__codexPluginBuildFlavorFilterPatch = revision;
     sendCodexPlusDiagnostic("plugin_build_flavor_filter_patch_installed", {});
   }
 
@@ -29729,6 +29731,7 @@ ${key} = ${value}`]);
   function codexNativeFastShortcutState(trigger) {
     if (!trigger?.isConnected || !trigger.matches("[data-codex-intelligence-trigger], [data-composer-navigation-target='reasoning']")
         || !trigger.closest("[data-codex-composer-root], .composer-footer, .composer-surface-chrome")
+        || trigger.closest('[data-app-shell-active-page]')?.getAttribute("data-app-shell-active-page") === "false"
         || !trigger.getClientRects().length) return null;
     // shortcut: 依赖原生菜单 props；上游变更接口时隐藏入口，再更新适配。
     const props = codexNativeFastMenuProps(trigger);
@@ -41092,17 +41095,6 @@ ${key} = ${value}`]);
     const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
     const slotsNeedScan = pruneRemovedCodexPlusUiSlots(mutations);
     window.__codexSessionDeleteLastMutations = mutations;
-    // 原生菜单可能晚于 input 的 RAF 挂载或整体替换；自身插入不触发布局补扫。
-    if (mutations && document.querySelector("[data-codex-fast-editor]") && mutations.some((mutation) => {
-      if (isExtensionUiNode(mutation.target)) return false;
-      const changed = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
-        .filter((node) => node.nodeType === 1);
-      if (changed.length && changed.every(isExtensionUiNode)
-          && !Array.from(mutation.removedNodes).some((node) => node.matches?.("[data-codex-fast-slash-menu]"))) return false;
-      const selector = "[data-composer-overlay-floating-ui], [data-mention-list-scroll-area], [role='listbox']";
-      return mutation.target.closest?.(selector) || changed.some((node) =>
-        node.matches?.(selector) || node.querySelector?.(selector));
-    })) scheduleCodexFastSlashMenu();
     if (window.__codexSessionDeleteScanPending) return;
     // 原生页面可能只移除带归属标记的按钮组或插槽；宿主仍在时需要补回。
     if (!sessionActionsNeedScan && !slotsNeedScan && !shouldScheduleScan(mutations)) return;

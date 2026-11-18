@@ -33,6 +33,8 @@
     copied: false,
     renderPending: false,
     pollTimer: null,
+    pollRequest: null,
+    pollRevision: 0,
   };
 
   async function codexPlusWeixinRequest(action, args = {}) {
@@ -54,6 +56,7 @@
   /** 跑一个会改状态的动作：期间按钮置灰，失败时显示原因并重读一次状态。 */
   async function codexPlusWeixinRun(action, args = {}, busy = action) {
     const state = codexPlusWeixinPageState;
+    state.pollRevision += 1;
     state.busy = busy;
     state.error = "";
     renderCodexPlusWeixinPage();
@@ -529,16 +532,22 @@
   /** 连接状态（启动中 → 运行中、处理了几条消息）、别处（管理器）改了设置：静默刷新。 */
   function codexPlusWeixinPoll() {
     const state = codexPlusWeixinPageState;
-    const panel = document.querySelector("[data-codex-weixin-panel]");
-    if (!panel || state.busy || document.hidden) return;
-    void codexPlusWeixinRequest("state").then((data) => {
-      if (state.busy) return;
+    if (state.pollRequest || state.busy || document.hidden || !document.querySelector("[data-codex-weixin-panel]")) return;
+    const revision = state.pollRevision;
+    const request = codexPlusWeixinRequest("state");
+    state.pollRequest = request;
+    return request.then((data) => {
+      if (revision !== state.pollRevision || state.busy || document.hidden) return;
+      const panel = document.querySelector("[data-codex-weixin-panel]");
+      if (!panel) return;
       const before = JSON.stringify(state.data);
       state.data = data;
       if (JSON.stringify(data) === before) return;
       if (codexPlusWeixinEditing(panel)) state.renderPending = true;
       else renderCodexPlusWeixinPage();
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => {
+      if (state.pollRequest === request) state.pollRequest = null;
+    });
   }
 
   function openCodexPlusWeixinConnectPage() {
@@ -582,6 +591,8 @@
     window.__codexPlusExtensionPageCleanup = () => {
       clearInterval(state.pollTimer);
       state.pollTimer = null;
+      state.pollRevision += 1;
+      state.pollRequest = null;
       // 停掉扫码轮询；关页前把正在编辑的输入框存掉（节点马上被移除，不会再有 change）。
       state.qrGeneration += 1;
       state.qr = null;

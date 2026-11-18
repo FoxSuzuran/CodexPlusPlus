@@ -1176,13 +1176,18 @@
   }
 
   function currentThreadScroller() {
-    const explicit = [...document.querySelectorAll(".thread-scroll-container")];
+    const activePage = document.querySelector('[data-app-shell-active-page="true"]');
+    const scope = activePage || document;
+    const selector = ".thread-scroll-container";
+    const explicit = scope.matches?.(selector) ? [scope] : scope.querySelectorAll(selector);
     if (explicit.length) {
-      return explicit.find((node) => node.isConnected && node.clientWidth > 0 && node.clientHeight > 0) || null;
+      for (const node of explicit) {
+        if (node.isConnected && node.clientWidth > 0 && node.clientHeight > 0) return node;
+      }
+      return null;
     }
     const root = conversationRoot();
-    if (root?.isConnected && root.matches(".thread-scroll-container")) return root;
-    if (!root?.isConnected) return document.scrollingElement || document.documentElement;
+    if (!root?.isConnected) return activePage ? null : document.scrollingElement || document.documentElement;
     const style = getComputedStyle(root);
     if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
     return nearestScrollableAncestor(root);
@@ -1647,14 +1652,28 @@
   }
 
   function syncThreadScrollStateForMutations(mutations) {
-    if (!threadScrollRestoreEnabled()) return;
-    const scroller = threadScrollRuntime().activeScroller;
-    // Chrome/extension changes do not affect the reading position; native mounts still restore before paint.
-    if (!scroller?.isConnected || mutations.some((mutation) =>
-      scroller === mutation.target || scroller.contains(mutation.target)
-      || [...mutation.addedNodes].some((node) => node.nodeType === 1
-        && (node.matches(".thread-scroll-container, [data-above-composer-conversation-id]")
-          || node.querySelector(".thread-scroll-container, [data-above-composer-conversation-id]"))))) {
+    if (!threadScrollRestoreEnabled() || document.visibilityState === "hidden") return;
+    const runtime = threadScrollRuntime();
+    const scroller = runtime.activeScroller;
+    const restoring = runtime.resumeSessionId || activeThreadScrollRestoreLock();
+    const activePage = document.querySelector('[data-app-shell-active-page="true"]');
+    const structure = ".thread-scroll-container, [data-above-composer-conversation-id]";
+    // 普通流式输出由原生界面滚动。切换、挂载和恢复窗口内的内容变化仍在绘制前处理。
+    if ((scroller && !scroller.isConnected) || mutations.some(({ attributeName, target, addedNodes }) => {
+      if (attributeName === "data-app-shell-active-page") return true;
+      const inActivePage = !activePage || activePage.contains(target);
+      if (attributeName) {
+        return inActivePage && attributeName === "data-above-composer-conversation-id";
+      }
+      if (inActivePage && restoring && scroller?.contains(target)) return true;
+      for (const node of addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (activePage && node.contains(activePage)) return true;
+        if (activePage && !activePage.contains(node)) continue;
+        if (node.matches(structure) || node.querySelector(structure)) return true;
+      }
+      return false;
+    })) {
       syncThreadScrollState();
     }
   }
@@ -1697,11 +1716,11 @@
   function eventTargetsActiveThreadScroller(event) {
     if (event?.type === "click") {
       const button = event.target?.closest?.("button");
+      if (!button?.classList?.contains("group/scroll-to-bottom")
+          || !button.closest("[data-thread-scroll-footer], .conversation-footer")
+          || button.closest("dialog, [role='dialog']")) return false;
       const root = currentThreadScroller()?.closest?.("[data-request-input-activity-root]");
-      return !!root && !!button?.classList?.contains("group/scroll-to-bottom")
-        && !!button.closest("[data-thread-scroll-footer], .conversation-footer")
-        && button.closest("[data-request-input-activity-root]") === root
-        && !button.closest("dialog, [role='dialog']");
+      return !!root && button.closest("[data-request-input-activity-root]") === root;
     }
     const runtime = threadScrollRuntime();
     const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());

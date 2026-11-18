@@ -29,7 +29,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href", "data-above-composer-conversation-id"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "href", "data-above-composer-conversation-id", "data-app-shell-active-page"],
   });
   // 会话复制 / 自动命名两项已下线；同页重复注入时摘掉旧脚本留下的触发器监听。
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);

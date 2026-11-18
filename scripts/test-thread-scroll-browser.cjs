@@ -40,7 +40,8 @@ async function main() {
           cancelThreadScrollRestoreForUserIntent,clearThreadScrollRestoreTimers,clearThreadScrollSyncTimers,
           threadScrollRuntime,readThreadScrollEntries,writeThreadScrollEntries,startThreadScrollRestoreLock,
           currentThreadScroller,prepareThreadScrollRestoreLock,shouldBlockThreadScrollAutobottom,
-          installThreadScrollProgrammaticScrollGuard,updateThreadScrollHandlers};
+          installThreadScrollProgrammaticScrollGuard,updateThreadScrollHandlers,syncThreadScrollStateForMutations,
+          eventTargetsActiveThreadScroller};
       `);
       const activeSelection = await page.evaluate(() => {
         const api = window.scrollTest, scroller = document.querySelector(".thread-scroll-container");
@@ -54,14 +55,18 @@ async function main() {
         active.append(scroller);
         document.body.prepend(inactive);
         const preferredActive = api.currentThreadScroller() === scroller;
+        inactive.hidden = false;
+        const preferredDuringOverlap = api.currentThreadScroller() === scroller;
+        inactive.hidden = true;
         const replacement = scroller.cloneNode(true);
         scroller.replaceWith(replacement);
         const rebuilt = api.currentThreadScroller() === replacement;
         active.removeAttribute("data-app-shell-active-page");
         replacement.setAttribute("data-app-shell-active-page", "true");
-        return { legacy, preferredActive, rebuilt, rootIsActivePage: api.currentThreadScroller() === replacement };
+        return { legacy, preferredActive, preferredDuringOverlap, rebuilt, rootIsActivePage: api.currentThreadScroller() === replacement };
       });
-      assert.deepEqual(activeSelection, { legacy: true, preferredActive: true, rebuilt: true, rootIsActivePage: true },
+      assert.deepEqual(activeSelection, { legacy: true, preferredActive: true, preferredDuringOverlap: true,
+        rebuilt: true, rootIsActivePage: true },
         "hidden cached conversations cannot capture scroll restoration");
       // Save at the bottom, then reopen after messages/images increase the content height.
       let result = await page.evaluate(() => {
@@ -170,6 +175,56 @@ async function main() {
       const delays = [0, 80, 220, 500, 1000, 1800, 2800];
       assert.deepEqual(result, { firstTimers: delays, firstRegistrations: 7, sameLock: true, newLock: true, nextTimers: delays },
         `navigation retries share one restoration window and locked saves skip layout; reversed=${reversed}`);
+      result = await page.evaluate(async () => {
+        const api = window.scrollTest, runtime = api.threadScrollRuntime();
+        const active = api.currentThreadScroller();
+        const cached = active.cloneNode(false);
+        const pageMarker = "data-app-shell-active-page";
+        const threadMarker = "data-above-composer-conversation-id";
+        const cachedId = "22222222-2222-4222-b222-222222222222";
+        cached.setAttribute(pageMarker, "false");
+        cached.style.display = "none";
+        const identity = document.createElement("div");
+        identity.setAttribute(threadMarker, cachedId);
+        cached.append(identity);
+        document.body.prepend(cached);
+        runtime.restoreLock = null;
+        runtime.activeScroller = active;
+        const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
+        let activeReads = 0, cachedReads = 0;
+        Object.defineProperty(active, "clientWidth", { get() { activeReads++; return clientWidth.call(this); } });
+        Object.defineProperty(cached, "clientWidth", { get() { cachedReads++; return clientWidth.call(this); } });
+        const observer = new MutationObserver(api.syncThreadScrollStateForMutations);
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true,
+          attributeFilter: [pageMarker, threadMarker] });
+        try {
+          for (let i = 0; i < 40; i++) {
+            active.querySelector(".content").append(document.createTextNode("stream "));
+            cached.append(document.createElement("p"));
+            identity.setAttribute(threadMarker, cachedId);
+            await Promise.resolve();
+          }
+          const streamReads = { active: activeReads, cached: cachedReads };
+          const chromeButton = document.createElement("button");
+          document.body.append(chromeButton);
+          api.eventTargetsActiveThreadScroller({ type: "click", target: chromeButton });
+          const chromeReads = activeReads - streamReads.active;
+          active.setAttribute(pageMarker, "false");
+          cached.setAttribute(pageMarker, "true");
+          cached.style.removeProperty("display");
+          // The old tab can still have measurable geometry while the new tab is being presented.
+          await Promise.resolve();
+          return { streamReads, chromeReads, switched: runtime.activeScroller === cached,
+            newThread: runtime.activeSessionId === cachedId };
+        } finally {
+          observer.disconnect();
+          api.clearThreadScrollRestoreTimers();
+          api.clearThreadScrollSyncTimers();
+        }
+      });
+      console.log(`Concurrent streams, reversed=${reversed}: ${JSON.stringify(result)}`);
+      assert.deepEqual(result, { streamReads: { active: 0, cached: 0 }, chromeReads: 0, switched: true, newThread: true },
+        "ordinary streaming and toolbar clicks avoid reading chat geometry while cached tabs still switch");
       console.log(`PASS history scroll: bottom growth, legacy snapshot, reading position, user intent and loading state; reversed=${reversed}`);
     }
     assert.deepEqual(errors, []);

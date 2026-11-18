@@ -130,20 +130,25 @@ test("one restoration pass resolves the current scroller once, without retaining
   assert.equal(lookups, 1);
   assert.equal(context.threadScrollRuntime().activeScroller, null);
 });
-test("mutation restoration ignores unrelated chrome and still runs synchronously for native mounts", () => {
+test("mutation restoration checks streaming content only while restoring and still handles native mounts", () => {
   const context = vm.createContext({});
   const inside = {}, outside = {};
   const runtime = { activeScroller: { isConnected: true, contains: (node: object) => node === inside } };
-  let calls = 0, enabled = true;
+  let calls = 0, enabled = true, restoring = false;
   Object.assign(context, {
+    document: { visibilityState: "visible", querySelector: () => null },
     threadScrollRuntime: () => runtime,
     threadScrollRestoreEnabled: () => enabled,
+    activeThreadScrollRestoreLock: () => restoring,
     syncThreadScrollState: () => { calls++; },
   });
   vm.runInContext(extract("syncThreadScrollStateForMutations"), context);
   const run = (target: object, addedNodes: object[] = []) => context.syncThreadScrollStateForMutations([{ target, addedNodes }]);
   run(outside);
   assert.equal(calls, 0);
+  run(inside);
+  assert.equal(calls, 0);
+  restoring = true;
   run(inside);
   assert.equal(calls, 1);
   run(outside, [{ nodeType: 1, matches: () => false, querySelector: () => ({}) }]);
@@ -583,7 +588,7 @@ test("selects the visible thread scroller when a hidden conversation remains mou
   const hidden = { isConnected: true, clientWidth: 0, clientHeight: 0 };
   const visible = { isConnected: true, clientWidth: 900, clientHeight: 720 };
   const document = {
-    querySelector: () => hidden,
+    querySelector: () => null,
     querySelectorAll: () => [hidden, visible],
   };
   const context = vm.createContext({ document });

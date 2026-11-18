@@ -3127,10 +3127,11 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
     assert!(script.contains("return deleteUncreatedSession(row, button);"));
     assert!(script.contains("function uncreatedSessionActionFromRow(row)"));
-    // 会话切换后历史容器上的 conversation id 也会变，观察器要跟着重扫（#3126 的阅读位置对齐）。
-    assert!(script.contains(
-        "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\", \"data-above-composer-conversation-id\"]"
-    ));
+    // 切换会话可以改历史容器的 ID，也可以直接激活已挂载的标签页。
+    assert!(script.contains(concat!(
+        "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\", ",
+        "\"data-above-composer-conversation-id\", \"data-app-shell-active-page\"]"
+    )));
 
     let cases = run_session_ref_contract_harness();
     assert_eq!(

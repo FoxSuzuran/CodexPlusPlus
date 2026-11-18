@@ -227,6 +227,11 @@ const GPT61_SOL_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/gpt61-sol-model-metadata-compat.json"
 ));
+// GPT-6.2 reasoning defaults from the Codex CLI 0.169.1 catalog.
+const GPT62_METADATA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/gpt62-model-metadata-compat.json"
+));
 
 /// 精调/供应商 metadata 来源。数组顺序就是覆盖优先级，条目和来源名始终成对维护。
 const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
@@ -333,6 +338,7 @@ const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
     ),
     (GPT6_SOL_LUNA_METADATA_JSON, "gpt-6 Sol/Luna 兼容"),
     (GPT61_SOL_METADATA_JSON, "gpt-6.1 Sol 兼容"),
+    (GPT62_METADATA_JSON, "gpt-6.2 Sol/Astra 兼容"),
 ];
 
 /// 该 slug 是否需要落一份内置元数据 catalog（无用户窗口/元数据时也要生成）。
@@ -580,6 +586,30 @@ fn resolve_compatibility_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata>
                 entry,
             })
         })
+}
+
+#[cfg(test)]
+#[test]
+fn gpt62_model_catalog_declares_reasoning_defaults() {
+    for slug in ["gpt-6.2-sol", "gpt-6.2-astra"] {
+        let metadata = resolve_compatibility_metadata(slug)
+            .expect("GPT-6.2 needs model-specific defaults when the official cache is missing")
+            .entry;
+        assert_eq!(metadata["default_reasoning_level"], "low", "{slug}");
+        let efforts: Vec<&str> = metadata["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            efforts,
+            ["low", "medium", "high", "xhigh", "max", "ultra"],
+            "{slug}"
+        );
+        assert_eq!(metadata["supports_reasoning_summaries"], true, "{slug}");
+        assert_eq!(metadata["default_reasoning_summary"], "none", "{slug}");
+    }
 }
 
 /// 按生成链优先级解析模型元数据：兼容层 → 运行时缓存 → bundled。

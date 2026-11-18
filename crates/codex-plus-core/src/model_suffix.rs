@@ -227,11 +227,6 @@ const GPT61_SOL_METADATA_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/gpt61-sol-model-metadata-compat.json"
 ));
-// GPT-6.2 reasoning defaults from the Codex CLI 0.169.1 catalog.
-const GPT62_METADATA_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/gpt62-model-metadata-compat.json"
-));
 
 /// 精调/供应商 metadata 来源。数组顺序就是覆盖优先级，条目和来源名始终成对维护。
 const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
@@ -338,7 +333,6 @@ const COMPATIBILITY_METADATA_SOURCES: &[(&'static str, &'static str)] = &[
     ),
     (GPT6_SOL_LUNA_METADATA_JSON, "gpt-6 Sol/Luna 兼容"),
     (GPT61_SOL_METADATA_JSON, "gpt-6.1 Sol 兼容"),
-    (GPT62_METADATA_JSON, "gpt-6.2 Sol/Astra 兼容"),
 ];
 
 /// 该 slug 是否需要落一份内置元数据 catalog（无用户窗口/元数据时也要生成）。
@@ -588,30 +582,6 @@ fn resolve_compatibility_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata>
         })
 }
 
-#[cfg(test)]
-#[test]
-fn gpt62_model_catalog_declares_reasoning_defaults() {
-    for slug in ["gpt-6.2-sol", "gpt-6.2-astra"] {
-        let metadata = resolve_compatibility_metadata(slug)
-            .expect("GPT-6.2 needs model-specific defaults when the official cache is missing")
-            .entry;
-        assert_eq!(metadata["default_reasoning_level"], "low", "{slug}");
-        let efforts: Vec<&str> = metadata["supported_reasoning_levels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|level| level["effort"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            efforts,
-            ["low", "medium", "high", "xhigh", "max", "ultra"],
-            "{slug}"
-        );
-        assert_eq!(metadata["supports_reasoning_summaries"], true, "{slug}");
-        assert_eq!(metadata["default_reasoning_summary"], "none", "{slug}");
-    }
-}
-
 /// 按生成链优先级解析模型元数据：兼容层 → 运行时缓存 → bundled。
 fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
     let slug = normalized_model_slug(slug);
@@ -753,7 +723,7 @@ pub fn build_model_catalog_json(
 }
 
 /// 使用指定模板（或内置 bundled 模板）构建 catalog。
-/// `template` 为单个 model entry 的 JSON Value；为 None 时使用内置模板的第一条。
+/// `template` 为单个 model entry 的 JSON Value；为 None 时优先使用内置元数据，再使用通用模板。
 pub fn build_model_catalog_json_with_template(
     entries: &[ModelCatalogEntry],
     fallback_window: Option<u64>,
@@ -879,10 +849,58 @@ fn model_template_entry(slug: &str) -> (Value, bool) {
     if let Some(metadata) = resolve_builtin_metadata(slug) {
         return (metadata.entry, true);
     }
-    (
-        first_bundled_template_entry().unwrap_or_else(|| json!({})),
-        false,
-    )
+    let mut template = first_bundled_template_entry().unwrap_or_else(|| json!({}));
+    if let Some(levels) = template
+        .get_mut("supported_reasoning_levels")
+        .and_then(Value::as_array_mut)
+        && !levels.iter().any(|level| level["effort"] == "max")
+    {
+        levels.push(json!({
+            "effort": "max",
+            "description": "Maximum reasoning depth for the hardest problems",
+        }));
+    }
+    (template, false)
+}
+
+#[cfg(test)]
+#[test]
+fn catalog_adds_max_to_the_default_model_template() {
+    use crate::settings::RelayProfile;
+
+    let custom_levels = json!([{"effort": "high", "description": "Deep reasoning"}]);
+    let profile = RelayProfile {
+        model_list: "custom-catalog-model-a\ncustom-catalog-model-b\ncustom-catalog-override\ngpt-5.5".into(),
+        model_metadata: json!({"custom-catalog-override": {
+            "supported_reasoning_levels": custom_levels,
+            "default_reasoning_level": "high",
+        }})
+        .to_string(),
+        ..Default::default()
+    };
+    let catalog = crate::aggregate_catalog::build_member_catalog(&profile).unwrap();
+    let models = catalog["models"].as_array().unwrap();
+    for model in &models[..2] {
+        let levels: Vec<_> = model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect();
+        assert_eq!(levels, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(model["default_reasoning_level"], "medium");
+    }
+    assert_eq!(models[2]["supported_reasoning_levels"], custom_levels);
+    assert_eq!(models[2]["default_reasoning_level"], "high");
+    let declared = resolve_builtin_metadata("gpt-5.5").unwrap().entry;
+    assert_eq!(
+        models[3]["supported_reasoning_levels"],
+        declared["supported_reasoning_levels"]
+    );
+    assert_eq!(
+        models[3]["default_reasoning_level"],
+        declared["default_reasoning_level"]
+    );
 }
 
 /// 从用户本机 codex 官方缓存读取同 slug 条目。

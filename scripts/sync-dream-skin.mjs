@@ -54,6 +54,8 @@ for (const platform of ["windows", "macos"]) {
     throw new Error(`${platform}: text-sensitive predicate added; review the mutation filter`);
   }
   const declaration = /^  const CSS_PREDICATES = .+;?$/gm;
+  const dialogKey = '"key":"overlay-dialog","selector":';
+  const dialogAnchor = dialogKey + JSON.stringify('[role="dialog"]');
   const mutationAnchor = '        if (record.type !== "attributes") return true;';
   const ancestorAnchor = "            for (let ancestor = leaf.parentElement; ancestor; ancestor = ancestor.parentElement) candidates.add(ancestor);";
   const branchAnchor = "      for (const branch of branches) {";
@@ -65,6 +67,7 @@ for (const platform of ["windows", "macos"]) {
   const safetyAnchor = "    metrics.safetyPasses += 1;\n    ensure({ root: true });";
   const classAnchor = "const predicateClass = /main-surface|";
   if ([...baseRenderer.matchAll(declaration)].length !== 1 ||
+      baseRenderer.split(dialogAnchor).length !== 2 ||
       baseRenderer.split(mutationAnchor).length !== 2 ||
       baseRenderer.split(ancestorAnchor).length !== 2 ||
       baseRenderer.split(branchAnchor).length !== 2 ||
@@ -77,6 +80,8 @@ for (const platform of ["windows", "macos"]) {
   // Include local compatibility CSS in the upstream manifest, never parse CSS in the renderer.
   const renderer = baseRenderer
     .replace(declaration, () => `  const CSS_PREDICATES = ${JSON.stringify(predicates)}`)
+    // A native hint hosts a separately positioned card. Blurring the host breaks its CSS anchor.
+    .replace(dialogAnchor, dialogKey + JSON.stringify('[role="dialog"]:not([popover="hint"])'))
     .replace(classAnchor, `const predicateClass = /${platform === "windows" ? "^pointer-events-none$|^absolute$|" : ""}composer-surface-chrome|_ComposerLayoutRoot_|main-surface|`)
     .replace("CSS_PREDICATES.forEach(({ selector, attribute, branches }, index)", platform === "windows"
       ? "CSS_PREDICATES.forEach(({ selector, attribute, branches, owner }, index)"

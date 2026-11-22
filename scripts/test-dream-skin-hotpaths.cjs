@@ -23,6 +23,70 @@ const payload = renderer
   .replace("__DREAM_SKIN_STYLE_REVISION_JSON__", '"test"')
   .replace("__DREAM_SKIN_PAYLOAD_REVISION_JSON__", '"test"');
 
+async function checkThreadPreviewAnchoring(page) {
+  await page.setViewportSize({ width: 840, height: 460 });
+  await page.setContent(`<style>
+    .sidebar { position: fixed; inset: 48px auto 20px 0; width: 230px; overflow-y: auto; }
+    .row { position: relative; margin: 10px; padding: 6px; }
+    .row button { width: 100%; text-align: start; }
+    .anchor-host { position: fixed; position-anchor: none; inset: 0 auto auto 0;
+      width: 0; height: 0; margin: 0; padding: 0; border: 0; overflow: visible; }
+    .preview { position: fixed; inset: auto; position-area: inline-end span-block-end;
+      position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+      width: 245px; padding: 12px; margin-inline-start: 2px; border-radius: 10px;
+      background: var(--color-surface-elevated-secondary, #edf7ef);
+      color: var(--color-text, #173222); box-shadow: 0 4px 18px #143a3325; }
+    .spacer { height: 260px; }
+    #open-modal { position: fixed; inset: 26px 20px auto auto; }
+  </style><aside class="sidebar"><div style="contain:layout">
+    ${["first", "second"].map(name => `
+      <div class="row" style="anchor-name:--${name}">
+        <button id="${name}">${name === "first" ? "First conversation" : "Second conversation"}</button>
+      </div>
+      <div class="anchor-host" role="dialog" popover="hint">
+        <div class="preview" data-anchor-positioning="native" style="position-anchor:--${name}">
+          ${name === "first" ? "First conversation" : "Second conversation"}<br><small>Example project</small>
+        </div>
+      </div>`).join('<div class="spacer"></div>')}
+    <div class="spacer"></div></div></aside>
+    <button id="open-modal" commandfor="modal" command="show-modal">Open dialog</button>
+    <dialog id="modal" role="dialog"><form method="dialog"><button>Close</button></form></dialog>
+    <script>
+      for (const row of document.querySelectorAll(".row")) {
+        const button = row.querySelector("button"), hint = row.nextElementSibling;
+        button.addEventListener("pointerenter", () => hint.showPopover());
+        button.addEventListener("pointerleave", () => { if (hint.matches(":popover-open")) hint.hidePopover(); });
+        button.addEventListener("click", () => { if (hint.matches(":popover-open")) hint.hidePopover(); });
+      }
+    </script>`);
+  await page.evaluate(payload);
+  assert.equal(await page.locator("html").getAttribute("data-dream-upload-alpha"), "true");
+  const preview = page.locator(".anchor-host:popover-open");
+  for (const id of ["first", "second"]) {
+    if (id === "second") {
+      await page.mouse.move(125, 215);
+      await page.mouse.wheel(0, 180);
+      await page.waitForFunction(() => document.querySelector(".sidebar").scrollTop > 0);
+    }
+    const anchor = page.locator(`#${id}`);
+    await anchor.hover();
+    const card = await preview.locator(".preview").boundingBox();
+    const row = await anchor.locator("..").boundingBox();
+    assert.ok(card && row && Math.abs(card.x - row.x - row.width - 2) < 2 && Math.abs(card.y - row.y) < 2,
+      `Preview must stay beside its row: ${JSON.stringify({ card, row })}`);
+    assert.equal(await preview.getAttribute("data-ds-part"), null);
+    assert.equal(await preview.evaluate(host => getComputedStyle(host).backdropFilter), "none");
+    await anchor.click();
+    assert.equal(await preview.count(), 0, "Selecting the conversation dismisses its preview");
+  }
+  await page.locator("#open-modal").click();
+  const modal = page.locator("#modal");
+  assert.equal(await modal.evaluate(node => getComputedStyle(node).backdropFilter), "blur(24px)",
+    "Ordinary modal dialogs still receive the skin");
+  await modal.getByText("Close").click();
+  await page.evaluate(() => window.__CODEX_DREAM_SKIN_STATE__.cleanup());
+}
+
 async function main() {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   try {
@@ -116,8 +180,9 @@ async function main() {
     assert.equal(await page.locator("textarea").inputValue(), "a");
     await page.evaluate(() => window.testTypingEffects.uninstall());
     assert.equal(await page.locator('[data-codex-plus-ext="typing-effects"]').count(), 0);
+    await checkThreadPreviewAnchoring(page);
     assert.deepEqual(errors, []);
-    console.log("PASS: runtime CSS cache, streaming and command-menu mutation filtering, composer replacement, class invalidation, cleanup and layout-free typing animation");
+    console.log("PASS: runtime CSS cache, streaming and command-menu mutation filtering, composer replacement, class invalidation, cleanup, typing animation and native thread preview anchoring");
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

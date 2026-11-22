@@ -694,6 +694,7 @@ fn dream_skin_api_bootstrap_marks_parts_without_rescanning_on_streaming() {
     let bootstrap = &script[start..end];
 
     assert!(bootstrap.contains("window.__CODEX_PLUS_DREAM_SKIN_API_OBSERVER__"));
+    assert!(bootstrap.contains("dialog: \"[role='dialog']:not([popover='hint'])\""));
     // 回归 issue #2181：流式输出不能触发皮肤挂载点全量重扫。
     // 需要防抖、幂等打标，且纯文本节点增删（流式输出的全部形态）被直接跳过。
     assert!(

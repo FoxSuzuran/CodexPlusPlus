@@ -152,7 +152,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "32-wallpaper-shell-hotpath";
+const DREAM_SKIN_RENDERER_REVISION: &str = "33-native-preview-anchor";
 
 pub fn renderer_script() -> &'static str {
     crate::packed_assets::renderer()
@@ -369,7 +369,9 @@ fn dream_skin_skin_api_bootstrap_script(theme: &str) -> String {
     "home-hero": ".dream-skin-home > div:first-child, [data-feature='game-source']",
     "project-list": "[data-feature='game-source']", thread: "main.main-surface [role='main']",
     message: "main.main-surface article", composer: ".composer-surface-chrome",
-    "composer-toolbar": ".composer-surface-chrome [role='toolbar']", dialog: "[role='dialog']",
+    "composer-toolbar": ".composer-surface-chrome [role='toolbar']",
+    // 会话预览的 hint 只是定位宿主，作为弹窗加模糊会让卡片失去原生锚点。
+    dialog: "[role='dialog']:not([popover='hint'])",
   }};
   const mark = () => {{
     for (const [part, selector] of Object.entries(map)) for (const node of document.querySelectorAll(selector)) {{

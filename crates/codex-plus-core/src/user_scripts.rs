@@ -1446,27 +1446,27 @@ impl UserScriptManager {
 
     /// 页面启动与桥接恢复只能初始化一次，不能清理旧脚本或触发刷新。
     pub fn build_initial_bundle(&self) -> anyhow::Result<String> {
-        let skip_next_start = self.consume_skip_next_start()?;
-        let bundle = if skip_next_start {
-            String::new()
+        let (mode, bundle) = if self.consume_skip_next_start()? {
+            ("skipped", String::new())
         } else {
-            self.build_enabled_bundle()?
+            ("scripts", self.build_enabled_bundle()?)
         };
         Ok(format!(
             r#"(() => {{
+  const mode = "{mode}";
+  // 请求发出后可能已经换页。安全跳过只标记本页，其余请求等待新页自己的启动监听。
+  if (mode === "scripts" && (document.readyState === "loading" || !document.head || !document.body
+    || typeof window.codexPlus?.extension !== "function")) {{
+    return JSON.stringify({{ mode: "pending", scripts: window.__codexPlusUserScripts?.scripts ?? {{}} }});
+  }}
   {RUNTIME_SCRIPT}
   const runtime = window.__codexPlusUserScripts;
   if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
     {bundle}
   }}
-  return JSON.stringify({{ mode: "{mode}", scripts: runtime.scripts }});
+  return JSON.stringify({{ mode, scripts: runtime.scripts }});
 }})()"#,
-            mode = if skip_next_start {
-                "skipped"
-            } else {
-                "scripts"
-            }
         ))
     }
 

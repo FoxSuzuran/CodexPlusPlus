@@ -189,13 +189,13 @@ fn skip_next_start_is_one_shot_and_preserves_script_choices() {
         Some(true)
     );
     let skipped = manager.build_initial_bundle().unwrap();
-    assert!(skipped.contains("mode: \"skipped\""));
+    assert!(skipped.contains("const mode = \"skipped\""));
     assert!(!skipped.contains("window.unsafeScript = true"));
     assert!(!manager.load_config().skip_next_start);
     assert_eq!(manager.load_config().scripts.get("user:unsafe.js"), Some(&true));
 
     let next = manager.build_initial_bundle().unwrap();
-    assert!(next.contains("mode: \"scripts\""));
+    assert!(next.contains("const mode = \"scripts\""));
     assert!(next.contains("window.unsafeScript = true"));
 }
 
@@ -242,9 +242,12 @@ window.__codexPlusUserScripts.registerCleanup(() => { window.active--; });
     manager.delete_user_script("user:demo.js").unwrap();
     let deleted = manager.build_reload_bundle().unwrap();
     let empty_initial = manager.build_initial_bundle().unwrap();
+    manager.set_skip_next_start(true).unwrap();
+    let skipped_initial = manager.build_initial_bundle().unwrap();
     let input = json!({"first": first, "updated": updated, "disabled": disabled,
         "globallyDisabled": globally_disabled, "legacy": legacy, "deleted": deleted,
-        "bootstrap": BOOTSTRAP_SCRIPT, "initial": initial, "emptyInitial": empty_initial});
+        "bootstrap": BOOTSTRAP_SCRIPT, "initial": initial, "emptyInitial": empty_initial,
+        "skippedInitial": skipped_initial});
     let fixture = temp.path().join("bundles.json");
     fs::write(&fixture, input.to_string()).unwrap();
     let output = Command::new("node").arg("-e").arg(r#"
@@ -285,38 +288,80 @@ window.__codexPlusUserScripts = { scripts: { broken: { cleanups: [() => { throw 
 assert.equal(run('updated').mode, 'page');
 assert.equal(window.active, 0);
 
-// 新页面启动只请求一次当前脚本，且不在子框架执行。
-let requests = 0;
-const keyListeners = [];
-const fresh = { location: window.location, electronBridge: {},
-  addEventListener(type, listener, capture) {
-    assert.equal(type, 'keydown'); assert.equal(capture, true);
-    if (!keyListeners.includes(listener)) keyListeners.push(listener);
-  },
-  __codexSessionDeleteBridge(path) {
-    assert.equal(path, '/user-scripts/load'); assert.equal(keyListeners.length, 0);
-    requests++; return Promise.resolve({});
-  } };
-fresh.self = fresh.top = fresh;
-const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console});
-vm.runInContext(bundles.bootstrap, startup);
-vm.runInContext(bundles.bootstrap, startup);
-assert.equal(requests, 1);
-assert.equal(keyListeners.length, 0); // 原生 Fast 接管，bootstrap 不再注册旧按键处理器。
-fresh.__codexPlusUserScriptsBootstrap = false;
-fresh.top = {};
-vm.runInContext(bundles.bootstrap, startup);
-assert.equal(requests, 1);
+function startupCase(readyState, rendererAvailable) {
+  let requests = 0;
+  const document = Object.assign(new EventTarget(), { readyState, head: {}, body: {} });
+  const fresh = Object.assign(new EventTarget(), {
+    location: window.location, electronBridge: {},
+    codexPlus: rendererAvailable ? {extension() {}} : undefined,
+    addEventListener(type, listener, options) {
+      assert.equal(type, 'codex-plus:renderer-ready'); // 原生 Fast 接管后没有旧按键处理器。
+      EventTarget.prototype.addEventListener.call(this, type, listener, options);
+    },
+    __codexSessionDeleteBridge(path) {
+      assert.equal(path, '/user-scripts/load');
+      requests++;
+      return Promise.resolve({});
+    }
+  });
+  fresh.self = fresh.top = fresh;
+  const startup = vm.createContext({ window: fresh, document, console, process });
+  const boot = () => vm.runInContext(bundles.bootstrap, startup);
+  const notify = () => {
+    fresh.codexPlus = {extension() {}};
+    fresh.dispatchEvent(new Event('codex-plus:renderer-ready'));
+  };
+  const domReady = () => {
+    document.readyState = 'interactive';
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+  };
+  return { fresh, document, startup, boot, notify, domReady, requests: () => requests };
+}
+
+const complete = startupCase('complete', true);
+complete.boot(); complete.boot(); complete.notify();
+assert.equal(complete.requests(), 1);
+const frame = startupCase('complete', true);
+frame.fresh.top = {};
+frame.boot();
+assert.equal(frame.requests(), 0);
+
+// 两种就绪顺序均只加载一次；旧请求在新文档就绪前到达时不能提前安装。
+const rendererLast = startupCase('loading', false);
+rendererLast.boot();
+rendererLast.domReady();
+assert.equal(rendererLast.requests(), 0);
+assert.equal(JSON.parse(vm.runInContext(bundles.initial, rendererLast.startup)).mode, 'pending');
+assert.equal(rendererLast.fresh.__codexPlusUserScripts, undefined);
+rendererLast.notify(); rendererLast.notify(); rendererLast.boot();
+assert.equal(rendererLast.requests(), 1);
+assert.equal(JSON.parse(vm.runInContext(bundles.initial, rendererLast.startup)).mode, 'scripts');
+assert.equal(rendererLast.fresh.legacy, 1);
+
+const domLast = startupCase('loading', false);
+domLast.boot();
+domLast.notify();
+assert.equal(domLast.requests(), 0);
+domLast.domReady(); domLast.notify();
+assert.equal(domLast.requests(), 1);
+
+// 换页时到达的安全跳过请求仍锁住本页初始化，后来的就绪请求不能绕过它。
+const skipped = startupCase('loading', false);
+assert.equal(JSON.parse(vm.runInContext(bundles.skippedInitial, skipped.startup)).mode, 'skipped');
+skipped.domReady();
+skipped.notify();
+vm.runInContext(bundles.initial, skipped.startup);
+assert.equal(skipped.fresh.legacy, undefined);
 
 // 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
 for (let page = 0; page < 3; page++) {
   let pageReloads = 0;
   const scheduled = [];
-  const pageWindow = { electronBridge: {}, __codexPlusUserScriptsBootstrap: true,
+  const pageWindow = { electronBridge: {}, codexPlus: {extension() {}}, __codexPlusUserScriptsBootstrap: true,
     location: { href: 'app://-/index.html', reload() { pageReloads++; } },
     setTimeout(fn) { scheduled.push(fn); } };
   pageWindow.top = pageWindow.self = pageWindow;
-  const pageContext = vm.createContext({window: pageWindow, console});
+  const pageContext = vm.createContext({window: pageWindow, document: {readyState: 'complete', head: {}, body: {}}, console});
   for (let repeat = 0; repeat < 20; repeat++) vm.runInContext(bundles.initial, pageContext);
   assert.equal(pageWindow.legacy, 1);
   assert.equal(scheduled.length, 0);
@@ -329,8 +374,8 @@ for (let page = 0; page < 3; page++) {
 }
 
 // 即便第一次无脚本，自动初始化也不能随重复请求变成隐式热重载。
-const emptyWindow = {};
-const emptyContext = vm.createContext({window: emptyWindow, console});
+const emptyWindow = {codexPlus: {extension() {}}};
+const emptyContext = vm.createContext({window: emptyWindow, document: {readyState: 'complete', head: {}, body: {}}, console});
 vm.runInContext(bundles.emptyInitial, emptyContext);
 vm.runInContext(bundles.initial, emptyContext);
 assert.equal(emptyWindow.legacy, undefined);
@@ -402,9 +447,10 @@ fn extension_packages_are_scanned_bundled_and_exposed_with_manifest() {
             r#"
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const window = { location: { href: 'app://-/index.html' }, electronBridge: {} };
+const window = { location: { href: 'app://-/index.html' }, electronBridge: {}, codexPlus: {extension() {}} };
 window.top = window.self = window;
-const status = JSON.parse(vm.runInContext(process.argv[1], vm.createContext({ window, process, console })));
+const document = { readyState: 'complete', head: {}, body: {} };
+const status = JSON.parse(vm.runInContext(process.argv[1], vm.createContext({ window, document, process, console })));
 assert.equal(JSON.stringify(window.order), '["a","b"]'); // vm 里的数组跨 realm，按文本比较
 assert.equal(window.plain, true);
 const record = status.scripts['user:hello'];

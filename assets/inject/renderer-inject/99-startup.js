@@ -37,9 +37,7 @@
   document.removeEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
   window.__codexSessionActionTriggerHandler = null;
   window.__codexSessionActionTriggerClickHandler = null;
-  // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
-  // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
-  // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  // 所有分片就绪后挂出扩展 API，再通知用户脚本启动。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
   // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
@@ -47,3 +45,4 @@
   document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();
   window.__codexPlusSyncBuiltinExtensions = syncCodexPlusBuiltinExtensions;
   syncCodexPlusBuiltinExtensions();
+  window.dispatchEvent(new Event("codex-plus:renderer-ready"));

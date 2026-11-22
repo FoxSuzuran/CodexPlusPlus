@@ -213,7 +213,14 @@ fn agent_gateway_model_list(
 ) -> String {
     // 池里所有能用的模型和模型组都进 Agent 的模型列表；Codex 按供应商分组显示，多家都有的模型每家各列一份。
     let models = if *agent == ToolId::Codex {
-        route::codex_binding_models(gateway, binding)
+        let mut models = route::codex_binding_models(gateway, binding);
+        // 固定默认模型的裸名别名（#3179）：只进 Codex 目录（元数据里标成隐藏），spawn_agent 指定裸名才认得。
+        if let Some(alias) = route::codex_pinned_default_alias(gateway, binding)
+            && !models.iter().any(|model| model.eq_ignore_ascii_case(&alias))
+        {
+            models.push(alias);
+        }
+        models
     } else {
         route::binding_exposed_models(gateway, binding)
     };
@@ -542,6 +549,7 @@ fn codex_model_metadata(
 ) -> String {
     let relays = route::binding_pool_relays(gateway, binding);
     let mut member_catalogs: Vec<Option<Vec<Value>>> = vec![None; relays.len()];
+    let pinned_alias = route::codex_pinned_default_alias(gateway, binding);
     let mut metadata = Map::new();
     for (model, _) in crate::tools::grok::parse_grok_model_list(model_list) {
         if let Some(id) = model
@@ -810,6 +818,13 @@ fn codex_model_metadata(
         // 属主上游不认 tool_search 时关掉（#2871）。
         if crate::relay_config::upstream_rejects_tool_search(relay) {
             fields.insert("supports_search_tool".into(), json!(false));
+        }
+        // 固定默认模型的裸名别名（#3179）：只给 spawn_agent 等按名字查目录的地方认，选择器里不重复显示。
+        if pinned_alias
+            .as_deref()
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(&model))
+        {
+            fields.insert("visibility".into(), json!("hide"));
         }
         metadata.insert(model, Value::Object(fields));
     }
@@ -1775,6 +1790,7 @@ fn write_codex(
                     .downcast_ref::<crate::relay_switch::LiveEndpointConflict>()
                     .is_some() =>
         {
+            // 实时 endpoint 被改过或缺失（#2666、#3222）：回填不了接入前的供应商，但不该挡住接入。
             // 先存接入前的原文（还没记改了哪些键：万一切换中途退出，还原时按已知的网关键兜底）。
             stash::save_stash(&codex_stash_path(ctx), &live)?;
             crate::relay_switch::switch_relay_profile_in_home_resolving_conflict(
@@ -4658,6 +4674,57 @@ mod tests {
         );
         assert_eq!(fields["additional_speed_tiers"][0], "fast");
         assert!(!fields.contains_key("base_instructions"));
+    }
+
+    #[test]
+    fn gpt62_fast_tiers_reach_the_gateway_catalog() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(
+            serde_json::from_value(json!({
+                "relay": RelayProfile {
+                    id: "official".into(),
+                    relay_mode: RelayMode::Official,
+                    protocol: RelayProtocol::Responses,
+                    auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture","account_id":"fixture"}}"#.into(),
+                    model: "gpt-6.2-astra".into(),
+                    model_list: "gpt-6.2-astra\ngpt-6.2-sol\ngpt-6.2-unknown".into(),
+                    ..RelayProfile::default()
+                }
+            }))
+            .unwrap(),
+        );
+        let binding = AgentBinding {
+            model: "gpt-6.2-astra".into(),
+            token: crate::gateway::store::new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        };
+        let catalog = |gateway: &GatewaySettings| {
+            let profile = codex_gateway_profile(gateway, &binding, 57390, false).unwrap();
+            serde_json::from_str::<Value>(&profile.model_metadata).unwrap()
+        };
+
+        let metadata = catalog(&gateway);
+        for slug in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+            assert_eq!(metadata[slug]["service_tiers"][0]["id"], "priority");
+            assert_eq!(metadata[slug]["additional_speed_tiers"], json!(["fast"]));
+        }
+        assert_eq!(metadata["gpt-6.2-unknown"]["service_tiers"], json!([]));
+
+        gateway.providers[0].relay.model_metadata =
+            r#"{"gpt-6.2-sol":{"codex_plus_fast_support":"unsupported"}}"#.into();
+        let metadata = catalog(&gateway);
+        assert_eq!(metadata["gpt-6.2-astra"]["service_tiers"][0]["id"], "priority");
+        assert_eq!(metadata["gpt-6.2-sol"]["service_tiers"], json!([]));
+        assert_eq!(metadata["gpt-6.2-sol"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.model_metadata = r#"{"gpt-6.2-astra":{"service_tiers":[]}}"#.into();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.relay_mode = RelayMode::PureApi;
+        relay.model_metadata.clear();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["service_tiers"], json!([]));
     }
 
     /// #2746：没登录时的托管供应商要被原生 Fast 认成本机 API 配置；登录后是 openai 身份，

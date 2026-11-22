@@ -1,0 +1,872 @@
+--- a/market-codex-daily-token-usage.js
++++ b/market-codex-daily-token-usage.js
+@@ -11,6 +11,7 @@
+   "use strict";
+
+   const VERSION = "1.4.19";
++  const CAPTURE_REVISION = "native-cumulative-v1";
+   const API_KEY = "__codexDailyTokenUsage";
+   const SOURCE_API_KEY = "__codexTokenUsage";
+   const STORAGE_KEY = "__codexDailyTokenUsageV1";
+@@ -26,6 +27,13 @@
+   const HEADER_TOOLBAR_CLUSTER_SELECTOR = ".ms-auto.flex.shrink-0.items-center";
+   const HEADER_TOOLBAR_CLASS_SELECTOR = '[class*="ms-auto"][class*="shrink-0"][class*="items-center"]';
+   const TOP_OBSTACLE_SELECTOR = `button,[role='button'],input,select,textarea,a[href],#${CODEX_PLUS_MENU_ID},[data-testid]`;
++  const ACTIVE_PAGE_SELECTOR = '[data-app-shell-active-page="true"]';
++  const INACTIVE_PAGE_SELECTOR = '[data-app-shell-active-page="false"]';
++  const CONTENT_SELECTOR = '[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose, [data-codex-composer-root], [data-codex-plus-ui-slot^="composer."]';
++  const IMAGE_TOOLBAR_SELECTOR = '[data-image-preview-toolbar]';
++  const IMAGE_DISMISS_SELECTOR = '[data-testid="image-preview-dismiss-area"]';
++  const IMAGE_OVERLAY_SELECTOR = '.codex-dialog-overlay[class*="_imageOverlay_"]';
++  const IMAGE_MARKER_SELECTOR = `${IMAGE_TOOLBAR_SELECTOR}, ${IMAGE_DISMISS_SELECTOR}, ${IMAGE_OVERLAY_SELECTOR}`;
+   const POLL_INTERVAL_MS = 1000;
+   const RETAIN_DAYS = 5;
+   const MAX_TURNS_PER_DAY = 2000;
+@@ -139,6 +147,7 @@
+   const DOM_TOOL_DESCRIPTORS = [
+     { selector: '[data-testid="exec-shell-body"]', testId: "exec-shell-body", kind: "plugin", name: "exec_command" },
+   ];
++  const DOM_TOOL_SELECTOR = DOM_TOOL_DESCRIPTORS.map((descriptor) => descriptor.selector).join(", ");
+
+   const previous = window[API_KEY];
+   if (previous && typeof previous.destroy === "function") {
+@@ -155,6 +164,8 @@
+   let observer = null;
+   let resizeObserver = null;
+   let layoutRaf = 0;
++  let expandedFloatingWidth = 0;
++  let expandedFloatingSignature = "";
+   let pollTimer = null;
+   let midnightTimer = null;
+   let historyBackfillTimer = null;
+@@ -188,7 +199,10 @@
+   let appServicesPromise = null;
+   let domToolScanTimer = null;
+   const modelByConversationKey = new Map();
+-  const resizeObservedNodes = new WeakSet();
++  const nativeUsageByThread = new Map();
++  const nativeUsageSyncs = new Map();
++  const nativeHistoryRequests = new Set();
++  const resizeObservedNodes = new Set();
+
+   function toCount(value) {
+     const number = Number(value);
+@@ -311,7 +325,7 @@
+         turn?.last_updated_at ??
+         turn?.timestamp
+     );
+-    if (isHistoryUsageTurn(turn) && direct) return direct;
++    if ((isHistoryUsageTurn(turn) || String(turn?.turnId || "").startsWith("capture:native:")) && direct) return direct;
+
+     const uuidEncoded = parseUuidV7Timestamp(turn?.turnId) || parseUuidV7Timestamp(turn?.id);
+     if (uuidEncoded) return uuidEncoded;
+@@ -989,7 +1003,8 @@
+     };
+
+     const historyCoveredUntil = historyCoverageTimestamp(day);
+-    if (!isHistoryUsageTurn(candidate) && historyCoveredUntil && timestamp <= historyCoveredUntil) {
++    if (!isHistoryUsageTurn(candidate) && !String(turn.turnId).startsWith("capture:native:") &&
++        historyCoveredUntil && timestamp <= historyCoveredUntil) {
+       return false;
+     }
+
+@@ -1998,15 +2013,29 @@
+     return /codex|conversation|responses|completion|chat|backend-api|openai/.test(text);
+   }
+
++  function shouldCaptureResponse(url, contentType) {
++    let pathname = "";
++    try { pathname = new URL(String(url || ""), window.location.href).pathname; } catch {}
++    if (/\/assets(?:\/|$)/i.test(pathname) ||
++        /\.(?:m?js|cjs|css|map|wasm|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)(?:$)/i.test(pathname)) return false;
++    const mime = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
++    if (/javascript|ecmascript|^text\/(?:css|html)$|^(?:image|font|audio|video)\//.test(mime)) return false;
++    if (/^(?:application|text)\/(?:[a-z0-9.+-]*\+)?json$/.test(mime) ||
++        /^(?:application|text)\/(?:x-)?ndjson$/.test(mime) ||
++        mime === "application/json-seq" || mime === "text/event-stream") return true;
++    return isLikelyUsageUrl(url) && (mime === "" || mime === "text/plain");
++  }
++
++  let captureJsonCache = null;
+   function safeParseJson(text) {
+     if (typeof text !== "string") return null;
+     const trimmed = text.trim();
+-    if (!trimmed) return null;
+-    try {
+-      return JSON.parse(trimmed);
+-    } catch {
+-      return null;
+-    }
++    if (!trimmed || !/^[{["]/.test(trimmed)) return null;
++    if (captureJsonCache?.has(trimmed)) return captureJsonCache.get(trimmed);
++    let result = null;
++    try { result = JSON.parse(trimmed); } catch {}
++    captureJsonCache?.set(trimmed, result);
++    return result;
+   }
+
+   function parseTextPayloads(text) {
+@@ -2068,6 +2097,15 @@
+     const id = extractCandidateId(value) || inheritedId;
+     const model = extractDirectModel(value) || inheritedModel;
+     const candidates = [];
++    if (value.method === "thread/tokenUsage/updated" || value.type === "thread/tokenUsage/updated") {
++      const params = value.params || value;
++      const usage = normalizeCaptureUsage(params.tokenUsage?.total);
++      const conversationKey = extractConversationKey(params);
++      if (usage && conversationKey) {
++        return [{ usage, id: conversationKey, model, nativeCumulative: true, conversationKey,
++          timestamp: parseTimestamp(value.timestamp || params.timestamp) }];
++      }
++    }
+     const tokenCountInfo = value.type === "token_count" && value.info && typeof value.info === "object"
+       ? value.info
+       : value.payload?.type === "token_count" && value.payload?.info && typeof value.payload.info === "object"
+@@ -2392,6 +2430,42 @@
+
+   function rememberCapturedUsage(candidate, source, url = "") {
+     const now = Date.now();
++    if (candidate.nativeCumulative) {
++      const threadId = candidate.conversationKey;
++      const previous = nativeUsageByThread.get(threadId);
++      if (!previous) {
++        // 首次通知先读该会话，避免把跨日累计量当成今日用量。
++        const pending = nativeUsageSyncs.get(threadId);
++        if (pending) {
++          if (candidate.usage.total > pending.candidate.usage.total) pending.candidate = candidate;
++        } else if (nativeUsageSyncs.size < HISTORY_THREAD_SCAN_LIMIT) {
++          const queued = Array.from(nativeUsageSyncs.values()).slice(-HISTORY_READ_CONCURRENCY);
++          const wait = queued.length === HISTORY_READ_CONCURRENCY ? queued[0].promise : Promise.resolve();
++          const sync = { candidate };
++          sync.promise = wait.then(() => destroyed ? [] : readThreadSessionUsages({ id: threadId })).then((usages) => {
++            if (destroyed || sourceMode === "external") return;
++            let changed = false;
++            for (const usage of usages) changed = upsertHistorySessionUsage(usage) || changed;
++            if (nativeUsageByThread.has(threadId)) changed = rememberCapturedUsage(sync.candidate, source, url) || changed;
++            if (changed) {
++              pruneState();
++              saveState();
++              render({ animate: true });
++            }
++          }).catch(() => {}).finally(() => nativeUsageSyncs.delete(threadId));
++          nativeUsageSyncs.set(threadId, sync);
++        }
++        return false;
++      }
++      if (candidate.usage.total < previous.usage.total) return false;
++      const delta = cumulativeUsageDelta(candidate.usage, previous.usage);
++      if (!delta) return false;
++      nativeUsageByThread.set(threadId, { usage: candidate.usage, model: candidate.model || previous.model });
++      candidate = { ...candidate, usage: delta,
++        id: `native:${threadId}:${candidate.usage.total}`,
++        model: candidate.model || modelForConversationKey(threadId)?.model || previous.model };
++      source += ":app-server";
++    }
+     cleanupRecentCaptureKeys(now);
+     const signature = usageSignature(candidate.usage);
+     const dedupeKey = candidate.id
+@@ -2517,7 +2591,7 @@
+     return "";
+   }
+
+-  function domToolEventFromElement(element, descriptor, rootNode = document) {
++  function domToolEventFromElement(element, descriptor, rootNode, conversationKey) {
+     if (!element || !descriptor) return null;
+     const name = normalizeToolName(
+       elementAttribute(element, "data-tool-name") ||
+@@ -2534,7 +2608,6 @@
+         elementAttribute(element, "data-plugin-namespace")
+     );
+     const explicitKind = elementAttribute(element, "data-mcp-tool-name") ? "mcp" : descriptor.kind;
+-    const conversationKey = currentConversationIdFromDom(rootNode) || "conversation";
+     const turnElement = closestElement(element, "[data-turn-key]");
+     const turnKey = normalizeConversationKey(elementAttribute(turnElement, "data-turn-key"));
+     const scope = turnElement || rootNode;
+@@ -2556,10 +2629,14 @@
+   }
+
+   function extractDomToolCallEvents(rootNode = document) {
++    const scope = rootNode === document ? safeQuery(document, ACTIVE_PAGE_SELECTOR) || document : rootNode;
+     const events = [];
++    let conversationKey = "";
+     for (const descriptor of DOM_TOOL_DESCRIPTORS) {
+-      for (const element of safeQueryAll(rootNode, descriptor.selector)) {
+-        const event = domToolEventFromElement(element, descriptor, rootNode);
++      for (const element of safeQueryAll(scope, descriptor.selector)) {
++        if (closestElement(element, INACTIVE_PAGE_SELECTOR)) continue;
++        conversationKey ||= currentConversationIdFromDom(scope) || "conversation";
++        const event = domToolEventFromElement(element, descriptor, scope, conversationKey);
+         if (event) events.push(event);
+       }
+     }
+@@ -2581,21 +2658,32 @@
+   }
+
+   function processCapturePayload(payload, source, url = "") {
+-    const toolChanged = processToolCallPayload(payload, source);
+-    if (sourceMode === "external") return toolChanged;
+-    processModelPayload(payload, false);
+-    const candidates = findUsageCandidates(payload);
+-    if (!candidates.length) return toolChanged;
+-    let changed = false;
+-    for (const candidate of candidates) {
+-      changed = rememberCapturedUsage(candidate, source, url) || changed;
+-    }
+-    if (changed) {
+-      pruneState();
+-      saveState();
+-      render({ animate: true });
+-    }
+-    return changed || toolChanged;
++    if (destroyed) return false;
++    const previousCache = captureJsonCache;
++    captureJsonCache = new Map();
++    try {
++      if (typeof payload === "string") payload = parseTextPayloads(payload);
++      if (!payload || (Array.isArray(payload) && !payload.length)) return false;
++      if (Array.isArray(payload) && payload.length === 1) payload = payload[0];
++      const nativeUsage = payload.method === "thread/tokenUsage/updated" || payload.type === "thread/tokenUsage/updated";
++      const toolChanged = nativeUsage ? false : processToolCallPayload(payload, source);
++      if (sourceMode === "external") return toolChanged;
++      processModelPayload(payload, false);
++      const candidates = findUsageCandidates(payload);
++      if (!candidates.length) return toolChanged;
++      let changed = false;
++      for (const candidate of candidates) {
++        changed = rememberCapturedUsage(candidate, source, url) || changed;
++      }
++      if (changed) {
++        pruneState();
++        saveState();
++        render({ animate: true });
++      }
++      return changed || toolChanged;
++    } finally {
++      captureJsonCache = previousCache;
++    }
+   }
+
+   function shouldProcessStandalonePayload() {
+@@ -2603,11 +2691,10 @@
+   }
+
+   function processModelPayload(payload, recordTools = true) {
++    if (destroyed) return false;
++    if (typeof payload === "string") payload = parseTextPayloads(payload);
+     const toolChanged = recordTools ? processToolCallPayload(payload, "model") : false;
+     if (!payload) return toolChanged;
+-    if (typeof payload === "string") {
+-      return parseTextPayloads(payload).some((item) => processModelPayload(item, false)) || toolChanged;
+-    }
+     if (Array.isArray(payload)) {
+       return payload.some((item) => processModelPayload(item, false)) || toolChanged;
+     }
+@@ -2621,34 +2708,23 @@
+     return observed || toolChanged;
+   }
+
++  function captureMessage(payload, source) {
++    if (shouldProcessStandalonePayload()) processCapturePayload(payload, source);
++    else processModelPayload(payload);
++  }
++
++  function handleCodexMessage(event) {
++    try { captureMessage(event.detail, "codex-message"); } catch {}
++  }
++
++  function handleWindowMessage(event) {
++    try { captureMessage(event.data, "post-message"); } catch {}
++  }
++
+   function installModelCapture() {
+     if (modelCaptureInstalled) return false;
+-    window.addEventListener?.(
+-      "codex-message-from-view",
+-      (event) => {
+-        try {
+-          if (shouldProcessStandalonePayload()) {
+-            processCapturePayload(event.detail, "codex-message");
+-          } else {
+-            processModelPayload(event.detail);
+-          }
+-        } catch {
+-          // 不影响 Codex 自身消息投递。
+-        }
+-      },
+-      true
+-    );
+-    window.addEventListener?.(
+-      "message",
+-      (event) => {
+-        try {
+-          processModelPayload(event.data);
+-        } catch {
+-          // Ignore unrelated messages.
+-        }
+-      },
+-      true
+-    );
++    window.addEventListener?.("codex-message-from-view", handleCodexMessage, true);
++    window.addEventListener?.("message", handleWindowMessage, true);
+     modelCaptureInstalled = true;
+     return true;
+   }
+@@ -2661,7 +2737,7 @@
+       processModelPayload(init?.body);
+       const response = await originalFetch.call(this, input, init);
+       const contentType = String(response?.headers?.get?.("content-type") || "");
+-      if (response?.clone && (isLikelyUsageUrl(url) || /json|event-stream|text/.test(contentType))) {
++      if (response?.clone && shouldCaptureResponse(url, contentType)) {
+         response
+           .clone()
+           .text()
+@@ -2688,7 +2764,7 @@
+       processModelPayload(args[0]);
+       this.addEventListener?.("loadend", () => {
+         const url = this.__codexDailyTokenUsageUrl || "";
+-        if (!isLikelyUsageUrl(url) && !String(this.getResponseHeader?.("content-type") || "").match(/json|event-stream|text/)) {
++        if (!shouldCaptureResponse(url, this.getResponseHeader?.("content-type"))) {
+           return;
+         }
+         try {
+@@ -2736,29 +2812,12 @@
+     window.WebSocket = DailyTokenUsageWebSocket;
+   }
+
+-  function installMessageCapture() {
+-    if (window.__codexDailyTokenUsageMessageCapture === VERSION) return;
+-    window.addEventListener?.(
+-      "message",
+-      (event) => {
+-        try {
+-          processModelPayload(event.data);
+-          processCapturePayload(event.data, "post-message");
+-        } catch {
+-          // Ignore unrelated messages.
+-        }
+-      },
+-      true
+-    );
+-    window.__codexDailyTokenUsageMessageCapture = VERSION;
+-  }
+-
+   function installStandaloneCapture() {
+     if (captureInstalled) return false;
+     installFetchCapture();
+     installXhrCapture();
+     installWebSocketCapture();
+-    installMessageCapture();
++    installModelCapture();
+     captureInstalled = true;
+     sourceMode = "standalone";
+     return true;
+@@ -2862,7 +2921,7 @@
+     if (typeof text !== "string" || !text.trim()) return [];
+     const path = String(fallback.path || "");
+     const pathThreadId = threadIdFromSessionPath(path);
+-    let threadId = pathThreadId || normalizeConversationKey(fallback.threadId);
++    let threadId = normalizeConversationKey(fallback.threadId) || pathThreadId;
+     let model = normalizeModelName(fallback.model);
+     let timestamp = parseTimestamp(fallback.timestamp) || parseTimestamp(`${dateKeyFromSessionPath(path)}T12:00:00`);
+     let previousCumulative = null;
+@@ -2933,9 +2992,17 @@
+       groups.set(groupKey, group);
+     }
+
++    if (threadId && previousCumulative &&
++        previousCumulative.total >= (nativeUsageByThread.get(threadId)?.usage.total || 0)) {
++      nativeUsageByThread.set(threadId, { usage: previousCumulative, model });
++      while (nativeUsageByThread.size > MAX_TURNS_PER_DAY) {
++        nativeUsageByThread.delete(nativeUsageByThread.keys().next().value);
++      }
++    }
+     return Array.from(groups.values())
+       .map((usage) => ({
+         ...usage,
++        cumulativeTotal: previousCumulative?.total || 0,
+         stableId: `session-${shortHash(`${usage.threadId}|${usage.model}`)}`,
+         timestamp: usage.timestamp || parseTimestamp(`${usage.dateKey}T12:00:00`) || Date.now(),
+       }))
+@@ -2964,6 +3031,16 @@
+       parseTimestamp(`${sessionUsage.dateKey}T12:00:00`) ||
+       Date.now();
+     removeLegacyCumulativeTurns(sessionUsage.dateKey, stableId, conversationKey, turnId);
++    let changed = false;
++    const day = state.days[sessionUsage.dateKey];
++    for (const [id, turn] of Object.entries(day?.turns || {})) {
++      if (id.startsWith(`capture:native:${conversationKey}:`) &&
++          Number(id.split(":").at(-1)) <= sessionUsage.cumulativeTotal) {
++        delete day.turns[id];
++        changed = true;
++      }
++    }
++    if (changed) invalidateDay(sessionUsage.dateKey);
+     return upsertTurn({
+       turnId,
+       model: sessionUsage.model,
+@@ -2979,7 +3056,7 @@
+         totalTokens: sessionUsage.usage.total,
+         hasBreakdown: true,
+       },
+-    });
++    }) || changed;
+   }
+
+   function pruneSupersededUsageTurns(dateKeys) {
+@@ -2991,6 +3068,7 @@
+       const historyCoveredUntil = historyCoverageTimestamp(day);
+       if (!historyCoveredUntil) continue;
+       for (const [turnId, turn] of Object.entries(day.turns)) {
++        if (turnId.startsWith("capture:native:")) continue;
+         if (isHistoryUsageTurn(turn) || toCount(turn?.updatedAt) > historyCoveredUntil) continue;
+         delete day.turns[turnId];
+         removed += 1;
+@@ -3410,7 +3488,11 @@
+     try {
+       response = await sendCliRequest("fs/readFile", { path }, HISTORY_REQUEST_TIMEOUT_MS);
+     } catch (error) {
+-      throw workspaceError || error;
++      try {
++        response = await sendNativeHistoryRequest("fs/readFile", { path });
++      } catch {
++        throw workspaceError || error;
++      }
+     }
+     const dataBase64 =
+       response?.dataBase64 ||
+@@ -3419,6 +3501,10 @@
+       response?.content_base64 ||
+       response?.data?.dataBase64 ||
+       response?.data?.data_base64;
++    if (typeof dataBase64 !== "string" ||
++        dataBase64.length > Math.ceil(HISTORY_MAX_SESSION_BYTES / 3) * 4) {
++      throw new Error("历史文件响应无效或超过大小限制");
++    }
+     return base64DecodeUtf8(dataBase64);
+   }
+
+@@ -3440,21 +3526,75 @@
+
+   async function readThreadSessionUsages(thread) {
+     let lastError = null;
+-    for (const path of threadPaths(thread)) {
++    let paths = threadPaths(thread);
++    let nativeThread = null;
++    try {
++      const response = await sendNativeHistoryRequest("thread/read", {
++        threadId: threadIdentity(thread),
++        includeTurns: false,
++      });
++      nativeThread = response?.thread;
++      const path = threadPath(nativeThread);
++      if (path) paths = Array.from(new Set([path, ...paths]));
++    } catch (error) {
++      lastError = error;
++    }
++    for (const path of paths) {
+       try {
+         const text = await readSessionText(path);
+         return parseSessionUsagesFromJsonl(text, {
+           path,
+           threadId: threadIdentity(thread),
+-          model: extractDirectModel(thread),
+-          timestamp: threadUpdatedAt(thread),
++          model: extractDirectModel(thread) || extractDirectModel(nativeThread),
++          timestamp: threadUpdatedAt(thread) || threadUpdatedAt(nativeThread),
+         });
+       } catch (error) {
+         lastError = error;
+-        // Try the same thread under the next inferred home directory.
+       }
+     }
+     throw lastError || new Error("无法读取 session 文件");
++  }
++
++  function sendNativeHistoryRequest(method, params) {
++    if (destroyed || !window.electronBridge?.sendMessageFromView ||
++        !["thread/read", "fs/readFile"].includes(method)) {
++      return Promise.reject(new Error("原生历史读取通道不可用"));
++    }
++    return new Promise((resolve, reject) => {
++      const id = `daily-history:${Date.now()}:${++captureSeq}`;
++      let timer = 0;
++      const finish = (error, result) => {
++        if (timer) window.clearTimeout(timer);
++        window.removeEventListener("message", onMessage, true);
++        nativeHistoryRequests.delete(cancel);
++        error ? reject(error) : resolve(result);
++      };
++      const cancel = () => finish(new Error("历史读取已取消"));
++      const onMessage = (event) => {
++        const data = event.data;
++        if (data?.type !== "mcp-response" || data.hostId !== "local" || data.message?.id !== id) return;
++        const message = data.message;
++        finish(
++          message.error ? new Error(message.error.message || "历史读取失败") : null,
++          message.result
++        );
++      };
++      timer = window.setTimeout(() => finish(new Error("历史读取超时")), HISTORY_REQUEST_TIMEOUT_MS);
++      nativeHistoryRequests.add(cancel);
++      window.addEventListener("message", onMessage, true);
++      try {
++        Promise.resolve(window.electronBridge.sendMessageFromView({
++          type: "mcp-request",
++          hostId: "local",
++          priority: "background",
++          source: "filesystem",
++          request: { id, method, params },
++          timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
++        })).catch((error) => finish(error));
++      } catch (error) {
++        finish(error);
++      }
++    });
+   }
+
+   async function runHistoryBackfill({ force = false } = {}) {
+@@ -3624,6 +3764,7 @@
+         z-index: 2147483600;
+         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       }
++      #${ROOT_ID}[hidden] { display: none !important; }
+       #${ROOT_ID}.codex-daily-floating {
+         position: fixed;
+         top: ${FLOATING_TOP}px;
+@@ -4427,6 +4568,7 @@
+   function createRoot() {
+     root = document.createElement("div");
+     root.id = ROOT_ID;
++    root.setAttribute("data-codex-plus-ext", "codex-daily-token-usage");
+     root.innerHTML = `
+       <button class="codex-daily-trigger" type="button" aria-expanded="false" aria-label="查看今日 Token 用量">
+         <span class="codex-daily-sigma" aria-hidden="true">Σ</span>
+@@ -4437,6 +4579,7 @@
+
+     panel = document.createElement("section");
+     panel.id = PANEL_ID;
++    panel.setAttribute("data-codex-plus-ext", "codex-daily-token-usage");
+     panel.setAttribute("aria-label", "Token 用量明细");
+     panel.innerHTML = `
+         <div class="codex-daily-heading">
+@@ -4858,6 +5001,7 @@
+   function showPanel() {
+     if (!root || !panel) return;
+     cancelPanelClose();
++    renderPanel(aggregateDay(selectedDateKey), getDateKey(Date.now()));
+     positionPanel();
+     root.classList.add("is-open");
+     root.querySelector(".codex-daily-trigger")?.setAttribute("aria-expanded", "true");
+@@ -5064,28 +5208,28 @@
+     return nativeHeaders[0]?.node || null;
+   }
+
+-  function isTopChromeObstacleNode(node, style) {
++  function isTopChromeObstacleNode(node, style, header) {
+     if (!node) return false;
+     if (node.id === CODEX_PLUS_MENU_ID || node.closest?.(`#${CODEX_PLUS_MENU_ID}`)) return true;
+     if (node.matches?.(APP_HEADER_SURFACE_SELECTOR)) return false;
+     if (!isPrimaryTopObstacleNode(node) && style?.pointerEvents === "none") return false;
+-    const header = findAppHeaderElement();
+     if (header?.contains?.(node)) return true;
+     return style?.position === "fixed" || style?.position === "sticky";
+   }
+
+-  function collectTopObstacleEntries() {
++  function collectTopObstacleEntries(header = findAppHeaderElement()) {
+     if (!document.body?.querySelectorAll) return [];
+     const entries = Array.from(document.body.querySelectorAll(TOP_OBSTACLE_SELECTOR))
+-      .filter((node) => !root?.contains(node) && !panel?.contains(node))
++      .filter((node) => !root?.contains(node) && !panel?.contains(node)
++        && !node.closest?.('[data-app-shell-active-page="false"]'))
+       .map((node) => {
++        const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
++        if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;
++        if (!isTopChromeObstacleNode(node, style, header)) return null;
+         const rect = normalizeRect(node.getBoundingClientRect?.());
+         if (!rect || rect.width < 4 || rect.height < 4) return null;
+         if (rect.top >= FLOATING_SCAN_TOP || rect.bottom <= 0) return null;
+         if (rect.width > innerWidth * 0.85 || rect.height > FLOATING_SCAN_TOP) return null;
+-        const style = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+-        if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return null;
+-        if (!isTopChromeObstacleNode(node, style)) return null;
+         return { node, rect };
+       })
+       .filter(Boolean);
+@@ -5139,11 +5283,15 @@
+     }
+   }
+
+-  function updateLayoutResizeObservers(obstacleEntries = []) {
+-    observeLayoutNode(document.body);
+-    observeLayoutNode(findAppHeaderElement());
+-    observeLayoutNode(document.getElementById(CODEX_PLUS_MENU_ID));
+-    for (const entry of obstacleEntries) observeLayoutNode(entry.node);
++  function updateLayoutResizeObservers(obstacleEntries = [], header = findAppHeaderElement()) {
++    const current = new Set([document.body, header,
++      document.getElementById(CODEX_PLUS_MENU_ID), ...obstacleEntries.map((entry) => entry.node)]);
++    for (const node of resizeObservedNodes) {
++      if (current.has(node)) continue;
++      resizeObserver?.unobserve(node);
++      resizeObservedNodes.delete(node);
++    }
++    for (const node of current) observeLayoutNode(node);
+   }
+
+   function handleWindowResize() {
+@@ -5185,8 +5333,7 @@
+     return !!button.closest?.(HEADER_TOOLBAR_CLASS_SELECTOR);
+   }
+
+-  function findHeaderToolbarAnchor() {
+-    const header = findAppHeaderElement();
++  function findHeaderToolbarAnchor(header) {
+     if (!header) return null;
+     const title = headerTitleRegion(header);
+     const toolbarButtons = Array.from(header.querySelectorAll("button"))
+@@ -5201,12 +5348,12 @@
+     return { rect: anchor.rect, gap };
+   }
+
+-  function collectFloatingAnchors() {
++  function collectFloatingAnchors(header) {
+     const anchors = [];
+     const plusMenu = document.getElementById(CODEX_PLUS_MENU_ID);
+     const plusMenuRect = visibleTopRect(plusMenu);
+     if (plusMenuRect) anchors.push({ rect: plusMenuRect, gap: FLOATING_SAFE_GAP, mode: "hard" });
+-    const headerAnchor = findHeaderToolbarAnchor();
++    const headerAnchor = findHeaderToolbarAnchor(header);
+     if (headerAnchor) anchors.push({ ...headerAnchor, mode: "hard" });
+     return anchors;
+   }
+@@ -5243,39 +5390,82 @@
+     return null;
+   }
+
++  function isImagePreviewOpen() {
++    const candidates = new Set();
++    for (const marker of document.querySelectorAll(IMAGE_MARKER_SELECTOR)) {
++      if (marker.matches(IMAGE_OVERLAY_SELECTOR)) candidates.add(marker);
++      const dialog = marker.matches(IMAGE_TOOLBAR_SELECTOR) ? '.codex-dialog, [role="dialog"]' : '[role="dialog"]';
++      if (!marker.matches(IMAGE_TOOLBAR_SELECTOR) && !marker.matches(IMAGE_DISMISS_SELECTOR)) continue;
++      for (let host = marker.parentElement?.closest(dialog); host; host = host.parentElement?.closest(dialog)) {
++        candidates.add(host);
++      }
++    }
++    return [...candidates].some((node) => {
++      if (node.closest('[hidden], [aria-hidden="true"], [inert], [data-state="closed"]')) return false;
++      const rect = node.getBoundingClientRect();
++      const style = getComputedStyle(node);
++      return rect.width > 0 && rect.height > 0 &&
++        style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0";
++    });
++  }
++
+   function mountRoot() {
+     if (!root || destroyed || !document.body) return;
++    const previewOpen = isImagePreviewOpen();
++    if (root.hidden !== previewOpen) root.hidden = previewOpen;
++    if (previewOpen) {
++      if (panel?.classList.contains("is-visible")) {
++        pinnedOpen = false;
++        hidePanel();
++      }
++      return;
++    }
+     const toolbar = findToolbar();
+
+     if (toolbar) {
+-      root.classList.remove("codex-daily-floating");
++      if (root.classList.contains("codex-daily-floating")) root.classList.remove("codex-daily-floating");
+       if (root.parentElement !== toolbar) toolbar.insertBefore(root, toolbar.firstChild);
+       if (panel?.classList.contains("is-visible")) positionPanel();
+       return;
+     }
+
+-    root.classList.add("codex-daily-floating");
++    if (!root.classList.contains("codex-daily-floating")) root.classList.add("codex-daily-floating");
+     if (root.parentElement !== document.body) {
+       document.body.appendChild(root);
+     }
+-    root.dataset.layout = "top-toolbar";
++    const trigger = root.querySelector(".codex-daily-trigger");
++    const font = typeof getComputedStyle === "function" ? getComputedStyle(trigger || root).font : "";
++    const signature = `${root.textContent}|${font}`;
++    // Keep only measured numbers, not DOM references. Stable compact mode need not
++    // expand and collapse on every unrelated page mutation.
++    if (root.dataset.layout === "compact-icon" && (!expandedFloatingWidth || signature !== expandedFloatingSignature)) {
++      root.dataset.layout = "top-toolbar";
++    }
+     const rect = root.getBoundingClientRect();
+-    const obstacleEntries = collectTopObstacleEntries();
+-    updateLayoutResizeObservers(obstacleEntries);
++    if (root.dataset.layout !== "compact-icon") {
++      expandedFloatingWidth = rect.width || FLOATING_MIN_WIDTH;
++      expandedFloatingSignature = signature;
++    }
++    const header = findAppHeaderElement();
++    const obstacleEntries = collectTopObstacleEntries(header);
++    updateLayoutResizeObservers(obstacleEntries, header);
+     const layout = resolveFloatingLayout(
+-      rect.width || FLOATING_MIN_WIDTH,
++      expandedFloatingWidth || FLOATING_MIN_WIDTH,
+       rect.height || FLOATING_HEIGHT,
+       innerWidth,
+       innerHeight,
+       obstacleEntries.map((entry) => entry.rect),
+-      collectFloatingAnchors()
++      collectFloatingAnchors(header)
+     );
+-    root.style.top = `${Math.round(layout.top)}px`;
+-    root.style.right = `${Math.ceil(layout.right)}px`;
+-    root.style.left = "auto";
+-    root.style.bottom = "auto";
+-    root.style.transform = "none";
+-    root.dataset.layout = layout.compact ? "compact-icon" : "top-toolbar";
++    const top = `${Math.round(layout.top)}px`;
++    const right = `${Math.ceil(layout.right)}px`;
++    if (root.style.top !== top) root.style.top = top;
++    if (root.style.right !== right) root.style.right = right;
++    if (root.style.left !== "auto") root.style.left = "auto";
++    if (root.style.bottom !== "auto") root.style.bottom = "auto";
++    if (root.style.transform !== "none") root.style.transform = "none";
++    const nextLayout = layout.compact ? "compact-icon" : "top-toolbar";
++    if (root.dataset.layout !== nextLayout) root.dataset.layout = nextLayout;
+     if (panel?.classList.contains("is-visible")) positionPanel();
+   }
+
+@@ -5396,18 +5586,9 @@
+     }
+   }
+
+-  function render({ animate = false } = {}) {
+-    if (!root) return;
+-    const todayKey = getDateKey(Date.now());
+-    const todaySnapshot = aggregateDay(todayKey);
+-    const snapshot = aggregateDay(selectedDateKey);
+-    const totalChanged = lastRenderedTotal >= 0 && todaySnapshot.total !== lastRenderedTotal;
+-    lastRenderedTotal = todaySnapshot.total;
+-
++  function renderPanel(snapshot, todayKey) {
+     const connected = sourceMode === "external" || sourceMode === "standalone";
+-    root.classList.toggle("is-connected", connected);
+     panel?.classList.toggle("is-connected", connected);
+-    root.querySelector(".codex-daily-total").textContent = formatCompact(todaySnapshot.total);
+     panel.querySelector(".codex-daily-title").textContent =
+       selectedDateKey === todayKey ? "今日 Token 用量" : "Token 用量";
+     panel.querySelector(".codex-daily-hero").textContent = formatExact(snapshot.total);
+@@ -5433,10 +5614,26 @@
+     if (panel.querySelector(".codex-daily-price-panel")?.hidden === false && !isEditingPriceSettings()) {
+       renderPriceSettings(snapshot);
+     }
+-
+-    if (animate && totalChanged) {
+-      root.classList.remove("is-updated");
+-      void root.offsetWidth;
++  }
++
++  function render({ animate = false } = {}) {
++    if (!root) return;
++    const todayKey = getDateKey(Date.now());
++    const todaySnapshot = aggregateDay(todayKey);
++    const totalChanged = lastRenderedTotal >= 0 && todaySnapshot.total !== lastRenderedTotal;
++    lastRenderedTotal = todaySnapshot.total;
++
++    const connected = sourceMode === "external" || sourceMode === "standalone";
++    root.classList.toggle("is-connected", connected);
++    const total = root.querySelector(".codex-daily-total");
++    const text = formatCompact(todaySnapshot.total);
++    if (total.firstChild.data !== text) {
++      total.firstChild.data = text;
++      scheduleMountRoot();
++    }
++    if (panel?.classList.contains("is-visible")) renderPanel(aggregateDay(selectedDateKey), todayKey);
++
++    if (animate && totalChanged && !root.classList.contains("is-updated")) {
+       root.classList.add("is-updated");
+       window.setTimeout(() => root?.classList.remove("is-updated"), 450);
+     }
+@@ -5475,7 +5672,6 @@
+     const changed = sourceChanged || domToolChanged;
+     const signature = renderStateSignature(currentDateKey, selectedDateKey);
+     if (signature !== lastRenderSignature) {
+-      mountRoot();
+       render({ animate: changed });
+     }
+     return aggregateDay();
+@@ -5492,6 +5688,7 @@
+
+   function destroy(options = {}) {
+     destroyed = true;
++    for (const cancel of Array.from(nativeHistoryRequests)) cancel();
+     if (pollTimer) window.clearInterval(pollTimer);
+     if (midnightTimer) window.clearTimeout(midnightTimer);
+     if (historyBackfillTimer) window.clearTimeout(historyBackfillTimer);
+@@ -5505,7 +5702,11 @@
+     }
+     observer?.disconnect();
+     resizeObserver?.disconnect();
++    resizeObservedNodes.clear();
+     restoreStandaloneCapture();
++    window.removeEventListener?.("codex-message-from-view", handleCodexMessage, true);
++    window.removeEventListener?.("message", handleWindowMessage, true);
++    modelCaptureInstalled = false;
+     document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+     window.removeEventListener("resize", handleWindowResize);
+     root?.remove();
+@@ -5524,6 +5725,7 @@
+
+   const api = {
+     version: VERSION,
++    captureRevision: CAPTURE_REVISION,
+     refresh,
+     getSnapshot: (dateKey = getDateKey(Date.now())) => aggregateDay(clampDateKey(dateKey)),
+     getSelectedDate: () => selectedDateKey,
+@@ -5616,6 +5818,24 @@
+   window[API_KEY] = api;
+   installModelCapture();
+
++  function changesChromeLayout(record) {
++    const target = record.target;
++    if (record.attributeName === "data-app-shell-active-page") return true;
++    if (target.closest?.(INACTIVE_PAGE_SELECTOR)) return false;
++    if (!target.closest?.(CONTENT_SELECTOR) || target.closest?.('.codex-dialog, [role="dialog"], .codex-dialog-overlay')) return true;
++    return [...record.addedNodes, ...record.removedNodes].some((node) =>
++      node.matches?.(IMAGE_MARKER_SELECTOR) || node.querySelector?.(IMAGE_MARKER_SELECTOR));
++  }
++
++  function changesDomTools(record) {
++    const target = record.target;
++    if (target.closest?.(INACTIVE_PAGE_SELECTOR)) return false;
++    if (record.attributeName === "data-app-shell-active-page" || record.attributeName === "data-above-composer-conversation-id") return true;
++    if (target.closest?.(DOM_TOOL_SELECTOR)) return true;
++    return Array.prototype.some.call(record.addedNodes, (node) =>
++      node.matches?.(DOM_TOOL_SELECTOR) || node.querySelector?.(DOM_TOOL_SELECTOR));
++  }
++
+   function start() {
+     if (destroyed) return;
+     installStyle();
+@@ -5623,15 +5843,18 @@
+     mountRoot();
+     refresh();
+
+-    observer = new MutationObserver(() => {
+-      scheduleMountRoot();
+-      scheduleDomToolScan();
++    observer = new MutationObserver((records) => {
++      const external = records.filter((record) => !root?.contains(record.target) && !panel?.contains(record.target)
++        && !record.target.closest?.('[contenteditable="true"], textarea'));
++      if (external.some(changesChromeLayout)) scheduleMountRoot();
++      if (external.some(changesDomTools)) scheduleDomToolScan();
+     });
+     observer.observe(document.documentElement, {
+       childList: true,
+       subtree: true,
+       attributes: true,
+-      attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "style"],
++      attributeFilter: ["aria-hidden", "class", "data-state", "hidden", "inert", "style",
++        "data-app-shell-active-page", "data-above-composer-conversation-id", "data-testid"],
+     });
+     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+     window.addEventListener("resize", handleWindowResize);

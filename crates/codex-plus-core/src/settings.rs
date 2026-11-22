@@ -73,6 +73,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_mixed_api: Option<InactiveMixedApi>,
     /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
     #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
     pub official_account_ref: String,
@@ -99,7 +101,8 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelWindows",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_windows: String,
     /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
@@ -107,17 +110,24 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelAutoCompact",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_auto_compact: String,
     /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
     #[serde(
         rename = "modelMetadata",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_metadata: String,
-    #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "modelVlm",
+        default,
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
+    )]
     pub model_vlm: String,
     #[serde(
         rename = "vlmApiKey",
@@ -370,6 +380,15 @@ pub struct AggregateRelayProfile {
     pub auto_review_relay_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InactiveMixedApi {
+    pub config_contents: String,
+    pub upstream_base_url: String,
+    #[serde(default)]
+    pub model_routes: Vec<RelayModelRoute>,
+}
+
 impl Default for RelayProfile {
     fn default() -> Self {
         Self {
@@ -384,6 +403,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -1386,6 +1406,16 @@ pub struct BackendSettings {
     pub codex_app_dream_skin_theme_config: DreamSkinThemeConfig,
     #[serde(rename = "codexAppDreamSkinImagePath", default)]
     pub codex_app_dream_skin_image_path: String,
+    /// 皮肤面板透出壁纸的百分比（0–100，#3233）。是用户偏好，不写进主题包：
+    /// 注入时作为 `userTransparency` 并进交给上游渲染器的主题配置。
+    /// None 表示跟随主题（主题配色自带透明度就用它，否则上游默认透出 30%）。
+    #[serde(
+        rename = "codexAppDreamSkinUserTransparency",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_dream_skin_user_transparency"
+    )]
+    pub codex_app_dream_skin_user_transparency: Option<u8>,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "weixinConnectEnabled", default)]
@@ -1628,6 +1658,7 @@ impl Default for BackendSettings {
             codex_app_dream_skin_theme: default_dream_skin_theme(),
             codex_app_dream_skin_theme_config: DreamSkinThemeConfig::default(),
             codex_app_dream_skin_image_path: String::new(),
+            codex_app_dream_skin_user_transparency: None,
             codex_goals_enabled: false,
             weixin_connect_enabled: false,
             weixin_connect_base_url: default_weixin_connect_base_url(),
@@ -1706,6 +1737,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                inactive_mixed_api: None,
                 official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
@@ -1781,6 +1813,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -2338,6 +2371,20 @@ where
         .unwrap_or_else(default_dream_skin_theme))
 }
 
+/// 皮肤「壁纸透出」偏好：数字取整并限制在 0–100；null 或不是数字都算跟随主题（None）。
+pub fn normalize_dream_skin_user_transparency(value: &Value) -> Option<u8> {
+    let number = value.as_f64().filter(|number| number.is_finite())?;
+    Some(number.round().clamp(0.0, 100.0) as u8)
+}
+
+/// 手改坏的值不能让整份设置读不出来：读不懂就当跟随主题。
+fn deserialize_dream_skin_user_transparency<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_dream_skin_user_transparency(&Value::deserialize(deserializer)?))
+}
+
 fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -2372,6 +2419,28 @@ where
     Ok(Option::<u64>::deserialize(deserializer)?
         .map(clamp_stepwise_timeout_ms)
         .unwrap_or_else(default_stepwise_timeout_ms))
+}
+
+// 兼容直接写入 JSON 对象的配置；保存时仍使用原有文本形态。
+// 对象里直接写数字的（`{"model-a": 500000}`）转成文本形态里的字符串：窗口、压缩百分比这两张表
+// 应用时只认字符串值，原样留着数字会在切换供应商时报「值必须是字符串」。
+fn deserialize_json_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text,
+        Some(Value::Object(mut map)) => {
+            for value in map.values_mut() {
+                if let Value::Number(number) = value {
+                    *value = Value::String(number.to_string());
+                }
+            }
+            Value::Object(map).to_string()
+        }
+        Some(other) => other.to_string(),
+    })
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -3285,6 +3354,21 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::String(value.trim().to_string()),
         );
     }
+    // null 清回「跟随主题」；数字按 0–100 归一；其它值不动原设置。
+    match source.get("codexAppDreamSkinUserTransparency") {
+        Some(Value::Null) => {
+            target.remove("codexAppDreamSkinUserTransparency");
+        }
+        Some(value) => {
+            if let Some(percent) = normalize_dream_skin_user_transparency(value) {
+                target.insert(
+                    "codexAppDreamSkinUserTransparency".to_string(),
+                    Value::from(percent),
+                );
+            }
+        }
+        None => {}
+    }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));
     }
@@ -3586,6 +3670,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "inactiveMixedApi",
     "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",
@@ -4464,6 +4549,29 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn relay_profile_accepts_json_text_fields_written_as_maps() {
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelWindows": { "model-a": 500000 },
+            "modelAutoCompact": { "model-a": 80 },
+            "modelMetadata": { "model-a": { "supports_search_tool": true } },
+            "modelVlm": { "model-a": "strip" }
+        }))
+        .unwrap();
+
+        let saved = serde_json::to_value(&profile).unwrap();
+        // 数字值转成字符串：应用供应商时这两张表只认字符串值。
+        assert_eq!(saved["modelWindows"], r#"{"model-a":"500000"}"#);
+        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":"80"}"#);
+        assert_eq!(
+            saved["modelMetadata"],
+            r#"{"model-a":{"supports_search_tool":true}}"#
+        );
+        assert_eq!(saved["modelVlm"], r#"{"model-a":"strip"}"#);
     }
 
     #[test]

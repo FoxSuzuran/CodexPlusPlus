@@ -152,7 +152,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "33-native-preview-anchor";
+const DREAM_SKIN_RENDERER_REVISION: &str = "34-wallpaper-media-preferences";
 
 pub fn renderer_script() -> &'static str {
     crate::packed_assets::renderer()
@@ -175,12 +175,20 @@ pub fn dream_skin_art_data_uri(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Some(data_uri) = image_file_data_uri(Path::new(custom_path))
+        && let Some(data_uri) = dream_skin_file_data_uri(Path::new(custom_path))
     {
         return data_uri;
     }
     let (content_type, image) = dream_skin_default_image();
     image_data_uri(content_type, image)
+}
+
+fn dream_skin_file_data_uri(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?;
+    if let Some(mime) = crate::dream_skin::video_mime(extension) {
+        return Some(image_data_uri(mime, &crate::dream_skin::read_skin_video(path, extension).ok()?));
+    }
+    image_file_data_uri(path)
 }
 
 fn dream_skin_platform() -> &'static str {
@@ -224,11 +232,14 @@ fn dream_skin_target_assets(
     }
 }
 
-fn dream_skin_runtime_theme_json(settings: &BackendSettings) -> String {
+fn dream_skin_theme_json(settings: &BackendSettings) -> String {
     // Keep legacy metadata on disk while excluding promotion from every runtime payload.
     let mut theme = settings.codex_app_dream_skin_theme_config.clone();
     for key in ["promoTitle", "promoSub", "promoUrl"] {
         theme.extra_fields.remove(key);
+    }
+    if let Some(percent) = settings.codex_app_dream_skin_user_transparency {
+        theme.extra_fields.insert("userTransparency".to_string(), Value::from(percent.min(100)));
     }
     serde_json::to_string(&theme).expect("dream skin theme should serialize")
 }
@@ -243,13 +254,23 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     // 原生 shell 兼容属于基础主题：内置图片和没有 Safe CSS 的图片也必须可达。
     let native_shell_css = include_str!("../../../assets/inject/dream-skin-native-shell-compat.css");
     let css = format!("{base_css}\n{native_shell_css}\n{managed_css}");
-    let theme = dream_skin_runtime_theme_json(settings);
+    let theme = dream_skin_theme_json(settings);
     let style_revision = dream_skin_content_signature(css.as_bytes());
     let payload_revision =
         dream_skin_target_payload_signature(settings, engine, &style_revision, &theme);
+    let media_path = Path::new(settings.codex_app_dream_skin_image_path.trim());
+    let video = media_path.extension().and_then(|extension| extension.to_str())
+        .and_then(crate::dream_skin::video_mime).is_some()
+        && crate::dream_skin::is_managed_dream_skin_image(media_path, &crate::paths::default_app_state_dir());
+    let static_art = if video {
+        let (mime, bytes) = dream_skin_default_image();
+        serde_json::to_string(&image_data_uri(mime, bytes)).unwrap()
+    } else {
+        "window.__CODEX_PLUS_DREAM_SKIN_ART__".into()
+    };
     let mut payload = renderer
         .replace("__DREAM_CSS_JSON__", &serde_json::to_string(&css).unwrap())
-        .replace("__DREAM_ART_JSON__", "window.__CODEX_PLUS_DREAM_SKIN_ART__")
+        .replace("__DREAM_ART_JSON__", &static_art)
         .replace(
             "__DREAM_THEME_JSON__",
             "window.__CODEX_PLUS_DREAM_SKIN_THEME__",
@@ -264,7 +285,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__GLASS_VISION_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_CSS_JSON__",
@@ -272,7 +293,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__DREAM_SKIN_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_THEME_JSON__",
@@ -303,8 +324,9 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
     });
     let skin_api_bootstrap = dream_skin_skin_api_bootstrap_script(&theme);
+    let video_install = if video { include_str!("../../../assets/inject/dream-skin-local-video.js") } else { "" };
     payload = format!(
-        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
+        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n{video_install}\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
         art_assignment.unwrap_or_default(),
         serde_json::to_string(&dream_skin_art_content_signature(settings)).unwrap(),
         theme,
@@ -659,7 +681,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         .unwrap_or_default();
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
-    let dream_skin_theme = dream_skin_runtime_theme_json(settings);
+    let dream_skin_theme = dream_skin_theme_json(settings);
     let dream_skin_target_runtime = dream_skin_target_runtime_after_document_ready(settings);
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
@@ -733,7 +755,10 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Ok(bytes) = std::fs::read(custom_path)
+        && let Ok(bytes) = match Path::new(custom_path).extension().and_then(|s| s.to_str()) {
+            Some(ext) if crate::dream_skin::video_mime(ext).is_some() => crate::dream_skin::read_skin_video(Path::new(custom_path), ext),
+            _ => std::fs::read(custom_path).map_err(anyhow::Error::from),
+        }
     {
         return dream_skin_content_signature(&bytes);
     }
@@ -742,7 +767,7 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
 
 pub fn dream_skin_runtime_content_signature(settings: &BackendSettings) -> String {
     let (engine, _, css) = dream_skin_target_assets(settings);
-    let theme = dream_skin_runtime_theme_json(settings);
+    let theme = dream_skin_theme_json(settings);
     let style_revision = dream_skin_content_signature(css.as_bytes());
     dream_skin_target_payload_signature(settings, engine, &style_revision, &theme)
 }
@@ -867,6 +892,70 @@ mod tests {
         );
         let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // #3233：壁纸透出是 Codex++ 设置里的偏好，注入时作为 userTransparency 并进主题配置。
+    #[test]
+    fn dream_skin_user_transparency_is_injected_only_when_set() {
+        let mut settings = BackendSettings::default();
+        settings.codex_app_dream_skin_enabled = true;
+        let theme_assignment = |settings: &BackendSettings| {
+            format!("window.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};", dream_skin_theme_json(settings))
+        };
+
+        // 没设：主题配置原样序列化，字节和签名都与以前一致，现有用户外观不变。
+        let plain = serde_json::to_string(&settings.codex_app_dream_skin_theme_config).unwrap();
+        assert_eq!(dream_skin_theme_json(&settings), plain);
+        assert!(!plain.contains("userTransparency"));
+        let unset_signature = dream_skin_runtime_content_signature(&settings);
+        assert!(injection_script_with_settings(57321, &settings).contains(&theme_assignment(&settings)));
+
+        settings.codex_app_dream_skin_user_transparency = Some(40);
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 40);
+        // 设置里存的主题配置本身不带它：主题库「已修改」比较、导出主题包都不受影响。
+        assert!(!settings.codex_app_dream_skin_theme_config.extra_fields.contains_key("userTransparency"));
+        // 启动注入和实时更新拿到的是同一份主题配置；签名跟着变，实时应用才会重跑皮肤。
+        assert!(injection_script_with_settings(57321, &settings).contains(&theme_assignment(&settings)));
+        assert!(dream_skin_live_update_script(&settings, false).contains(&theme_assignment(&settings)));
+        assert_ne!(dream_skin_runtime_content_signature(&settings), unset_signature);
+
+        // 设了偏好就盖过主题配置里手写的同名值；没设时那份手写值照旧生效。
+        settings
+            .codex_app_dream_skin_theme_config
+            .extra_fields
+            .insert("userTransparency".to_string(), json!(100));
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 40);
+        settings.codex_app_dream_skin_user_transparency = None;
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 100);
+    }
+
+    // 字段名和换算以上游渲染器为准：透出 40% => 面板 alpha .6；没设时回到上游自己的默认。
+    #[test]
+    fn upstream_dream_skin_renderer_reads_injected_user_transparency() {
+        for renderer in [
+            include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js"),
+        ] {
+            let start = renderer.find("const userAlpha =").expect("upstream userAlpha");
+            let end = renderer[start..].find("const backgroundAlpha").expect("upstream panelAlpha") + start;
+            let formula = &renderer[start..end];
+            let mut settings = BackendSettings::default();
+            settings.codex_app_dream_skin_user_transparency = Some(40);
+            let set = dream_skin_theme_json(&settings);
+            let test = format!(
+                r#"
+                  const assert=require('node:assert/strict');
+                  const alpha=(THEME)=>{{const explicitAlpha=()=>null;{formula}return panelAlpha;}};
+                  assert.equal(alpha({set}),0.6);
+                  assert.equal(alpha({{}}),0.7);
+                "#,
+            );
+            let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     #[test]

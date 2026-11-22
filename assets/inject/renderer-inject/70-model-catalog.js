@@ -363,7 +363,19 @@
   function modelReasoningEfforts(modelName) {
     const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
     if (Array.isArray(supported)) {
-      return supported.map((entry) => ({ ...entry }));
+      // Provider strings, native {effort}, and UI {reasoningEffort} share the same shape here.
+      const efforts = supported.flatMap((entry) => {
+        if (typeof entry === "string") return entry ? [{ reasoningEffort: entry }] : [];
+        if (!entry || typeof entry !== "object") return [];
+        const effort = typeof entry.reasoningEffort === "string" && entry.reasoningEffort
+          ? entry.reasoningEffort
+          : typeof entry.effort === "string" ? entry.effort : "";
+        if (!effort) return [];
+        const next = { ...entry, reasoningEffort: effort };
+        delete next.effort;
+        return [next];
+      });
+      if (efforts.length || !supported.length) return efforts;
     }
     return ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
   }
@@ -376,6 +388,12 @@
       const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
       if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
+        changed = true;
+      }
+    }
+    for (const [key, value] of Object.entries(codexPlusModelServiceTiers(metadata, descriptor))) {
+      if (JSON.stringify(descriptor[key] ?? []) !== JSON.stringify(value)) {
+        descriptor[key] = value;
         changed = true;
       }
     }
@@ -397,12 +415,6 @@
         changed = true;
       }
     }
-    for (const key of ["additionalSpeedTiers", "serviceTiers"]) {
-      if (Array.isArray(metadata[key]) && JSON.stringify(descriptor[key]) !== JSON.stringify(metadata[key])) {
-        descriptor[key] = metadata[key].map((entry) => typeof entry === "object" ? { ...entry } : entry);
-        changed = true;
-      }
-    }
     return changed;
   }
 
@@ -421,6 +433,7 @@
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
+      ...codexPlusModelServiceTiers(metadata),
       // 图片输入能力只带目录/元数据里声明过的；没声明不写，不替未知模型宣称收图，
       // 与此前的原生行为一致。
       ...(modalities ? { inputModalities: modalities } : {}),
@@ -428,6 +441,26 @@
     };
     applyCodexPlusModelMetadata(descriptor, modelName);
     return descriptor;
+  }
+
+  function codexPlusModelServiceTiers(metadata, descriptor) {
+    if (!metadata) return {};
+    const denyFast = metadata.prioritySupportOverride === false;
+    const fields = {};
+    // New-chat model queries use these descriptors before a thread exists.
+    for (const [key, id] of [["serviceTiers", "priority"], ["additionalSpeedTiers", "fast"]]) {
+      const declared = metadata[key];
+      if (Array.isArray(declared)) {
+        fields[key] = structuredClone(declared);
+      }
+      if (denyFast) {
+        const existing = fields[key] ?? descriptor?.[key];
+        if (Array.isArray(existing)) {
+          fields[key] = existing.filter((tier) => String(typeof tier === "string" ? tier : tier?.id || "").trim().toLowerCase() !== id);
+        }
+      }
+    }
+    return fields;
   }
 
   // 元数据里声明的输入模态（camelCase / snake_case 都认），没声明返回 null。

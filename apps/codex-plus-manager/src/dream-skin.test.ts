@@ -247,7 +247,7 @@ describe("dream skin theme helpers", () => {
     assert.match(compatibility, /shellMain\.classList\.add\("main-surface"\)/);
     assert.match(compatibility, /data-codex-plus-dream-skin-main-surface/);
     assert.match(compatibility, /clearDreamSkinMainSurfaceCompatibility\(\)/);
-    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "33-native-preview-anchor"/);
+    assert.match(assets, /DREAM_SKIN_RENDERER_REVISION: &str = "34-wallpaper-media-preferences"/);
     assert.match(assets, /DREAM_SKIN_COMMUNITY_COMPAT_CSS/);
     assert.match(assets, /format!\("\{compiled\}\\n\{DREAM_SKIN_COMMUNITY_COMPAT_CSS\}"\)/);
   });
@@ -428,11 +428,11 @@ describe("dream skin theme helpers", () => {
     assert.equal((screen.getText(source).match(/actions\.activateDreamSkinTheme\(\)/g) ?? []).length, 1);
     assert.match(library, /actions\.selectDreamSkinTheme\(item\)/);
     assert.doesNotMatch(library, /actions\.activateDreamSkinTheme\(\)/);
-    assert.doesNotMatch(library, /t\("(?:从图片创建|保存主题|恢复 Dream Skin 默认主题)"\)/);
-    // 「从图片创建」只在主题库工具条上放一处（主操作），自定义区不再重复。
+    assert.doesNotMatch(library, /t\("(?:从图片或视频创建|保存主题|恢复 Dream Skin 默认主题)"\)/);
+    // 创建主题的入口只在主题库工具条上放一处。
     const toolbar = screen.getText(source).slice(screen.getText(source).indexOf("<CxToolbar onQuery={setLocalQuery}"));
-    assert.match(toolbar.slice(0, toolbar.indexOf("</CxToolbar>")), /t\("从图片创建"\)/);
-    assert.doesNotMatch(customizer, /t\("从图片创建"\)/);
+    assert.match(toolbar.slice(0, toolbar.indexOf("</CxToolbar>")), /t\("从图片或视频创建"\)/);
+    assert.doesNotMatch(customizer, /t\("从图片或视频创建"\)/);
     assert.match(customizer, /t\("保存主题"\)/);
     assert.match(customizer, /t\("恢复 Dream Skin 默认主题"\)/);
     assert.match(customizer, /t\("恢复 Codex 默认配色"\)/);

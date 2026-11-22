@@ -36,6 +36,8 @@
    * 返回 { setHost, sync, dispose, state }：setHost 交给 overlay 插槽的容器，sync 按当前配置对齐，dispose 全部撤下。
    */
   function createCodexPlusAgentPet(ctx) {
+    let pressedAt = 0;
+    let tapRebound = null;
     const pet = {
       disposed: false,
       root: null,
@@ -195,6 +197,9 @@
 
     function press() {
       const current = settings();
+      tapRebound?.cancel();
+      tapRebound = null;
+      pressedAt = performance.now();
       pet.body.style.transform = codexPlusAgentPetSquash;
       stopSound(pet.press?.release);
       pet.press = { sound: null, release: null };
@@ -204,9 +209,16 @@
       pet.press.sound = playSound(current, "press");
     }
 
-    function release() {
+    function release(quickTapCandidate) {
       const current = settings();
       pet.body.style.transform = "";
+      // 同一帧内按下和松开时 CSS 过渡看不到压扁态，直接从压扁关键帧回弹。
+      if (quickTapCandidate && performance.now() - pressedAt < 32) {
+        tapRebound = pet.body.animate?.(
+          [{ transform: codexPlusAgentPetSquash }, { transform: "scale(1)" }],
+          { duration: 220, easing: "cubic-bezier(.34,1.56,.64,1)" },
+        );
+      }
       const pressed = pet.press;
       if (!pressed || !current.soundEnabled) return;
       // 点按：松开音排到按压音结束前一点点；按住超过按压音时长：立即播放。
@@ -244,7 +256,7 @@
       pet.image = image;
 
       const onPointerDown = (event) => {
-        if (event.button !== 0 && event.pointerType === "mouse") return;
+        if (pet.drag || (event.button !== 0 && event.pointerType === "mouse")) return;
         event.preventDefault();
         try { root.setPointerCapture(event.pointerId); } catch {}
         const start = readPosition();
@@ -267,13 +279,14 @@
         pet.drag = null;
         root.style.cursor = "grab";
         if (drag.moved && drag.position) writePosition(drag.position);
-        release();
+        release(event.type === "pointerup" && !drag.moved);
       };
       const onResize = () => place(readPosition());
       root.addEventListener("pointerdown", onPointerDown);
       root.addEventListener("pointermove", onPointerMove);
       root.addEventListener("pointerup", onPointerEnd);
       root.addEventListener("pointercancel", onPointerEnd);
+      root.addEventListener("lostpointercapture", onPointerEnd);
       root.addEventListener("contextmenu", (event) => event.preventDefault());
       window.addEventListener("resize", onResize);
       pet.cleanup.push(() => window.removeEventListener("resize", onResize));
@@ -292,6 +305,8 @@
     }
 
     function unmount() {
+      tapRebound?.cancel();
+      tapRebound = null;
       pet.cleanup.splice(0).forEach((cleanup) => cleanup());
       pet.root?.remove();
       pet.root = null;

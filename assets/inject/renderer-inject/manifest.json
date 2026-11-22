@@ -73,7 +73,7 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3205
+      "lines": 3214
     },
     {
       "name": "43-provider-page.js",
@@ -128,7 +128,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1947
+      "lines": 1980
     },
     {
       "name": "71-model-picker-groups.js",
@@ -138,7 +138,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 672
+      "lines": 686
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -193,7 +193,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 912
+      "lines": 929
     },
     {
       "name": "92-extension-host.js",

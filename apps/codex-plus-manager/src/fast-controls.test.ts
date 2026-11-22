@@ -37,6 +37,7 @@ function metadataFixture(metadata: Record<string, unknown>) {
     codexPlusModelMetadata: (name: string) => metadata[name],
     modelReasoningEfforts: () => [],
     codexModelCatalog: { provider_name: "fixture" },
+    structuredClone,
   });
   vm.runInContext(between(catalog, "  function applyCodexPlusModelMetadata(", "  function modelArrayLooksPatchable("), context);
   return { descriptor: context.codexPlusModelDescriptor, apply: context.applyCodexPlusModelMetadata };

@@ -1,6 +1,7 @@
   // 完整上游引擎的词法宿主：不替换页面全局 API；挂件关闭时释放所有副作用。
   // 数据经平台对象 `platform`（main.js 用公开 ctx 接口实现）：call 调路由、session 取当前会话、on 订阅 Codex 事件。
   const codexPlusWhaleFullStoragePrefix = "codexPlus.whale.full.v1.";
+  const codexPlusWhaleVersion = "0.4.2";
   /** 大肥鱼的内嵌素材（角色图、音效、动图）：挂件第一次初始化时经 `/whale/media` 取一次。 */
   const codexPlusWhaleMedia = { image: "", assets: {} };
   function codexPlusWhaleFullNumber(value) {
@@ -30,6 +31,7 @@
   }
 
   function createCodexPlusWhaleFullRuntime(platform) {
+    const startedAt = Date.now();
     const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
     const isolated = Object.create(null);
     const wrappedMedia = new WeakSet();
@@ -252,6 +254,19 @@
       state.lastTurnResult = result; return result;
     }
     async function compatibilityJson(path, method, query, body) {
+      if (method === "GET" && path === "/dsh-whale/about.json") {
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            plugin: { version: codexPlusWhaleVersion, label: codexPlusWhaleVersion, hostVersionLiterals: [codexPlusWhaleVersion] },
+            runtime: { uptimeSec: Math.floor((Date.now() - startedAt) / 1000) },
+          },
+        };
+      }
+      if (method === "GET" && path === "/dsh-whale/update-check.json") {
+        return { status: 200, body: { ok: true, channel: "bundled" } };
+      }
       subscribe();
       if (path === "/dsh-whale/size.json" && method === "GET" && state.startupConfig) return { status: 200, body: state.startupConfig };
       if (path === "/dsh-whale/last-turn.json") {

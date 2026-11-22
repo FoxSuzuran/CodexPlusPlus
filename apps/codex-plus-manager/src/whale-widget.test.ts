@@ -91,7 +91,7 @@ test("widget mounts only when the extension config selects the whale", async () 
 
 test("complete upstream engine is preserved with verified Codex adapter anchors", () => {
   const raw = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/full-widget.js", import.meta.url), "utf8");
-  assert.equal(createHash("sha256").update(raw).digest("hex"), "391806b8d4fd7c77a1711e02f58360e641f97b97bfb9085049031365007301b0");
+  assert.equal(createHash("sha256").update(raw).digest("hex"), "7b9ac4808896b68f835d2924217193ecf57f840f872fb4ea84ca028ae7172deb");
   const full = readFileSync(new URL("../../../assets/inject/upstream/whale-widget/full-widget-codex.js", import.meta.url), "utf8");
   assert.doesNotThrow(() => new Function(full));
   for (const entry of ["openSoundSettingsPanel", "bubbleModuleWizard", "bubblePickChoiceStep", "confirmAudioCrop", "confirmCrop", "openSnapModal", "openResManager"]) assert.match(full, new RegExp("function " + entry));

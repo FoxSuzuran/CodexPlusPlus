@@ -12329,6 +12329,15 @@ var codexPlusProviderEditing = (() => {
     const compatibleSession = sessionProviderForProtocol(sessionProvider, protocol);
     const normalizedPatch = compatibleSession === sessionProvider ? patch : { ...patch, sessionProvider: compatibleSession };
     let next = { ...profile, ...normalizedPatch };
+    if (profile.relayMode === "official" && profile.officialMixApiKey && next.relayMode === "official" && !next.officialMixApiKey) {
+      next.inactiveMixedApi = {
+        configContents: profile.configContents || withGeneratedRelayFiles(profile).configContents,
+        upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl,
+        modelRoutes: profile.modelRoutes
+      };
+    } else if (profile.relayMode === "official" && !profile.officialMixApiKey && next.officialMixApiKey && profile.inactiveMixedApi) {
+      next = { ...next, ...profile.inactiveMixedApi, inactiveMixedApi: void 0 };
+    }
     if (isAggregateRelayProfile(next)) {
       return normalizeAggregateRelayProfile(next, null);
     }
@@ -22452,7 +22461,19 @@ ${key} = ${value}`]);
   function modelReasoningEfforts(modelName) {
     const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
     if (Array.isArray(supported)) {
-      return supported.map((entry) => ({ ...entry }));
+      // Provider strings, native {effort}, and UI {reasoningEffort} share the same shape here.
+      const efforts = supported.flatMap((entry) => {
+        if (typeof entry === "string") return entry ? [{ reasoningEffort: entry }] : [];
+        if (!entry || typeof entry !== "object") return [];
+        const effort = typeof entry.reasoningEffort === "string" && entry.reasoningEffort
+          ? entry.reasoningEffort
+          : typeof entry.effort === "string" ? entry.effort : "";
+        if (!effort) return [];
+        const next = { ...entry, reasoningEffort: effort };
+        delete next.effort;
+        return [next];
+      });
+      if (efforts.length || !supported.length) return efforts;
     }
     return ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
   }
@@ -22465,6 +22486,12 @@ ${key} = ${value}`]);
       const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
       if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
+        changed = true;
+      }
+    }
+    for (const [key, value] of Object.entries(codexPlusModelServiceTiers(metadata, descriptor))) {
+      if (JSON.stringify(descriptor[key] ?? []) !== JSON.stringify(value)) {
+        descriptor[key] = value;
         changed = true;
       }
     }
@@ -22486,12 +22513,6 @@ ${key} = ${value}`]);
         changed = true;
       }
     }
-    for (const key of ["additionalSpeedTiers", "serviceTiers"]) {
-      if (Array.isArray(metadata[key]) && JSON.stringify(descriptor[key]) !== JSON.stringify(metadata[key])) {
-        descriptor[key] = metadata[key].map((entry) => typeof entry === "object" ? { ...entry } : entry);
-        changed = true;
-      }
-    }
     return changed;
   }
 
@@ -22510,6 +22531,7 @@ ${key} = ${value}`]);
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
+      ...codexPlusModelServiceTiers(metadata),
       // 图片输入能力只带目录/元数据里声明过的；没声明不写，不替未知模型宣称收图，
       // 与此前的原生行为一致。
       ...(modalities ? { inputModalities: modalities } : {}),
@@ -22517,6 +22539,26 @@ ${key} = ${value}`]);
     };
     applyCodexPlusModelMetadata(descriptor, modelName);
     return descriptor;
+  }
+
+  function codexPlusModelServiceTiers(metadata, descriptor) {
+    if (!metadata) return {};
+    const denyFast = metadata.prioritySupportOverride === false;
+    const fields = {};
+    // New-chat model queries use these descriptors before a thread exists.
+    for (const [key, id] of [["serviceTiers", "priority"], ["additionalSpeedTiers", "fast"]]) {
+      const declared = metadata[key];
+      if (Array.isArray(declared)) {
+        fields[key] = structuredClone(declared);
+      }
+      if (denyFast) {
+        const existing = fields[key] ?? descriptor?.[key];
+        if (Array.isArray(existing)) {
+          fields[key] = existing.filter((tier) => String(typeof tier === "string" ? tier : tier?.id || "").trim().toLowerCase() !== id);
+        }
+      }
+    }
+    return fields;
   }
 
   // 元数据里声明的输入模态（camelCase / snake_case 都认），没声明返回 null。
@@ -26514,6 +26556,20 @@ ${key} = ${value}`]);
         setTimeout(() => dismissCodexPlusToast(toast), 5000);
       });
       toast.appendChild(undo);
+    } else if (settings.actionLabel && typeof settings.onAction === "function") {
+      const action = document.createElement("button");
+      action.textContent = settings.actionLabel;
+      action.addEventListener("click", async () => {
+        action.disabled = true;
+        try {
+          await settings.onAction();
+          dismissCodexPlusToast(toast);
+        } catch (error) {
+          showToast(String(error?.message || error), { type: "warn" });
+          action.disabled = false;
+        }
+      });
+      toast.appendChild(action);
     }
     document.body.appendChild(toast);
     // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。
@@ -32138,14 +32194,14 @@ ${key} = ${value}`]);
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 19;
+  const codexPlusRpcInterceptorVersion = 20;
   const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
     && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
     ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
   const codexPlusRpcPreparationTimeoutMs = 120000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
-  const codexPlusRpcPushFailure = Symbol("codexPlusRpcPushFailure");
+  const codexPlusRpcPushFailure = window.__codexPlusRpcFrameInterceptor?.pushFailure || Symbol("codexPlusRpcPushFailure");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcRejectionPorts = window.__codexPlusRpcRejectionPorts ||= new WeakMap();
   const codexPlusRpcCreationFailures = window.__codexPlusRpcCreationFailures ||= new WeakMap();
@@ -32384,7 +32440,16 @@ ${key} = ${value}`]);
 
   function codexPlusRpcRejectNotice(reason) {
     try {
-      if (typeof showToast === "function") showToast(reason, { type: "warn" });
+      if (typeof showToast !== "function") return;
+      const options = { type: "warn" };
+      if (String(reason).includes("Provider sync recovery is pending:")) {
+        options.actionLabel = "打开会话维护";
+        options.onAction = async () => {
+          const result = await postJson("/manager/open", { page: "sessions" });
+          if (result?.status !== "ok") throw new Error(result?.message || "打开管理器失败");
+        };
+      }
+      showToast(reason, options);
     } catch {}
   }
 
@@ -32954,7 +33019,7 @@ ${key} = ${value}`]);
         if (!queued) break;
         let nextPlan = null;
         try {
-          nextPlan = codexPlusRpcPlanFrame(queued[0], port);
+          nextPlan = window.__codexPlusRpcFrameInterceptor.planFrame(queued[0], port);
         } catch {}
         entry = [queued[0], queued[1], nextPlan];
       }
@@ -32968,10 +33033,14 @@ ${key} = ${value}`]);
     const proto = window.MessagePort?.prototype;
     if (!proto || typeof proto.postMessage !== "function") return false;
     const installed = window.__codexPlusRpcFrameInterceptor;
-    if (installed?.version >= codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
+    if (installed?.version > codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
+    window.__codexPlusRpcIncomingFrame = codexPlusRpcIncomingFrame;
+    if (installed?.version === codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) {
+      installed.planFrame = codexPlusRpcPlanFrame;
+      return true;
+    }
     // 重复注入时包原生的那个，不叠层。
     const original = installed?.original || proto.postMessage;
-    window.__codexPlusRpcIncomingFrame = codexPlusRpcIncomingFrame;
     const eventProto = window.MessageEvent?.prototype;
     if (eventProto && !window.__codexPlusRpcMessageData) {
       const descriptor = Object.getOwnPropertyDescriptor(eventProto, "data");
@@ -32997,13 +33066,16 @@ ${key} = ${value}`]);
       const state = codexPlusRpcPortQueues.get(this);
       let plan = null;
       try {
-        plan = codexPlusRpcPlanFrame(message, this);
+        plan = window.__codexPlusRpcFrameInterceptor.planFrame(message, this);
       } catch {}
       // resolve 不分配隐式 RPC 序号。单独等待它，预检发出的请求才能通过同一端口。
       if (message?.[0] === "resolve" && plan?.context && !plan.before) {
         const port = this;
         void (async () => {
-          if (state) await state.done;
+          if (state) {
+            await state.done;
+            return proto.postMessage.call(port, message, ...rest);
+          }
           const replaced = await codexPlusRpcRunPlan(plan, message);
           original.call(port, replaced || message, ...rest);
         })().catch((error) => {
@@ -33020,7 +33092,8 @@ ${key} = ${value}`]);
       return undefined;
     };
     proto.postMessage = patched;
-    window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched };
+    window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched,
+      planFrame: codexPlusRpcPlanFrame, pushFailure: codexPlusRpcPushFailure };
     return true;
   }
 

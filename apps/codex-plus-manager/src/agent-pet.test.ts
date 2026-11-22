@@ -102,7 +102,7 @@ function fixture(config: Record<string, unknown>, responses: Record<string, unkn
     document: { body, createElement: (tag: string) => new Element(tag) },
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
     atob: (value: string) => Buffer.from(value, "base64").toString("binary"),
-    Promise, JSON, Math, Number, Array, String, Map, Date, Uint8Array,
+    Promise, JSON, Math, Number, Array, String, Map, Date, Uint8Array, performance,
   });
   runInContext(`${fragment}\nwindow.pet = createCodexPlusAgentPet(ctx);`, context);
   return {

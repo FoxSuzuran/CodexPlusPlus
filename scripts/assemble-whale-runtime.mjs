@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 
 const root = new URL("../assets/inject/upstream/whale-widget/", import.meta.url);
 const raw = readFileSync(new URL("full-widget.js", root), "utf8");
-const expectedHash = "391806b8d4fd7c77a1711e02f58360e641f97b97bfb9085049031365007301b0";
+const expectedHash = "7b9ac4808896b68f835d2924217193ecf57f840f872fb4ea84ca028ae7172deb";
 if (createHash("sha256").update(raw).digest("hex") !== expectedHash) throw new Error("上游鲸鱼源码已变化，请核对移植补丁与来源后更新校验值。");
 let source = raw;
 function patch(before, after) {
@@ -34,7 +34,7 @@ patch("function bubbleParseDefaultItems() {", "BUBBLE_DEFAULT_ITEMS = codexWhale
 patch("function apiModelTodayText(modelId) {", "function apiModelTodayText(modelId) {\n  if (modelId === 'codex') return codexWhaleHost.tokens('today') + ' tokens'");
 patch("function bubbleContentTokenMap(m) {\n  m = m || {}\n  var v = ''\n  var map = {}", "function bubbleContentTokenMap(m) {\n  m = m || {}\n  var v = ''\n  var map = {}\n  for (var period of ['today','week','month','all']) map['tokens_' + period] = codexWhaleHost.tokens(period)");
 patch("function bubbleTplHelpItems(m) {\n  m = m || {}\n  var arr = []\n  function add(k, d) { arr.push({ k: '{' + k + '}', d: d }) }", "function bubbleTplHelpItems(m) {\n  m = m || {}\n  var arr = []\n  function add(k, d) { arr.push({ k: '{' + k + '}', d: d }) }\n  if (m.modelId === 'codex') for (var p of ['today','week','month','all']) add('tokens_' + p, 'Codex ' + p + ' token 用量')");
-patch("  for (var i = 0; i < defs.length; i++) {", "  for (var cp of [['today','今日'],['week','近7天'],['month','本月'],['all','累计']]) defs.push({ key: 'codex-' + cp[0], label: 'Codex ' + cp[1] + ' token', cb: (function(p,l) { return function() { bubbleModuleAdd({type:'today',modelId:'codex',size:8,tpl:l + ' {tokens_' + p + '} tokens'}) } })(cp[0],cp[1]) })\n  for (var i = 0; i < defs.length; i++) {");
+patch("  for (var i = 0; i < defs.length; i++) {\n    (function (d) {\n      var chip = document.createElement('div')", "  for (var cp of [['today','今日'],['week','近7天'],['month','本月'],['all','累计']]) defs.push({ key: 'codex-' + cp[0], label: 'Codex ' + cp[1] + ' token', cb: (function(p,l) { return function() { bubbleModuleAdd({type:'today',modelId:'codex',size:8,tpl:l + ' {tokens_' + p + '} tokens'}) } })(cp[0],cp[1]) })\n  for (var i = 0; i < defs.length; i++) {\n    (function (d) {\n      var chip = document.createElement('div')");
 patch("function bubblePaletteModule(key) {", "function bubblePaletteModule(key) {\n  if (String(key).indexOf('codex-') === 0) return {type:'today',modelId:'codex',size:8,tpl:'{tokens_' + String(key).slice(6) + '} tokens'}");
 patch("var keyRefInp = apiTextInput(isNew ? '' : m.keyRef, '凭据名，例如 OPENROUTER_API_KEY')", "var keyRefInp = codexWhaleHost.profileSelect(isNew ? '' : m.keyRef)");
 patch("keyRefInp.title = '写入 DSH 官方凭据（.credentials.yaml）时使用的名字'", "keyRefInp.title = '复用 Codex++ 已保存的供应商配置，密钥只在本机后端使用'");
@@ -51,6 +51,9 @@ patch("} else if (m.builtin) {\n      // 内置 DeepSeek", "} else if (m.builtin
 patch("baseInp = apiTextInput(isNew ? '' : m.baseUrl, '例如 https://my-gateway.example.com')", "baseInp = apiTextInput(isNew ? '' : m.baseUrl, '复用所选供应商的 Base URL')\n    baseInp.readOnly = true");
 patch("var soundOn = true", "var soundOn = codexWhaleHost.initialSound()");
 patch("function fmt(balance, currency) {\n  var num = Number(balance)", "function fmt(balance, currency) {\n  if (balance === null || balance === undefined || balance === '') return '—'\n  var num = Number(balance)");
+// Keep the embedded media route and let Codex++ own updates for this bundled release.
+source = source.replaceAll("'/dsh-whale/audio-fragment?", "'/dsh-whale/audio-fragment.wav?");
+patch("    if (!d || !d.ok) aboutLastUpdate", "    if (d && d.channel === 'bundled') aboutLastUpdate = '随 Codex++ 更新'\n    else if (!d || !d.ok) aboutLastUpdate");
 patch("function apiFmtMoney(v, cur) {\n  var n = Number(v)", "function apiFmtMoney(v, cur) {\n  if (v === null || v === undefined || v === '') return '—'\n  var n = Number(v)");
 patch("var used = isAuto ? Math.max(0, Number(q.autoUsed) || 0) : Math.max(0, Number(q.used) || 0)", "var rawUsed = isAuto ? q.autoUsed : q.used\n  var used = rawUsed == null || rawUsed === '' ? null : Math.max(0, Number(rawUsed) || 0)");
 patch("var left = Math.max(0, total - used)", "var left = used == null ? null : Math.max(0, total - used)");

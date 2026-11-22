@@ -1,7 +1,7 @@
 {
   "id": "agent-pet",
   "name": "Agent 桌宠",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Codex 窗口里可拖动的小角色：图片桌宠按下压扁、松开回弹并播放音效；大肥鱼显示用量、余额与泡泡。",
   "icon": "assets/icon.svg",
   "engines": { "codexpp": 1 },

@@ -93,7 +93,7 @@ function harness(dir: string, files: string[], exportNames: string[], callImpl: 
 
 test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage，取数只走清单里的只读路由", async () => {
   const live = { status: "ok", events: [] };
-  const h = harness("usage-statusline", ["statusline.js", "main.js"], ["codexPlusUsageState", "codexPlusUsageHost"], async () => live);
+  const h = harness("usage-statusline", ["statusline.js", "main.js"], ["codexPlusUsageState", "codexPlusUsageHost", "codexPlusUsageRemember"], async () => live);
   assert.deepEqual(h.slots.map((slot) => slot.slot), ["composer.below"]);
   assert.equal(h.scope.codexPlusUsageState.running, true, "拓展装上即开始");
   assert.deepEqual(h.legacyDisposed, ["usage"], "先停掉旧版注入里的内置用量状态栏");
@@ -116,11 +116,16 @@ test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage�
   (cleanup as () => void)();
   assert.equal(h.scope.codexPlusUsageState.slotHosts.size, 0);
 
-  // 服务：默认取当前会话，读的是状态栏缓存的事件。
+  // 服务：默认用当前会话的快照。调用方改自己的返回值不会影响状态栏。
   const usage = h.services.get("codexpp.usage");
+  assert.equal(usage.measurementVersion, 1);
   assert.equal(usage.cached(), null);
-  h.scope.codexPlusUsageState.cache.set("thread-current-1", [{ t: new Date().toISOString(), total_tokens: 500, context_window: 1000 }]);
+  h.scope.codexPlusUsageRemember("thread-current-1", [
+    { t: new Date().toISOString(), input_tokens: 400, cached_input_tokens: 200, total_tokens: 500, context_window: 1000 },
+  ]);
   assert.equal(usage.cached().context, 50);
+  usage.cached().cacheCounts.cached = 0;
+  assert.equal(usage.cached().cacheCounts.cached, 200);
   assert.equal(usage.cached("other"), null);
 
   // 停用：停掉轮询、摘掉样式、撤回服务。

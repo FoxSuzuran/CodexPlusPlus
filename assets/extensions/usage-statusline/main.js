@@ -1,7 +1,7 @@
   // 用量状态栏拓展的入口：拓展启用时开始观察输入框、轮询本会话的 token 事件，停用 / 热重载时摘掉状态栏。
   // 状态栏放进公开插槽 composer.below 给的容器；取数走清单里声明的 /thread-usage-live 与 /request-log/recent。
   // 解码速度来自请求日志；缓存和上下文仍来自 rollout 尾部。
-  // 算好的读数作为服务 codexpp.usage 提供：cached(threadId?) → { speed, decodeSpeed, outputThroughput, cache, context, stale, modelContextWindow } | null。
+  // 提供同一会话的快照，避免用量拓展再轮询一次日志。
   codexPlus.extension((ctx) => {
     codexPlusUsageHost.call = (route, payload) => ctx.call(route, payload);
     codexPlusUsageHost.diagnose = (event, detail) => ctx.call("/diagnostics/log", { event, detail: detail || {} }).catch(() => {});
@@ -40,6 +40,10 @@
       };
     });
     ctx.provide("codexpp.usage", Object.freeze({
-      cached: (threadId) => codexPlusUsageSnapshot(codexPlusUsageState.cache.get(String(threadId || codexPlus.currentSessionId()))),
+      measurementVersion: 1,
+      cached: (threadId) => {
+        const snapshot = codexPlusUsageState.cache.get(String(threadId || codexPlus.currentSessionId()))?.snapshot;
+        return snapshot ? { ...snapshot, cacheCounts: snapshot.cacheCounts && { ...snapshot.cacheCounts } } : null;
+      },
     }));
   });

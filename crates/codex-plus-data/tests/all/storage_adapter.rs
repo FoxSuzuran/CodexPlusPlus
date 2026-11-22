@@ -1365,7 +1365,8 @@ fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
                 "total_tokens": 1320,
                 "context_window": 258400,
                 "turn_output_tokens": 500,
-                "turn_id": "first-turn"
+                "turn_id": "first-turn",
+                "turn_started_at": "2026-06-02T04:59:59Z"
             },
             {
                 "t": "2026-06-02T05:00:10Z",
@@ -1376,7 +1377,8 @@ fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
                 "total_tokens": 2250,
                 "context_window": 258400,
                 "turn_output_tokens": 750,
-                "turn_id": "second-turn"
+                "turn_id": "second-turn",
+                "turn_started_at": "2026-06-02T05:00:09Z"
             }
         ])
     );
@@ -1448,7 +1450,7 @@ fn live_usage_from_records(records: &[serde_json::Value]) -> serde_json::Value {
 #[test]
 fn thread_usage_live_marks_real_turns_with_monotonic_session_totals() {
     let value = live_usage_from_records(&[
-        json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}),
+        json!({"timestamp":"2026-10-20T04:59:56Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}),
         live_usage_token_event(100, 1000, 1000),
         json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1"}}),
         json!({"type":"turn_context","payload":{"turn_id":"turn-2"}}),
@@ -1461,6 +1463,7 @@ fn thread_usage_live_marks_real_turns_with_monotonic_session_totals() {
     let events = value["events"].as_array().unwrap();
     assert_eq!(events.len(), 3);
     assert_eq!(events[0]["turn_id"], "turn-1");
+    assert_eq!(events[0]["turn_started_at"], "2026-10-20T04:59:56Z");
     assert_eq!(events[1]["turn_id"], "turn-2");
     assert_eq!(events[2]["turn_id"], "turn-2");
     assert_eq!(events[0]["turn_output_tokens"], 100);
@@ -1468,6 +1471,23 @@ fn thread_usage_live_marks_real_turns_with_monotonic_session_totals() {
     assert_eq!(events[2]["turn_output_tokens"], 300);
     assert_eq!(events[1]["cached_input_tokens"], 0);
     assert_eq!(events[2]["cached_input_tokens"], 810);
+}
+
+#[test]
+fn thread_usage_live_preserves_unknown_cached_tokens_and_totals() {
+    let mut partial = live_usage_token_event(100, 1000, 0);
+    partial["payload"]["info"]["last_token_usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cached_input_tokens");
+    partial["payload"]["info"]["last_token_usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("total_tokens");
+    let value = live_usage_from_records(&[partial, live_usage_token_event(200, 700, 0)]);
+    assert!(value["events"][0]["cached_input_tokens"].is_null());
+    assert!(value["events"][0]["total_tokens"].is_null());
+    assert_eq!(value["events"][1]["cached_input_tokens"], 0);
 }
 
 #[test]

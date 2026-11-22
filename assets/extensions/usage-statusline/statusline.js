@@ -4,7 +4,7 @@
    *
    * 缓存和上下文来自 Codex 自己写的 rollout 记录（`event_msg.token_count`），解码速度
    * 来自 Codex++ 的请求日志。首 token 延迟也来自同一份请求日志，按输出 token 加权。
-   * 缓存命中 = cached_input_tokens / input_tokens，上下文占用 =
+   * 缓存命中取最近一次调用的 cached_input_tokens / input_tokens，上下文占用 =
    * last_token_usage.total_tokens / model_context_window。这里的 model_context_window
    * 正是 Codex++ 注入 model_catalog_json 后 Codex 认到的每模型窗口，所以按模型配置
    * 窗口的功能会直接反映在这一项上。
@@ -83,29 +83,25 @@
 
   const codexPlusUsageSvgNs = "http://www.w3.org/2000/svg";
 
-  /**
-   * 速度项只显示数字，名称和口径放在悬停提示里。主值是首 token 之后的纯解码速度；
-   * rollout 还能算出含首 token 等待和工具执行的输出吞吐，只放在提示里作对比。
-   */
+  /** 速度数字旁标出轮内吞吐估算，悬停可查看样本来源和用量分子、分母。 */
   function codexPlusUsageText() {
     const language = (document.documentElement?.lang || navigator.language || "").toLowerCase();
     return language.startsWith("zh")
       ? {
-        speed: (value) => `${value} tok/s`,
+        speed: (value, source) => source === "none" ? "速度 —" : `${source === "throughput" ? "约 " : ""}${value} tok/s`,
         ttft: (value) => `首 token ${value}`,
         cache: (value) => `缓存命中 ${value}`,
-        context: (value) => value,
+        context: (value) => `上下文 ${value}`,
         turnUsage: (value) => `${value} tokens`,
         aria: "用量状态栏",
         separator: "：",
         comma: "，",
-        speedTitle: (value) => `解码速度（decode_tps）${value} tok/s（最近最多 10 次已完成请求的加权平均，按输出 token ÷ 首 token 后的生成耗时；不含首 token 等待和工具执行，并忽略不足 50ms 或超过 5000 tok/s 的异常样本）`,
+        speedTitle: (value) => `流式速度估算（decode_tps）${value} tok/s · 本轮同模型最多 10 次，输出 token（含推理）÷ 首段输出到响应完成的时长（排除低于 50ms 或高于 5000 tok/s 的样本）`,
         ttftTitle: (value) => `首 token 延迟 ${value}s（最近最多 10 次成功请求的加权平均，按输出 token 加权，包含排队与提示词处理）`,
         callTitle: (value) => `模型调用吞吐（call_tps）${value} tok/s（最近最多 10 次成功请求，输出 token ÷ 完整请求耗时；含首 token 等待，不含工具执行）`,
-        throughputTitle: (value) => `整轮近似吞吐 ${value} tok/s（由 rollout 相邻 token 事件估算，包含首 token 等待、工具和轮次内等待；不是精确的 e2e_tps，仅作对比）`,
-        cacheTitle: (value) => `缓存命中 ${value}`,
-        contextTitle: (value) => `上下文占用 ${value}`,
-        windowTitle: (value) => `窗口 ${value}`,
+        throughputTitle: (value) => `轮内近似吞吐 ${value} tok/s · 相邻调用之间的输出 ÷ 耗时，含等待和工具执行`,
+        cacheTitle: (value, counts) => `最近调用缓存命中 ${value}${counts ? `（${counts} 输入 token）` : ""}`,
+        contextTitle: (value, counts) => `最近上报上下文 ${value}${counts ? `（${counts} tokens）` : ""}`,
         turnUsageTitle: (usage) => [
           `本条消息 ${codexPlusUsageFormatNumber(usage.total)} tokens`,
           `输入 ${codexPlusUsageFormatNumber(usage.input)}`,
@@ -116,21 +112,20 @@
         ].filter(Boolean).join(" · "),
       }
       : {
-        speed: (value) => `${value} tok/s`,
+        speed: (value, source) => source === "none" ? "Speed —" : `${source === "throughput" ? "≈ " : ""}${value} tok/s`,
         ttft: (value) => `first token ${value}`,
         cache: (value) => `cache hit ${value}`,
-        context: (value) => value,
+        context: (value) => `Context ${value}`,
         turnUsage: (value) => `${value} tokens`,
         aria: "Usage status line",
         separator: ": ",
         comma: ", ",
-        speedTitle: (value) => `Decode speed (decode_tps) ${value} tok/s (token-weighted average of up to 10 completed requests, using output tokens ÷ generation time after the first token; excludes first-token wait and tool runs, and ignores anomalous samples below 50ms or above 5000 tok/s)`,
+        speedTitle: (value) => `Estimated streaming rate (decode_tps) ${value} tok/s · up to 10 same-model calls in this turn, output tokens (including reasoning) ÷ time from first streamed output to completion (excludes samples below 50ms or above 5000 tok/s)`,
         ttftTitle: (value) => `First-token latency ${value}s (token-weighted average of up to 10 successful requests, including queueing and prompt processing)`,
         callTitle: (value) => `Model-call throughput (call_tps) ${value} tok/s (up to 10 successful requests, output tokens ÷ full request time; includes first-token wait and excludes tool runs)`,
-        throughputTitle: (value) => `Approximate turn throughput ${value} tok/s (estimated from adjacent rollout token events and includes first-token wait, tools, and in-turn waiting; not exact e2e_tps, shown only for comparison)`,
-        cacheTitle: (value) => `Cache hit ${value}`,
-        contextTitle: (value) => `Context used ${value}`,
-        windowTitle: (value) => `window ${value}`,
+        throughputTitle: (value) => `Approximate in-turn throughput ${value} tok/s · output between consecutive calls ÷ elapsed time, including waits and tools`,
+        cacheTitle: (value, counts) => `Last call cache hit ${value}${counts ? ` (${counts} input tokens)` : ""}`,
+        contextTitle: (value, counts) => `Last reported context ${value}${counts ? ` (${counts} tokens)` : ""}`,
         turnUsageTitle: (usage) => [
           `This message used ${codexPlusUsageFormatNumber(usage.total)} tokens`,
           `input ${codexPlusUsageFormatNumber(usage.input)}`,
@@ -155,21 +150,16 @@
     style.id = codexPlusUsageStyleId;
     style.dataset.codexPlusExt = codexPlusUsageOwner;
     style.textContent = `
-      /* 颜色只用一层透明度：主题的 --color-token-text-secondary 本身就是 65% 透明，
-         再叠容器 opacity 会掉到 0.3 出头，实测在 #141414 上几乎看不清。
-         这里以主文字色取 82%，既够亮又略低于输入框文字。 */
-      /* 三项作为一组居中，和 DSH 那条一致；两端对齐会把「上下文占用」甩到最右边，
-         和速度、缓存拉得太开，读起来是两段信息。 */
-      #${codexPlusUsageStatusLineId}{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:5px 18px;box-sizing:border-box;width:100%;margin:6px 0 0;padding:0 10px;font:inherit;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
+      /* 文字使用主题前景色，壁纸和半透明输入区上也保留对比度。 */
+      #${codexPlusUsageStatusLineId}{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:5px 14px;box-sizing:border-box;width:100%;margin:6px 0 0;padding:0 10px;font:inherit;font-size:12px;line-height:18px;color:var(--color-token-text-primary,CanvasText);user-select:none;cursor:default}
       /* 插槽已经提供上间距，迁入时不能再叠一份，否则输入框会向上跳 6px。 */
       [data-codex-plus-ui-slot="composer.below"] #${codexPlusUsageStatusLineId}{margin-top:0}
       #${codexPlusUsageStatusLineId}[data-hidden="true"]{display:none}
-      #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .2s}
+      #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-value{font-weight:500}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item svg{flex:0 0 auto;opacity:.8}
       .turn-action-controls>[data-codex-plus-turn-usage]{display:inline-flex;align-items:center;min-height:20px;margin-left:6px;color:var(--color-token-text-tertiary,rgba(180,180,190,.86));font-size:12px;line-height:17px;font-variant-numeric:tabular-nums;white-space:nowrap;user-select:none}
-      /* 本轮结束超过阈值只淡化速度：缓存命中与上下文占用仍然是当前值，不该跟着变灰。 */
-      #${codexPlusUsageStatusLineId}[data-stale="true"] .codex-plus-usage-item[data-usage="speed"]{opacity:.55}
+      #${codexPlusUsageStatusLineId}[data-stale="true"] .codex-plus-usage-item[data-usage="speed"] svg{opacity:.55}
     `;
     document.head?.appendChild(style);
   }
@@ -515,8 +505,12 @@
   }
 
   function codexPlusUsagePercent(numerator, denominator) {
-    if (!(denominator > 0) || !(numerator >= 0)) return null;
-    return Math.min(100, Math.max(0, (numerator / denominator) * 100));
+    if (!Number.isFinite(denominator) || denominator <= 0 || !Number.isFinite(numerator) || numerator < 0) return null;
+    return numerator / denominator * 100;
+  }
+
+  function codexPlusUsageCount(value) {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
   }
 
   function codexPlusUsageTimingSampleIsPlausible(outputTokens, elapsedMs) {
@@ -537,6 +531,26 @@
       while (start > 0 && events[start - 1].turn_id === turnId) start -= 1;
     }
     return events.slice(start);
+  }
+
+  /** 同一会话的旧请求可能来自另一个模型或直连前的代理，不能给本轮补速度。 */
+  function codexPlusUsageTimedRequests(requests, threadId, segment) {
+    if (!threadId || !Array.isArray(requests) || !segment.length) return [];
+    const first = segment[0];
+    const startedAt = Date.parse(first.turn_started_at);
+    const firstObservation = Date.parse(first.t);
+    const lastObservation = Date.parse(segment.at(-1).t);
+    if (!Number.isFinite(firstObservation) || !Number.isFinite(lastObservation)) return [];
+    const eligible = requests.filter((request) => {
+      if (request?.threadId !== threadId || request.success !== true || request.stream !== true
+        || request.state === "running" || request.attempts > 1 || !Number.isFinite(request.timestampMs)
+        || request.timestampMs > lastObservation + 2000) return false;
+      if (Number.isFinite(startedAt)) return request.startedAtMs >= startedAt;
+      // 旧记录或截断的尾部没有轮开始时间；只匹配第一条已知事件附近及之后的请求。
+      return request.timestampMs >= firstObservation - 2000;
+    }).sort((left, right) => right.timestampMs - left.timestampMs);
+    const model = eligible[0]?.upstreamModel || eligible[0]?.model;
+    return eligible.filter((request) => (request.upstreamModel || request.model) === model);
   }
 
   /**
@@ -669,7 +683,7 @@
     const output = Math.max(0, Number(value.outputTokens) || 0);
     const reasoning = Math.max(0, Number(value.reasoningTokens) || 0);
     const reportedTotal = Math.max(0, Number(value.totalTokens) || 0);
-    const total = reportedTotal || input + cached + output;
+    const total = reportedTotal || input + output;
     if (total <= 0 && input <= 0 && cached <= 0 && output <= 0) return null;
     return {
       total,
@@ -681,20 +695,10 @@
     };
   }
 
-  /** 同一轮的多次模型调用按输入 token 加权，不能直接平均各次百分比。 */
-  function codexPlusUsageTurnCache(events) {
-    const segment = codexPlusUsageLatestTurn(events);
-    let input = 0;
-    let cached = 0;
-    for (const event of segment) {
-      const currentInput = Number(event.input_tokens) || 0;
-      const currentCached = Number(event.cached_input_tokens) || 0;
-      if (currentInput > 0) {
-        input += currentInput;
-        cached += Math.max(0, Math.min(currentCached, currentInput));
-      }
-    }
-    return input > 0 ? codexPlusUsagePercent(cached, input) : null;
+  function codexPlusUsageLatestCache(event) {
+    const input = codexPlusUsageCount(event?.input_tokens);
+    const cached = codexPlusUsageCount(event?.cached_input_tokens);
+    return input > 0 && cached != null && cached <= input ? { input, cached } : null;
   }
 
   /** 单个区间超过这个时长就当作长停顿（等审批、挂起、断线重连），不计入吞吐。 */
@@ -721,22 +725,26 @@
     const segment = codexPlusUsageLatestTurn(events);
     let tokens = 0;
     let seconds = 0;
-    for (let index = 1; index < segment.length; index += 1) {
-      const previous = segment[index - 1];
-      const current = segment[index];
-      const previousOutput = Number(previous.turn_output_tokens) || 0;
-      const currentOutput = Number(current.turn_output_tokens) || 0;
-      if (current.turn_id !== previous.turn_id || currentOutput < previousOutput) {
+    let previousOutput = null;
+    let previousTime = NaN;
+    for (const current of segment) {
+      const output = codexPlusUsageCount(current.turn_output_tokens);
+      const time = Date.parse(current.t);
+      if (output == null || !Number.isFinite(time)) continue;
+      // 重复的完成事件可能晚到，不能缩短下一次调用的测量区间。
+      if (output === previousOutput) continue;
+      const delta = previousOutput == null ? 0 : output - previousOutput;
+      const interval = (time - previousTime) / 1000;
+      previousOutput = output;
+      previousTime = time;
+      if (delta < 0) {
         tokens = 0;
         seconds = 0;
         continue;
       }
-      if (currentOutput <= previousOutput) continue;
-      const startedAt = Date.parse(previous.t);
-      const endedAt = Date.parse(current.t);
-      const interval = (endedAt - startedAt) / 1000;
-      if (!(interval >= 0.5) || interval > codexPlusUsageMaxIntervalSeconds) continue;
-      tokens += currentOutput - previousOutput;
+      if (!(interval >= 0.5 && interval <= codexPlusUsageMaxIntervalSeconds)
+        || !codexPlusUsageTimingSampleIsPlausible(delta, interval * 1000)) continue;
+      tokens += delta;
       seconds += interval;
     }
     return seconds > 0 ? tokens / seconds : null;
@@ -748,17 +756,27 @@
     if (!Array.isArray(events) || !events.length) return null;
     const latest = events[events.length - 1];
     const observedAt = Date.parse(latest.t);
+    const requests = codexPlusUsageTimedRequests(bundle.requests, bundle.threadId, codexPlusUsageLatestTurn(events));
+    const cacheCounts = codexPlusUsageLatestCache(latest);
+    const modelContextWindow = codexPlusUsageCount(latest.context_window);
+    const input = codexPlusUsageCount(latest.input_tokens);
+    const output = codexPlusUsageCount(latest.output_tokens);
+    const contextTokens = codexPlusUsageCount(latest.total_tokens) ?? (input != null && output != null ? input + output : null);
     const outputThroughput = codexPlusUsageRate(events);
     return {
       speed: outputThroughput,
-      decodeSpeed: codexPlusUsageDecodeRate(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
-      firstTokenMs: codexPlusUsageFirstTokenMs(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
-      callTps: codexPlusUsageCallRate(bundle.requests, String(bundle.threadId || latest.thread_id || "")),
+      decodeSpeed: codexPlusUsageDecodeRate(requests, bundle.threadId),
+      firstTokenMs: codexPlusUsageFirstTokenMs(requests, bundle.threadId),
+      callTps: codexPlusUsageCallRate(requests, bundle.threadId),
       outputThroughput,
-      cache: codexPlusUsageTurnCache(events),
-      context: codexPlusUsagePercent(Number(latest.total_tokens), Number(latest.context_window)),
-      stale: Number.isFinite(observedAt) ? Date.now() - observedAt > codexPlusUsageStaleMs : false,
-      modelContextWindow: Number(latest.context_window) || 0,
+      cache: codexPlusUsagePercent(cacheCounts?.cached, cacheCounts?.input),
+      cacheCounts,
+      context: codexPlusUsagePercent(contextTokens, modelContextWindow),
+      contextTokens,
+      get stale() {
+        return Number.isFinite(observedAt) && Date.now() - observedAt > codexPlusUsageStaleMs;
+      },
+      modelContextWindow: modelContextWindow || 0,
     };
   }
 
@@ -791,7 +809,7 @@
     const format = (value) => (value === null || value === undefined || Number.isNaN(value) ? "--" : value);
     const speedDisplay = codexPlusUsageSpeedDisplay(snapshot);
     const speed = speedDisplay.value;
-    // 主速度位已经在显示近似吞吐时，悬停里不再重复一条同值的近似吞吐。
+    // 悬停提示共用速度栏的来源和读数。
     const speedFromThroughput = speedDisplay.source === "throughput";
     const speedTitle = speedFromThroughput ? text.throughputTitle(speed) : text.speedTitle(format(speed));
     const firstToken = snapshot?.firstTokenMs == null
@@ -803,37 +821,39 @@
     const outputThroughput = snapshot?.outputThroughput == null
       ? null
       : String(Math.max(0, Math.round(snapshot.outputThroughput)));
-    const cache = snapshot?.cache == null ? "--" : `${snapshot.cache.toFixed(1)}%`;
-    const context = snapshot?.context == null ? "--" : `${Math.round(snapshot.context)}%`;
+    const cache = snapshot?.cache == null ? "—" : `${snapshot.cache.toFixed(1)}%`;
+    const context = snapshot?.context == null ? "—" : `${snapshot.context.toFixed(1)}%`;
     const stale = snapshot?.stale === true;
     const contextWindow = snapshot?.modelContextWindow || 0;
+    const formatCounts = (used, limit) => `${codexPlusUsageFormatNumber(used)} / ${codexPlusUsageFormatNumber(limit)}`;
+    const cacheCounts = snapshot?.cacheCounts ? formatCounts(snapshot.cacheCounts.cached, snapshot.cacheCounts.input) : "";
+    const contextCounts = snapshot?.contextTokens != null && contextWindow > 0 ? formatCounts(snapshot.contextTokens, contextWindow) : "";
     // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, speedDisplay.source, firstToken, callTps, outputThroughput, cache, context, stale, contextWindow].join("|");
+    const fingerprint = [speed, speedDisplay.source, firstToken, callTps, outputThroughput, cache, context, stale, cacheCounts, contextCounts].join("|");
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
 
     for (const [part, value] of [
-      ["speed", text.speed(speed)], ["ttft", text.ttft(firstToken)],
+      ["speed", text.speed(speed, speedDisplay.source)], ["ttft", text.ttft(firstToken === "--" ? "—" : firstToken)],
       ["cache", text.cache(cache)], ["context", text.context(context)],
     ]) {
       const label = parts[part].value;
       if (label.textContent !== value) label.textContent = value;
     }
     if (parts.ring) {
-      const filled = snapshot?.context == null ? 0 : (snapshot.context / 100) * codexPlusUsageRingCircumference;
+      const filled = snapshot?.context == null ? 0 : Math.min(1, snapshot.context / 100) * codexPlusUsageRingCircumference;
       parts.ring.setAttribute("stroke-dasharray", `${filled.toFixed(2)} ${codexPlusUsageRingCircumference}`);
     }
     node.dataset.stale = String(stale);
     node.setAttribute("title", [
-      speedTitle,
-      text.ttftTitle(firstToken === "--" ? "--" : firstToken.replace(/s$/, "")),
+      speedDisplay.source === "none" ? "" : speedTitle,
+      firstToken === "--" ? "" : text.ttftTitle(firstToken.replace(/s$/, "")),
       callTps == null ? "" : text.callTitle(format(callTps)),
       outputThroughput == null || speedFromThroughput ? "" : text.throughputTitle(format(outputThroughput)),
-      text.cacheTitle(format(cache)),
-      text.contextTitle(format(context)),
-      contextWindow > 0 ? text.windowTitle(codexPlusUsageFormatNumber(contextWindow)) : "",
+      text.cacheTitle(cache, cacheCounts),
+      text.contextTitle(context, contextCounts),
     ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}${text.separator}${[speedTitle, text.ttft(firstToken), text.cache(cache), context].join(text.comma)}`);
+    node.setAttribute("aria-label", `${text.aria}${text.separator}${[text.speed(speed, speedDisplay.source), text.ttft(firstToken), text.cache(cache), text.context(context)].join(text.comma)}`);
   }
 
   /** 把 token 角标放到本轮最后一个已完成 assistant 动作栏，和原生时间提示同一行。 */
@@ -1042,7 +1062,7 @@
       codexPlusUsageState.lastFingerprint = "";
     }
     codexPlusUsageShow(node);
-    const snapshot = codexPlusUsageSnapshot(codexPlusUsageState.cache.get(threadId));
+    const snapshot = codexPlusUsageState.cache.get(threadId)?.snapshot ?? null;
     codexPlusUsageRender(snapshot);
     codexPlusUsageRenderTurnUsage(threadId);
     if (changed) void codexPlusUsageRefreshTurnUsage(threadId);
@@ -1082,12 +1102,13 @@
       : [];
     // 请求完成事件和 request-log 落盘不是同一时刻。临时空结果或读取失败时保留
     // 本会话最近一组可计算的速度样本，避免轮次刚结束时 TPS 跳成 `--`。
-    const requests = codexPlusUsageDecodeRate(incomingRequests, threadId) == null
+    const requests = !incomingRequests.length
       && Array.isArray(previous?.requests)
       ? previous.requests
       : incomingRequests;
+    const snapshot = codexPlusUsageSnapshot({ threadId, requests, events: bundle.events });
     codexPlusUsageState.cache.delete(threadId);
-    codexPlusUsageState.cache.set(threadId, { ...bundle, requests, events: bundle.events.slice(-24) });
+    codexPlusUsageState.cache.set(threadId, { requests, snapshot });
     if (codexPlusUsageState.cache.size > 32) {
       codexPlusUsageState.cache.delete(codexPlusUsageState.cache.keys().next().value);
     }

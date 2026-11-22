@@ -576,6 +576,16 @@ impl SQLiteStorageAdapter {
                 errors.join("; ")
             );
         }
+        if session.host_id.as_deref().is_none_or(|host| host == "local")
+            && let Some(id) = crate::whale_usage::normalize_session_id(&thread_id)
+            && let Some(rollout) = remembered_session_rollout(self.session_rollout_roots(), &id)
+        {
+            return Ok(CodexThreadRollout::Ready {
+                thread_id,
+                rollout_path: rollout.to_string_lossy().into_owned(),
+                rollout,
+            });
+        }
         Ok(CodexThreadRollout::Unavailable(json!({
             "status": "failed", "session_id": thread_id,
             "message": format!("Thread rollout unavailable: {}; {}", missing.join("; "), self.database_not_found_message()),
@@ -656,17 +666,24 @@ impl SQLiteStorageAdapter {
         }
     }
 
+    fn session_rollout_roots(&self) -> Vec<PathBuf> {
+        let Some(home) = self
+            .codex_home
+            .as_deref()
+            .or_else(|| self.db_path.parent())
+        else {
+            return Vec::new();
+        };
+        ["sessions", "archived_sessions"]
+            .iter()
+            .filter_map(|name| fs::canonicalize(home.join(name)).ok())
+            .collect()
+    }
+
     /// 小鲸鱼只接受会话 UUID；路径来自只读数据库或受限会话目录，不接受前端路径。
     pub(crate) fn whale_rollout_path(&self, thread_id: &str) -> Option<PathBuf> {
         crate::whale_usage::normalize_session_id(thread_id)?;
-        let home = self
-            .codex_home
-            .as_deref()
-            .or_else(|| self.db_path.parent())?;
-        let roots: Vec<PathBuf> = ["sessions", "archived_sessions"]
-            .iter()
-            .filter_map(|name| fs::canonicalize(home.join(name)).ok())
-            .collect();
+        let roots = self.session_rollout_roots();
         let allowed = |path: &Path| -> Option<PathBuf> {
             let path = fs::canonicalize(path).ok()?;
             (path.is_file()
@@ -696,31 +713,7 @@ impl SQLiteStorageAdapter {
                 }
             }
         }
-        // API 模式可能没有 threads 行。只遍历标准目录，限制深度及条目数，不跟随符号链接。
-        let suffix = format!("-{thread_id}.jsonl");
-        let mut pending: Vec<_> = roots.into_iter().rev().map(|root| (root, 0)).collect();
-        let mut budget = 8192usize;
-        while let Some((dir, depth)) = pending.pop() {
-            let Ok(entries) = fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries {
-                if budget == 0 {
-                    return None;
-                }
-                budget -= 1;
-                let Ok(entry) = entry else { continue };
-                let Ok(kind) = entry.file_type() else {
-                    continue;
-                };
-                if kind.is_dir() && depth < 3 {
-                    pending.push((entry.path(), depth + 1));
-                } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(&suffix) {
-                    return fs::canonicalize(entry.path()).ok();
-                }
-            }
-        }
-        None
+        find_session_rollout(roots, thread_id, |_| true)
     }
 
     fn delete_generic_session(
@@ -1037,6 +1030,106 @@ fn local_deleted(session_id: &str, token: &str, backup_path: &Path) -> DeleteRes
     }
 }
 
+// API 模式可能没有 threads 行。只遍历标准目录，限制深度及条目数，不跟随目录项中的符号链接。
+fn find_session_rollout(
+    roots: Vec<PathBuf>,
+    thread_id: &str,
+    accept: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let suffix = format!("-{thread_id}.jsonl");
+    let mut pending: Vec<_> = roots.iter().rev().map(|root| (root.clone(), 0)).collect();
+    let mut budget = 8192usize;
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries {
+            if budget == 0 {
+                return None;
+            }
+            budget -= 1;
+            let Ok(entry) = entry else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < 3 {
+                pending.push((entry.path(), depth + 1));
+            } else if kind.is_file()
+                && entry.file_name().to_string_lossy().ends_with(&suffix)
+                && let Ok(path) = fs::canonicalize(entry.path())
+                && roots.iter().any(|root| path.starts_with(root))
+                && accept(&path)
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// 没有 threads 行的会话按目录查找 rollout，找到的路径按「查找根 + 会话 id」记住。
+///
+/// 用量状态栏每一两秒问一次，不记的话每次都要重新遍历会话目录。
+/// 记住的路径每次仍核对文件头：文件被删、挪走或换成别的会话后重新查找。
+/// 没找到的不记，会话稍后落盘就能找到。
+fn remembered_session_rollout(roots: Vec<PathBuf>, thread_id: &str) -> Option<PathBuf> {
+    type Found = std::collections::BTreeMap<(Vec<PathBuf>, String), PathBuf>;
+    static FOUND: std::sync::Mutex<Found> = std::sync::Mutex::new(Found::new());
+    const LIMIT: usize = 256;
+    let key = (roots, thread_id.to_string());
+    let remembered = FOUND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned();
+    if let Some(path) = remembered
+        && let Ok(path) = fs::canonicalize(path)
+        && key.0.iter().any(|root| path.starts_with(root))
+        && rollout_header_matches(&path, thread_id)
+    {
+        return Some(path);
+    }
+    let found = find_session_rollout(key.0.clone(), thread_id, |path| {
+        rollout_header_matches(path, thread_id)
+    });
+    let mut cache = FOUND.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match &found {
+        Some(path) => {
+            if cache.len() >= LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, path.clone());
+        }
+        None => {
+            cache.remove(&key);
+        }
+    }
+    found
+}
+
+fn rollout_header_matches(path: &Path, thread_id: &str) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut line = Vec::new();
+    if BufReader::new(file.take(512 * 1024))
+        .read_until(b'\n', &mut line)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(header) = serde_json::from_slice::<Value>(&line) else {
+        return false;
+    };
+    header["type"] == "session_meta"
+        && header["payload"]["id"]
+            .as_str()
+            .or_else(|| header["payload"]["session_id"].as_str())
+            .and_then(crate::whale_usage::normalize_session_id)
+            .as_deref()
+            == Some(thread_id)
+}
+
 fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::Result<Vec<Value>> {
     let file = File::open(rollout_path)?;
     let reader = BufReader::new(file);
@@ -1103,14 +1196,12 @@ fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::R
                     });
                 let cached_tokens = last
                     .and_then(|usage| usage.get("cached_input_tokens"))
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                    .and_then(Value::as_i64);
                 let context_used = total
                     .and_then(|usage| usage.get("total_tokens"))
                     .and_then(Value::as_i64)
                     .unwrap_or(total_tokens);
-                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0
-                {
+                if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 && context_used <= 0 {
                     continue;
                 }
                 history.push(json!({
@@ -1127,7 +1218,7 @@ fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::R
                         "cacheCreationTokens": 0,
                         "contextUsed": context_used,
                         "contextLimit": model_context_window,
-                        "hasBreakdown": input_tokens > 0 || output_tokens > 0 || cached_tokens > 0,
+                        "hasBreakdown": input_tokens > 0 || output_tokens > 0 || cached_tokens.unwrap_or(0) > 0,
                     }
                 }));
             }
@@ -1198,6 +1289,7 @@ fn read_rollout_usage_window(
         lines.next();
     }
     let mut current_turn_id: Option<String> = None;
+    let mut current_turn_started_at = None;
     let mut segment_start = 0;
     for line in lines {
         let line = line.trim();
@@ -1225,6 +1317,7 @@ fn read_rollout_usage_window(
                 if current_turn_id.as_deref() != Some(id) {
                     segment_start = out.len();
                     current_turn_id = Some(id.to_owned());
+                    current_turn_started_at = None;
                 }
             }
             continue;
@@ -1237,6 +1330,10 @@ fn read_rollout_usage_window(
             Some("task_started" | "turn_started") => {
                 segment_start = out.len();
                 current_turn_id = turn_id.map(str::to_owned);
+                current_turn_started_at = value["timestamp"]
+                    .as_str()
+                    .filter(|_| current_turn_id.is_some())
+                    .map(str::to_owned);
                 continue;
             }
             Some(
@@ -1253,11 +1350,15 @@ fn read_rollout_usage_window(
                 }
                 segment_start = out.len();
                 current_turn_id = None;
+                current_turn_started_at = None;
                 continue;
             }
             _ => {}
         }
-        if let Some(event) = rollout_usage_event(&value, current_turn_id.as_deref()) {
+        if let Some(mut event) = rollout_usage_event(&value, current_turn_id.as_deref()) {
+            if let Some(started_at) = &current_turn_started_at {
+                event["turn_started_at"] = json!(started_at);
+            }
             out.push(event);
         }
     }
@@ -1282,12 +1383,14 @@ fn rollout_usage_event(value: &Value, turn_id: Option<&str>) -> Option<Value> {
         source
             .and_then(|usage| usage.get(key))
             .and_then(Value::as_i64)
-            .unwrap_or(0)
     };
     let input_tokens = field(Some(last), "input_tokens");
     let output_tokens = field(Some(last), "output_tokens");
     let total_tokens = field(Some(last), "total_tokens");
-    if input_tokens <= 0 && output_tokens <= 0 && total_tokens <= 0 {
+    if [input_tokens, output_tokens, total_tokens]
+        .into_iter()
+        .all(|count| count.unwrap_or(0) <= 0)
+    {
         return None;
     }
     let mut event = json!({

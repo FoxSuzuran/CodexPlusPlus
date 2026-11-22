@@ -180,6 +180,28 @@
       ${selectors.sidebarThread} [data-codex-thread-id-badge-wrap="true"] .truncate.text-base {
         min-width: 0;
       }
+      /* 原生标题的双侧淡出会把滚动中和操作按钮旁的文字削掉。侧栏短标题保持原样，
+         长标题用省略号，完整名称仍由会话预览和交互按钮的无障碍名称提供。 */
+      ${selectors.sidebarThread} [data-thread-title][data-marquee-text] > span {
+        max-width: 100%;
+        margin-inline: 0;
+        mask-image: none;
+      }
+      ${selectors.sidebarThread} [data-thread-title][data-marquee-text] > span > span {
+        display: block;
+        min-width: 0;
+        max-width: 100%;
+        padding-inline: 0;
+        transform: none;
+        animation: none;
+      }
+      ${selectors.sidebarThread} [data-thread-title][data-marquee-text] [data-marquee-content] {
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .codex-archive-row-button {
         border: 1px solid var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         border-radius: var(--border-radius-sm, 6px);

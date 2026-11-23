@@ -1,0 +1,53 @@
+diff --git a/market-bennett-ui-improvements.js b/market-bennett-ui-improvements.js
+index 7c30949..8f36f38 100644
+--- a/market-bennett-ui-improvements.js
++++ b/market-bennett-ui-improvements.js
+@@ -7612,7 +7612,6 @@ const FEATURES = {
+ 
+     const isProjectRow = (node) => {
+       if (!(node instanceof HTMLElement)) return false;
+-      if (!visible(node)) return false;
+       if (node.getAttribute("role") !== "listitem") return false;
+       if (!node.classList.contains("group/cwd")) return false;
+ 
+@@ -7621,7 +7620,7 @@ const FEATURES = {
+       if (EXCLUDED_LABELS.has(text)) return false;
+ 
+       const action = node.querySelector("[role='button'][aria-label]");
+-      return action instanceof HTMLElement && labelFor(action) === text;
++      return action instanceof HTMLElement && labelFor(action) === text && visible(node);
+     };
+ 
+     const candidateRows = (sidebar) =>
+@@ -8185,19 +8184,19 @@ const FEATURES = {
+         window.clearTimeout(scheduleTimer);
+         scheduleTimer = 0;
+       }
+-      if (disposed) return;
++      if (disposed || document.hidden) return;
+       apply();
+     };
+ 
+     const scheduleApply = (delay = 140) => {
+-      if (disposed) return;
++      if (disposed || document.hidden) return;
+       scheduled = true;
+       if (scheduleTimer) window.clearTimeout(scheduleTimer);
+       scheduleTimer = window.setTimeout(runScheduledApply, delay);
+     };
+ 
+     const scheduleApplyForMutations = (records) => {
+-      if (disposed) return;
++      if (disposed || document.hidden) return;
+       const sidebar = activeSidebar?.isConnected ? activeSidebar : null;
+       const relevant = records.some((record) => {
+         const target = record.target instanceof Element
+@@ -8218,7 +8217,7 @@ const FEATURES = {
+       if (relevant) scheduleApply();
+     };
+ 
+-    apply();
++    if (!document.hidden) apply();
+     scheduleApply();
+     const retryTimers = [250, 1000, 2500].map((delay) =>
+       window.setTimeout(scheduleApply, delay),

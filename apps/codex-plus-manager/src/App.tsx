@@ -16750,7 +16750,7 @@ function ClaudeLocalizationScreen(
             />
             <span>
               <strong>{t("界面汉化")}</strong>
-              <small>{t("启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。")}</small>
+              <small>{t("启动补丁版时将显示语言切换为简体中文。关闭后按原语言启动。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -16762,8 +16762,8 @@ function ClaudeLocalizationScreen(
               type="checkbox"
             />
             <span>
-              <strong>{t("语音输入")}</strong>
-              <small>{t("在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。")}</small>
+              <strong>{t("听写")}</strong>
+              <small>{t("在 Claude 输入框内添加麦克风按钮。转写结果填入输入框，由你发送。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -16777,10 +16777,10 @@ function ClaudeLocalizationScreen(
             <span>
               <strong>{t("Computer Use")}</strong>
               <small title={s?.computerUseSupported === false
-                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                ? t("此补丁仅支持 macOS。Windows 上可在 Claude Desktop 设置中查看官方 Computer Use 是否可用。")
                 : `${t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动补丁版会提示授权辅助功能与屏幕录制。")}\n${t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}`}
               >{s?.computerUseSupported === false
-                ? t("暂仅支持 macOS：Windows 的副本构建流程不会改写 app.asar，打开这个开关不会有任何效果。")
+                ? t("此补丁仅支持 macOS。Windows 上可在 Claude Desktop 设置中查看官方 Computer Use 是否可用。")
                 : t("解锁桌面控制：订阅与灰度校验已解除，API Key（3p）模式同样可用；会改写副本的 app.asar 并关闭 Electron 的 asar 完整性校验，原件不动。首次启动补丁版会提示授权辅助功能与屏幕录制。")}</small>
             </span>
             <ToggleVisual />

@@ -21,14 +21,14 @@ if (-not $target) {
 }
 
 $ws = [Net.WebSockets.ClientWebSocket]::new()
-$ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+$null = $ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 $nextId = 0
-function Invoke-CDP([string]$expression) {
+function Invoke-CDP([string]$expression, [switch]$AwaitPromise) {
   $script:nextId++
   $id = $script:nextId
-  $payload = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $expression; returnByValue = $true; includeCommandLineAPI = $true; awaitPromise = $true } } | ConvertTo-Json -Compress
+  $payload = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $expression; returnByValue = $true; includeCommandLineAPI = $true; awaitPromise = $AwaitPromise.IsPresent } } | ConvertTo-Json -Compress
   $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
-  $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+  $null = $ws.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
   $buffer = New-Object byte[] 65536; $result = ''
   do { $part = $ws.ReceiveAsync([ArraySegment[byte]]::new($buffer), [Threading.CancellationToken]::None).GetAwaiter().GetResult(); $result += [Text.Encoding]::UTF8.GetString($buffer, 0, $part.Count) } while (-not $part.EndOfMessage)
   return ($result | ConvertFrom-Json)
@@ -56,10 +56,12 @@ $bootstrap = @"
 "@
 $null = Invoke-CDP $bootstrap
 $eval = "globalThis.__claudeCnTargetLocale='$localeEscaped'; globalThis.__claudeCnVoiceInput=$voiceInput; globalThis.__claudeCnLocalization=$localization; require('$hookEscaped'); globalThis.__claudeCnHookInstalled === true"
+# 同步求值也会执行注入，awaitPromise 却可能让 Inspector 返回 Promise was collected。
 $response = Invoke-CDP $eval
+if ($response.error) { throw "Claude hook 注入失败：$($response.error.message)" }
 if (-not $response.result.result.value) { throw 'Claude hook 注入失败' }
 try {
-  $timeoutResponse = Invoke-CDP 'globalThis.__claudeCnBashTimeoutReady'
+  $timeoutResponse = Invoke-CDP 'globalThis.__claudeCnBashTimeoutReady' -AwaitPromise
   $timeoutResult = $timeoutResponse.result.result.value
   if ($timeoutResponse.result.exceptionDetails -or -not $timeoutResult) { throw '未收到 Cowork Bash 适配结果' }
   Write-Output ('CODEX_PLUS_CLAUDE_BASH_RESULT=' + ($timeoutResult | ConvertTo-Json -Compress))

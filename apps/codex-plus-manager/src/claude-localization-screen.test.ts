@@ -296,7 +296,7 @@ test("Claude 增强页不再重复提供万物皆拓展开关，保留其他增�
     const page = screen.render();
     assert.equal(inputs(page).some((input) => input.props["aria-label"] === "万物皆拓展"), false);
     assert.doesNotMatch(text(page), /万物皆拓展/);
-    for (const feature of ["界面汉化", "语音输入", "Computer Use", "解锁 Bash 时间限制"]) {
+    for (const feature of ["界面汉化", "听写", "Computer Use", "解锁 Bash 时间限制"]) {
       assert.ok(text(page).includes(feature), feature);
     }
     assert.equal(screen.calls.length, 0);

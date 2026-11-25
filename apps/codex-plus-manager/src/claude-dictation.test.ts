@@ -213,6 +213,15 @@ test("Windows 启动器把两个独立增强开关传给同一个 hook", () => {
   }
 });
 
+test("Windows 启动器仅等待 Cowork 的异步回执", () => {
+  const injector = read("assets/claude-localization/inject-cn.ps1");
+  assert.match(injector, /awaitPromise = \$AwaitPromise\.IsPresent/);
+  const promiseCalls = injector.match(/^[^\r\n]*Invoke-CDP [^\r\n]* -AwaitPromise[ \t]*$/gm);
+  assert.deepEqual(promiseCalls?.map((call) => call.trim()), [
+    "$timeoutResponse = Invoke-CDP 'globalThis.__claudeCnBashTimeoutReady' -AwaitPromise",
+  ]);
+});
+
 test("Claude 听写沿用启动器的绝对状态目录覆盖", () => {
   const source = hook.slice(hook.indexOf("const STATE_DIR ="), hook.indexOf("const BINDING ="));
   const fallback = [
